@@ -30,7 +30,11 @@ export type { RemoteHostProfile, CreateHostInput, UpdateHostInput } from './remo
 
 // === 连接编排 ===
 export { ConnectionOrchestrator } from './remote-connection.js';
-export type { ConnectionState, ConnectionEvent } from './remote-connection.js';
+export type { ConnectionState, ConnectionEvent, ConnectionHistoryEntry, ReconnectConfig } from './remote-connection.js';
+
+// === 远程工作区适配 ===
+export { RemoteWorkspaceAdapter } from './remote-workspace.js';
+export type { RemoteFsInfo, RemoteFsTarget, RemoteDirEntry } from './remote-workspace.js';
 
 // === 依赖收集 ===
 export { collectHelperDependencies } from './dependency-collector.js';
