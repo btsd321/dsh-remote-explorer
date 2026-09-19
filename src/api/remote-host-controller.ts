@@ -139,7 +139,7 @@ export class RemoteHostController {
     const adapter = this.getWorkspaceAdapter();
     if (!adapter) throw new Error('连接未就绪');
     const resolved = await adapter.resolveWorkspacePath(path);
-    log('[dsh-remote-ssh] 工作目录已设置: ' + resolved);
+    console.log('[dsh-remote-ssh] 工作目录已设置: ' + resolved);
     return resolved;
   }
 }

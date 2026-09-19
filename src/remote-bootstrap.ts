@@ -19,6 +19,7 @@
 import { Client, type ClientChannel, type SFTPWrapper } from 'ssh2';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { collectHelperDependencies } from './dependency-collector.js';
 import { createNodeAddonStub } from './native-stub.js';
@@ -73,10 +74,11 @@ const MIN_NODE_MINOR = 19;
 export class RemoteBootstrap {
   /**
    * 探测远端环境
-   * @param profile - 主机档案
+   * @param resolved - 从 SSH config 解析的主机配置（含跳板机链）
+   * @param expectedHelperHash - 可选的期望 helper 摘要，用于判断远端已装 helper 是否需要更新
    * @returns 探测结果
    */
-  async probe(resolved: ResolvedHostWithJump): Promise<RemoteProbe> {
+  async probe(resolved: ResolvedHostWithJump, expectedHelperHash?: string): Promise<RemoteProbe> {
     const { execOutput } = await this.connect(resolved);
     try {
       // 探测 OS 和架构
@@ -99,16 +101,15 @@ export class RemoteBootstrap {
         }
       }
 
-      // 检查已安装的 helper
+      // 检查已安装的 helper（入口文件名与 bootstrap() 上传的保持一致：helper.mjs 优先，其次 helper.js）
       const helperCheck = await execOutput(
-        `ls ~/.dsh/helper/helper-entry.js 2>/dev/null && sha256sum ~/.dsh/helper/helper-entry.js 2>/dev/null || true`
+        `for f in ~/.dsh/helper/helper.mjs ~/.dsh/helper/helper.js; do [ -f "$f" ] && sha256sum "$f" && break; done || true`
       );
       const helperInstalled = helperCheck.trim().length > 0;
       let helperHashMatch: boolean | null = null;
-      if (helperInstalled && profile.helperHash) {
-        const hashLine = helperCheck.trim().split('\n')[1] || '';
-        const installedHash = hashLine.split(/\s+/)[0];
-        helperHashMatch = installedHash === profile.helperHash;
+      if (helperInstalled && expectedHelperHash) {
+        const installedHash = helperCheck.trim().split(/\s+/)[0];
+        helperHashMatch = installedHash === expectedHelperHash;
       }
 
       return {

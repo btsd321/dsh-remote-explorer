@@ -12,11 +12,13 @@
   var pending = new Map();
   var nextId = 1;
   var hosts = [];
+  /** 当前 Node 下载镜像源（连接后从后端拉取持久化值，用于回填下拉框选中态） */
+  var currentMirror = 'official';
 
   function connectWS() {
     var wsUrl = 'ws://' + location.host + '/remote-ssh/ws';
     ws = new WebSocket(wsUrl);
-    ws.onopen = function () { refreshHosts(); };
+    ws.onopen = function () { loadMirror(); refreshHosts(); };
     ws.onclose = function () { setTimeout(connectWS, 3000); };
     ws.onmessage = function (e) {
       var msg = JSON.parse(e.data);
@@ -36,6 +38,21 @@
       pending.set(id, { resolve: resolve, reject: reject });
       ws.send(JSON.stringify({ id: id, method: method, params: params || {} }));
     });
+  }
+
+  /**
+   * 从后端拉取持久化的镜像源并回填下拉框
+   * 后端的镜像源存在 ~/.dsh/remote-ssh-mirror.json，重启后仍生效，
+   * 这里必须回填，否则面板显示"官方"而实际用的是别的源。
+   */
+  function loadMirror() {
+    rpc('getMirror').then(function (m) {
+      if (!m) return;
+      currentMirror = m;
+      // 主机列表可能已先渲染完成，回填已存在的下拉框
+      var selects = document.querySelectorAll('.drs-mirror-select');
+      for (var i = 0; i < selects.length; i++) selects[i].value = currentMirror;
+    }).catch(function () { /* 拉取失败时沿用默认值，不影响连接 */ });
   }
 
   function refreshHosts() {
@@ -69,11 +86,28 @@
       btnGroup.style.cssText = 'display:flex;gap:4px;align-items:center;';
 
       var mirrorSelect = document.createElement('select');
+      mirrorSelect.className = 'drs-mirror-select';
       mirrorSelect.title = 'Node 下载镜像源';
       mirrorSelect.style.cssText = 'background:#0d1b2a;color:#e0e0e0;border:1px solid #0f3460;border-radius:3px;padding:3px 4px;font-size:10px;cursor:pointer;max-width:70px;';
       mirrorSelect.innerHTML = '<option value="official">官方</option><option value="aliyun">阿里</option><option value="tsinghua">清华</option><option value="ustc">中科大</option>';
+      // 回填持久化的镜像源，避免显示"官方"而实际用的是别的源
+      mirrorSelect.value = currentMirror;
       mirrorSelect.onclick = function (e) { e.stopPropagation(); };
-      mirrorSelect.onchange = function (e) { e.stopPropagation(); rpc('setMirror', { mirror: e.target.value }).catch(function(){}); };
+      mirrorSelect.onchange = function (e) {
+        e.stopPropagation();
+        var mirror = e.target.value;
+        rpc('setMirror', { mirror: mirror }).then(function () {
+          currentMirror = mirror;
+          // 镜像源是全局设置，同步其余主机行的下拉框
+          var selects = document.querySelectorAll('.drs-mirror-select');
+          for (var i = 0; i < selects.length; i++) selects[i].value = mirror;
+          log('镜像源已切换: ' + (e.target.selectedOptions[0] || {}).text, 'ok');
+        }).catch(function (err) {
+          // 后端失败时回退到原值，不让 UI 显示未生效的选择
+          e.target.value = currentMirror;
+          log('镜像源切换失败: ' + err.message, 'err');
+        });
+      };
 
       var btn = document.createElement('button');
       btn.textContent = '连接';
