@@ -1,0 +1,12 @@
+helper 目录: D:\Project\deepseek-harness\packages\ssh\ssh\lib\bundle
+
+========================================
+ DSH 远程主机管理演示服务已启动
+========================================
+ Web UI:  http://127.0.0.1:18900?helperDir=D%3A%5CProject%5Cdeepseek-harness%5Cpackages%5Cssh%5Cssh%5Clib%5Cbundle
+ WebSocket: ws://127.0.0.1:18900/ws
+ helperDir: D:\Project\deepseek-harness\packages\ssh\ssh\lib\bundle
+========================================
+
+前端 WebSocket 已连接
+前端 WebSocket 已断开

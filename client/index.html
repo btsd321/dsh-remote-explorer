@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DSH 远程主机管理</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, 'Segoe UI', sans-serif; background: #1a1a2e; color: #e0e0e0; height: 100vh; display: flex; }
+    /* 侧边栏 */
+    #sidebar { width: 280px; background: #16213e; border-right: 1px solid #0f3460; display: flex; flex-direction: column; }
+    #sidebar-header { padding: 16px; border-bottom: 1px solid #0f3460; display: flex; justify-content: space-between; align-items: center; }
+    #sidebar-header h1 { font-size: 16px; font-weight: 600; }
+    #add-btn { background: #e94560; color: white; border: none; border-radius: 4px; padding: 4px 12px; cursor: pointer; font-size: 13px; }
+    #add-btn:hover { background: #c73e54; }
+    #host-list { flex: 1; overflow-y: auto; }
+    .host-item { padding: 12px 16px; border-bottom: 1px solid #0f3460; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+    .host-item:hover { background: #1a1a3e; }
+    .host-item.active { background: #0f3460; }
+    .host-item .title { font-weight: 500; font-size: 14px; }
+    .host-item .host-info { font-size: 12px; color: #888; margin-top: 2px; }
+    .host-item .status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .status-disconnected { background: #555; }
+    .status-connecting { background: #f0a500; animation: pulse 1s infinite; }
+    .status-verifying { background: #f0a500; animation: pulse 1s infinite; }
+    .status-ready { background: #00b894; }
+    .status-lost, .status-failed { background: #e94560; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    /* 主区域 */
+    #main { flex: 1; display: flex; flex-direction: column; }
+    #main-header { padding: 16px 24px; border-bottom: 1px solid #0f3460; display: flex; justify-content: space-between; align-items: center; }
+    #main-header h2 { font-size: 18px; }
+    #connection-status { font-size: 13px; padding: 4px 12px; border-radius: 4px; }
+    #main-content { flex: 1; padding: 24px; overflow-y: auto; }
+    /* 表单 */
+    .form-group { margin-bottom: 16px; }
+    .form-group label { display: block; font-size: 13px; margin-bottom: 4px; color: #aaa; }
+    .form-group input, .form-group select { width: 100%; padding: 8px 12px; background: #0d1b2a; border: 1px solid #0f3460; border-radius: 4px; color: #e0e0e0; font-size: 14px; }
+    .form-group input:focus { outline: none; border-color: #e94560; }
+    .btn { padding: 8px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: 500; }
+    .btn-primary { background: #e94560; color: white; }
+    .btn-primary:hover { background: #c73e54; }
+    .btn-primary:disabled { background: #555; cursor: not-allowed; }
+    .btn-secondary { background: #0f3460; color: #e0e0e0; }
+    .btn-secondary:hover { background: #1a4a7a; }
+    /* 探测/引导结果 */
+    .info-card { background: #0d1b2a; border: 1px solid #0f3460; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+    .info-card h3 { font-size: 14px; margin-bottom: 12px; color: #e94560; }
+    .info-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; }
+    .info-row .label { color: #888; }
+    .info-row .value { color: #e0e0e0; }
+    .info-row .ok { color: #00b894; }
+    .info-row .err { color: #e94560; }
+    /* 日志 */
+    #log { background: #0d1b2a; border: 1px solid #0f3460; border-radius: 8px; padding: 12px; height: 200px; overflow-y: auto; font-family: 'Consolas', monospace; font-size: 12px; }
+    .log-line { padding: 2px 0; }
+    .log-time { color: #555; }
+    .log-info { color: #aaa; }
+    .log-ok { color: #00b894; }
+    .log-err { color: #e94560; }
+    .log-warn { color: #f0a500; }
+    /* 模态框 */
+    #modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); display: none; justify-content: center; align-items: center; z-index: 100; }
+    #modal-overlay.show { display: flex; }
+    #modal { background: #16213e; border: 1px solid #0f3460; border-radius: 8px; padding: 24px; width: 480px; max-width: 90vw; }
+    #modal h2 { margin-bottom: 16px; }
+    #modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+  </style>
+</head>
+<body>
+  <!-- 侧边栏：主机列表 -->
+  <div id="sidebar">
+    <div id="sidebar-header">
+      <h1>远程主机</h1>
+      <button id="add-btn" onclick="showAddModal()">+ 新增</button>
+    </div>
+    <div id="host-list"></div>
+  </div>
+
+  <!-- 主区域 -->
+  <div id="main">
+    <div id="main-header">
+      <h2 id="main-title">选择或新增一台远程主机</h2>
+      <div id="connection-status">未连接</div>
+    </div>
+    <div id="main-content"></div>
+  </div>
+
+  <!-- 新增主机模态框 -->
+  <div id="modal-overlay">
+    <div id="modal">
+      <h2>新增远程主机</h2>
+      <div class="form-group">
+        <label>显示名称</label>
+        <input id="form-title" placeholder="例如：OrangePI">
+      </div>
+      <div class="form-group">
+        <label>主机地址</label>
+        <input id="form-host" placeholder="例如：192.168.1.82">
+      </div>
+      <div class="form-group">
+        <label>端口</label>
+        <input id="form-port" type="number" value="22">
+      </div>
+      <div class="form-group">
+        <label>用户名</label>
+        <input id="form-username" placeholder="例如：xlli67">
+      </div>
+      <div class="form-group">
+        <label>私钥文件路径</label>
+        <input id="form-key" placeholder="例如：~/.ssh/xlli67">
+      </div>
+      <div class="form-group">
+        <label>远端工作目录</label>
+        <input id="form-workspace" placeholder="例如：/home/user/projects">
+      </div>
+      <div class="form-group">
+        <label>HTTP 代理（可选）</label>
+        <input id="form-proxy" placeholder="例如：http://127.0.0.1:18890">
+      </div>
+      <div id="modal-actions">
+        <button class="btn btn-secondary" onclick="hideAddModal()">取消</button>
+        <button class="btn btn-primary" onclick="submitAdd()">创建</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // WebSocket 连接
+    let ws = null;
+    let currentHostId = null;
+    let hosts = [];
+    let pendingRequests = new Map();
+    let nextReqId = 1;
+
+    // 连接 WebSocket 桥接服务
+    function connectWS() {
+      const port = new URLSearchParams(location.search).get('port') || '18900';
+      ws = new WebSocket(`ws://127.0.0.1:${port}`);
+      ws.onopen = () => { log('WebSocket 已连接', 'ok'); refreshHosts(); subscribeStatus(); };
+      ws.onclose = () => { log('WebSocket 已断开', 'err'); setTimeout(connectWS, 3000); };
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'event' && msg.event === 'stateChange') {
+          onStateChange(msg.data);
+        } else if (msg.id && pendingRequests.has(msg.id)) {
+          const { resolve, reject } = pendingRequests.get(msg.id);
+          pendingRequests.delete(msg.id);
+          if (msg.error) reject(new Error(msg.error.message));
+          else resolve(msg.result);
+        }
+      };
+    }
+
+    // 发送 JSON-RPC 请求
+    function rpc(method, params = {}) {
+      return new Promise((resolve, reject) => {
+        const id = String(nextReqId++);
+        pendingRequests.set(id, { resolve, reject });
+        ws.send(JSON.stringify({ id, method, params }));
+      });
+    }
+
+    // 日志
+    function log(msg, level = 'info') {
+      const el = document.getElementById('log');
+      if (!el) return;
+      const time = new Date().toLocaleTimeString('zh-CN');
+      const div = document.createElement('div');
+      div.className = `log-line log-${level}`;
+      div.innerHTML = `<span class="log-time">[${time}]</span> ${msg}`;
+      el.appendChild(div);
+      el.scrollTop = el.scrollHeight;
+    }
+
+    // 刷新主机列表
+    async function refreshHosts() {
+      try {
+        const result = await rpc('list');
+        hosts = result.hosts;
+        renderHostList();
+      } catch (e) { log(`刷新主机列表失败: ${e.message}`, 'err'); }
+    }
+
+    // 渲染主机列表
+    function renderHostList() {
+      const el = document.getElementById('host-list');
+      el.innerHTML = '';
+      for (const h of hosts) {
+        const item = document.createElement('div');
+        item.className = `host-item ${h.id === currentHostId ? 'active' : ''}`;
+        item.onclick = () => selectHost(h.id);
+        const dotClass = h.id === currentHostId ? 'status-connecting' : 'status-disconnected';
+        item.innerHTML = `
+          <div>
+            <div class="title">${h.title}</div>
+            <div class="host-info">${h.username}@${h.host}:${h.port}</div>
+          </div>
+          <div class="status-dot ${dotClass}"></div>
+        `;
+        el.appendChild(item);
+      }
+    }
+
+    // 选择主机
+    function selectHost(id) {
+      currentHostId = id;
+      const host = hosts.find(h => h.id === id);
+      if (!host) return;
+      document.getElementById('main-title').textContent = host.title;
+      renderHostDetail(host);
+      renderHostList();
+    }
+
+    // 渲染主机详情
+    function renderHostDetail(host) {
+      const el = document.getElementById('main-content');
+      const bootstrapped = host.bootstrapped;
+      el.innerHTML = `
+        <div class="info-card">
+          <h3>主机信息</h3>
+          <div class="info-row"><span class="label">地址</span><span class="value">${host.host}:${host.port}</span></div>
+          <div class="info-row"><span class="label">用户名</span><span class="value">${host.username}</span></div>
+          <div class="info-row"><span class="label">工作目录</span><span class="value">${host.workspace}</span></div>
+          <div class="info-row"><span class="label">已配置私钥</span><span class="value ${host.hasPrivateKey ? 'ok' : ''}">${host.hasPrivateKey ? '是' : '否'}</span></div>
+          <div class="info-row"><span class="label">已配置代理</span><span class="value ${host.hasProxy ? 'ok' : ''}">${host.hasProxy ? '是' : '否'}</span></div>
+        </div>
+        <div class="info-card">
+          <h3>远端环境</h3>
+          <div class="info-row"><span class="label">Node 路径</span><span class="value">${host.node || '未安装'}</span></div>
+          <div class="info-row"><span class="label">helper 路径</span><span class="value">${host.helper || '未上传'}</span></div>
+          <div class="info-row"><span class="label">引导状态</span><span class="value ${bootstrapped ? 'ok' : 'err'}">${bootstrapped ? '已完成' : '未完成'}</span></div>
+        </div>
+        <div style="display: flex; gap: 8px; margin-bottom: 16px;">
+          <button class="btn btn-secondary" onclick="probeHost('${host.id}')" ${!host.hasPrivateKey ? 'disabled' : ''}>探测远端</button>
+          <button class="btn btn-secondary" onclick="bootstrapHost('${host.id}')" ${!host.hasPrivateKey ? 'disabled' : ''}>自动引导</button>
+          <button class="btn btn-primary" onclick="connectHost('${host.id}')" ${!bootstrapped ? 'disabled' : ''}>连接</button>
+          <button class="btn btn-secondary" onclick="disconnectHost()">断开</button>
+        </div>
+        <div id="probe-result"></div>
+        <h3 style="font-size: 14px; margin-bottom: 8px; color: #e94560;">操作日志</h3>
+        <div id="log"></div>
+      `;
+    }
+
+    // 探测远端
+    async function probeHost(id) {
+      log('正在探测远端环境...', 'info');
+      try {
+        const result = await rpc('probe', { id });
+        const el = document.getElementById('probe-result');
+        el.innerHTML = `
+          <div class="info-card">
+            <h3>探测结果</h3>
+            <div class="info-row"><span class="label">操作系统</span><span class="value">${result.os}</span></div>
+            <div class="info-row"><span class="label">架构</span><span class="value">${result.arch}</span></div>
+            <div class="info-row"><span class="label">Node 路径</span><span class="value">${result.nodePath || '未安装'}</span></div>
+            <div class="info-row"><span class="label">Node 版本</span><span class="value">${result.nodeVersion || 'N/A'}</span></div>
+            <div class="info-row"><span class="label">Node 满足要求</span><span class="value ${result.nodeSufficient ? 'ok' : 'err'}">${result.nodeSufficient ? '是' : '否'}</span></div>
+            <div class="info-row"><span class="label">helper 已安装</span><span class="value ${result.helperInstalled ? 'ok' : ''}">${result.helperInstalled ? '是' : '否'}</span></div>
+          </div>
+        `;
+        log(`探测完成: ${result.os} ${result.arch}, Node ${result.nodeVersion || '未安装'}`, result.nodeSufficient ? 'ok' : 'warn');
+      } catch (e) { log(`探测失败: ${e.message}`, 'err'); }
+    }
+
+    // 自动引导
+    async function bootstrapHost(id) {
+      const helperDir = new URLSearchParams(location.search).get('helperDir') || '';
+      if (!helperDir) { log('未配置 helperDir 参数', 'err'); return; }
+      log('正在自动引导远端环境（安装 Node + 上传 helper）...', 'info');
+      try {
+        const result = await rpc('bootstrap', { id, helperDirPath: helperDir });
+        log(`引导完成: Node ${result.nodeInstalled ? '新安装' : '已存在'}, helper ${result.helperUploaded ? '新上传' : '已存在'}`, 'ok');
+        await refreshHosts();
+        selectHost(id);
+      } catch (e) { log(`引导失败: ${e.message}`, 'err'); }
+    }
+
+    // 连接主机
+    async function connectHost(id) {
+      const helperDir = new URLSearchParams(location.search).get('helperDir') || '';
+      log('正在连接...', 'info');
+      try {
+        const result = await rpc('activate', { id, helperDirPath: helperDir });
+        log(result ? '连接成功' : '连接失败', result ? 'ok' : 'err');
+      } catch (e) { log(`连接失败: ${e.message}`, 'err'); }
+    }
+
+    // 断开连接
+    async function disconnectHost() {
+      log('正在断开连接...', 'info');
+      try {
+        await rpc('deactivate', {});
+        log('已断开', 'info');
+      } catch (e) { log(`断开失败: ${e.message}`, 'err'); }
+    }
+
+    // 状态变化处理
+    function onStateChange(event) {
+      log(`连接状态: ${event.state} ${event.message || ''}`, event.state === 'ready' ? 'ok' : event.state === 'failed' || event.state === 'lost' ? 'err' : 'info');
+      const el = document.getElementById('connection-status');
+      const labels = { disconnected: '未连接', connecting: '连接中...', verifying: '验证中...', ready: '已连接', lost: '连接丢失', failed: '连接失败' };
+      el.textContent = labels[event.state] || event.state;
+      el.style.background = event.state === 'ready' ? '#00b89433' : event.state === 'failed' || event.state === 'lost' ? '#e9456033' : '#0f346033';
+    }
+
+    // 订阅状态
+    function subscribeStatus() { /* WebSocket 连接后自动接收事件 */ }
+
+    // 新增主机模态框
+    function showAddModal() { document.getElementById('modal-overlay').classList.add('show'); }
+    function hideAddModal() { document.getElementById('modal-overlay').classList.remove('show'); }
+
+    // 提交新增
+    async function submitAdd() {
+      const params = {
+        title: document.getElementById('form-title').value,
+        host: document.getElementById('form-host').value,
+        port: parseInt(document.getElementById('form-port').value) || 22,
+        username: document.getElementById('form-username').value,
+        privateKeyPath: document.getElementById('form-key').value || undefined,
+        workspace: document.getElementById('form-workspace').value,
+        proxy: document.getElementById('form-proxy').value || undefined,
+      };
+      if (!params.title || !params.host || !params.username || !params.workspace) {
+        alert('请填写所有必填字段'); return;
+      }
+      try {
+        await rpc('create', params);
+        hideAddModal();
+        await refreshHosts();
+        log(`已创建主机: ${params.title}`, 'ok');
+      } catch (e) { alert(`创建失败: ${e.message}`); }
+    }
+
+    // 启动
+    connectWS();
+  </script>
+</body>
+</html>
