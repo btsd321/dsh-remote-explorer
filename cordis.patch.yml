@@ -1,14 +1,17 @@
 # dsh-remote-ssh 插件的 Cordis 补丁层
 # 当此 bundle 被 profile 列入时，此补丁文件被应用为配置层。
 # 它插入插件入口行，让 Loader 加载插件并调用 apply(ctx, config)。
+#
+# 加载后：
+# - ctx.remoteHostController 服务注册
+# - 在 dsh webServer 上注册 /remote-ssh 路由（HTTP + WebSocket）
+# - 访问 http://127.0.0.1:<dsh-port>/remote-ssh 打开管理页面
 
 - insert:
     - id: remote-ssh
       name: '@deepseek-ai/dsh-remote-ssh'
       config:
         helperDirPath: ../../deepseek-harness/packages/ssh/ssh/lib/bundle
-        wsPort: 18900
-        wsHost: 127.0.0.1
         hostsFilePath: ~/.dsh/remote-hosts.json
         workspacesFilePath: ~/.dsh/remote-workspaces.json
         reconnect:
