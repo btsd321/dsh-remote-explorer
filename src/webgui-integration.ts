@@ -64,69 +64,42 @@ function getHtml(): string {
 const ENTRY_BUTTON_SCRIPT = `
 (function() {
   function addRemoteHostButton() {
-    // 避免重复添加
     if (document.getElementById('dsh-remote-ssh-btn')) return;
 
-    // 创建按钮
     var btn = document.createElement('button');
     btn.id = 'dsh-remote-ssh-btn';
     btn.title = '远程主机管理';
     btn.style.cssText = [
+      'position:fixed', 'bottom:16px', 'right:16px', 'z-index:99999',
       'display:flex', 'align-items:center', 'justify-content:center',
-      'width:36px', 'height:36px', 'border:none', 'border-radius:8px',
-      'background:transparent', 'color:var(--dsw-text-secondary, #aaa)',
-      'cursor:pointer', 'font-size:18px', 'transition:background .2s',
-      'margin:4px'
+      'width:44px', 'height:44px', 'border:1px solid #0f3460', 'border-radius:10px',
+      'background:#16213e', 'color:#e0e0e0',
+      'cursor:pointer', 'font-size:20px', 'transition:all .2s',
+      'box-shadow:0 2px 8px rgba(0,0,0,.3)'
     ].join(';');
     btn.innerHTML = '🖥';
-    btn.onmouseenter = function() { btn.style.background = 'var(--dsw-surface-hover, #ffffff1a)'; };
-    btn.onmouseleave = function() { btn.style.background = 'transparent'; };
+    btn.onmouseenter = function() { btn.style.background = '#0f3460'; btn.style.transform = 'scale(1.1)'; };
+    btn.onmouseleave = function() { btn.style.background = '#16213e'; btn.style.transform = 'scale(1)'; };
     btn.onclick = toggleRemoteHostPanel;
-
-    // 尝试找到 dsh sidebar 底部区域
-    var sidebar = document.querySelector('[class*="sidebar"] [class*="footer"]')
-      || document.querySelector('[class*="SidebarRoot"] [class*="footer"]')
-      || document.querySelector('[class*="sidebar-footer"]')
-      || document.querySelector('nav[class*="sidebar"]')
-      || document.querySelector('aside')
-      || document.querySelector('[class*="sidebar"]');
-
-    if (sidebar) {
-      sidebar.appendChild(btn);
-    } else {
-      // 如果找不到 sidebar，放一个浮动按钮在右下角
-      btn.style.position = 'fixed';
-      btn.style.bottom = '16px';
-      btn.style.right = '16px';
-      btn.style.zIndex = '9999';
-      btn.style.background = '#16213e';
-      btn.style.border = '1px solid #0f3460';
-      document.body.appendChild(btn);
-    }
+    document.body.appendChild(btn);
   }
 
-  // overlay 容器
   var overlay = null;
   var iframe = null;
 
   function toggleRemoteHostPanel() {
-    if (overlay) {
-      closePanel();
-    } else {
-      openPanel();
-    }
+    if (overlay) { closePanel(); } else { openPanel(); }
   }
 
   function openPanel() {
     overlay = document.createElement('div');
     overlay.id = 'dsh-remote-ssh-overlay';
     overlay.style.cssText = [
-      'position:fixed', 'top:0', 'right:0', 'width:80vw', 'height:100vh',
+      'position:fixed', 'top:0', 'right:0', 'width:85vw', 'height:100vh',
       'background:#1a1a2e', 'border-left:2px solid #0f3460', 'z-index:99998',
-      'box-shadow:-4px 0 20px rgba(0,0,0,.3)', 'display:flex', 'flex-direction:column'
+      'box-shadow:-4px 0 20px rgba(0,0,0,.4)', 'display:flex', 'flex-direction:column'
     ].join(';');
 
-    // 顶部栏
     var header = document.createElement('div');
     header.style.cssText = 'padding:10px 16px;background:#16213e;border-bottom:1px solid #0f3460;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;';
     var title = document.createElement('span');
@@ -142,7 +115,6 @@ const ENTRY_BUTTON_SCRIPT = `
     header.appendChild(closeBtn);
     overlay.appendChild(header);
 
-    // iframe 加载管理页面
     iframe = document.createElement('iframe');
     iframe.src = '/remote-ssh';
     iframe.style.cssText = 'flex:1;border:none;width:100%;';
@@ -161,13 +133,10 @@ const ENTRY_BUTTON_SCRIPT = `
     }
   }
 
-  // 等待 DOM 加载完成
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function() {
-      setTimeout(addRemoteHostButton, 500);
-    });
+    document.addEventListener('DOMContentLoaded', function() { setTimeout(addRemoteHostButton, 1000); });
   } else {
-    setTimeout(addRemoteHostButton, 500);
+    setTimeout(addRemoteHostButton, 1000);
   }
 })();
 `;
