@@ -239,6 +239,15 @@
           <button class="btn btn-primary" id="reconnect-btn" onclick="reconnectHost()" style="display:none;">手动重连</button>
         </div>
         <div id="probe-result"></div>
+        <div id="remote-explorer" style="display:none;">
+          <h3 style="font-size: 14px; margin-bottom: 8px; color: #e94560;">远端文件浏览器</h3>
+          <div style="display:flex; gap:8px; margin-bottom:8px;">
+            <input id="remote-path-input" style="flex:1;padding:6px 10px;background:#0d1b2a;border:1px solid #0f3460;border-radius:4px;color:#e0e0e0;font-size:13px;" placeholder="/home/user" value="${host.workspace}">
+            <button class="btn btn-secondary" onclick="browseRemote()">浏览</button>
+          </div>
+          <div id="remote-file-list" style="background:#0d1b2a;border:1px solid #0f3460;border-radius:4px;max-height:200px;overflow-y:auto;font-size:13px;"></div>
+          <div id="remote-file-content" style="display:none; background:#0d1b2a;border:1px solid #0f3460;border-radius:4px;padding:8px;margin-top:8px;max-height:250px;overflow-y:auto;font-family:Consolas,monospace;font-size:12px;white-space:pre-wrap;"></div>
+        </div>
         <div id="history-section" style="margin-top: 16px;">
           <h3 style="font-size: 14px; margin-bottom: 8px; color: #e94560;">连接历史</h3>
           <div id="history-list" style="background: #0d1b2a; border: 1px solid #0f3460; border-radius: 8px; padding: 12px; max-height: 150px; overflow-y: auto; font-size: 12px;"></div>
@@ -342,8 +351,47 @@
       // lost/failed 时显示重连按钮
       const reconnectBtn = document.getElementById('reconnect-btn');
       if (reconnectBtn) reconnectBtn.style.display = (event.state === 'lost' || event.state === 'failed') ? '' : 'none';
-      // ready 时刷新历史
+      // ready 时显示远端文件浏览器
+      const explorer = document.getElementById('remote-explorer');
+      if (explorer) explorer.style.display = event.state === 'ready' ? '' : 'none';
+      // ready 或 disconnected 时刷新历史
       if (event.state === 'ready' || event.state === 'disconnected') loadHistory();
+    }
+
+    // 浏览远端目录
+    async function browseRemote() {
+      const path = document.getElementById('remote-path-input').value;
+      if (!path) return;
+      log(`浏览远端目录: ${path}`, 'info');
+      try {
+        const entries = await rpc('listRemoteDir', { path });
+        const el = document.getElementById('remote-file-list');
+        if (!entries || entries.length === 0) { el.innerHTML = '<div style="padding:8px;color:#555;">空目录</div>'; return; }
+        el.innerHTML = entries.map(e => {
+          const name = e.name || (e.target && e.target.displayPath ? e.target.displayPath.split('/').pop() : '?');
+          const type = e.type || e.kind || 'unknown';
+          const isDir = type === 'directory';
+          const size = e.size ? `${e.size}B` : '';
+          return `<div style="padding:4px 8px;cursor:${isDir?'pointer':'default'};border-bottom:1px solid #0f3460;" ${isDir?`onclick="document.getElementById('remote-path-input').value='${path}/${name}';browseRemote();"`:''}>
+            <span style="color:${isDir?'#00b894':'#aaa'};">${isDir?'📁':'📄'}</span>
+            <span style="color:#e0e0e0;">${name}</span>
+            ${size?`<span style="color:#555;float:right;">${size}</span>`:''}
+          </div>`;
+        }).join('');
+        log(`列出 ${entries.length} 个条目`, 'ok');
+      } catch (e) { log(`浏览失败: ${e.message}`, 'err'); }
+    }
+
+    // 读取远端文件
+    async function readRemoteFile(filePath) {
+      log(`读取远端文件: ${filePath}`, 'info');
+      try {
+        const content = await rpc('readRemoteFile', { path: filePath });
+        const el = document.getElementById('remote-file-content');
+        el.style.display = '';
+        el.textContent = content.length > 5000 ? content.slice(0, 5000) + '\n...(截断)' : content;
+        log(`文件内容 ${content.length} 字节`, 'ok');
+      } catch (e) { log(`读取失败: ${e.message}`, 'err'); }
     }
 
     // 订阅状态

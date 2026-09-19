@@ -99,6 +99,10 @@ async function handleMethod(controller, method, params, helperDir) {
     case 'status': return await controller.status();
     case 'history': return controller.getHistory();
     case 'configureReconnect': controller.configureReconnect(params); return true;
+    // 远程工作区操作
+    case 'listRemoteDir': return await controller.listRemoteDir(params.path);
+    case 'readRemoteFile': return await controller.readRemoteFile(params.path);
+    case 'statRemoteFile': return await controller.statRemoteFile(params.path);
     default: throw new Error(`未知方法: ${method}`);
   }
 }
