@@ -128,9 +128,12 @@
 
     async function refreshHosts() {
       try {
+        // 先通知服务端清除 SSH config 缓存，重新读取 ~/.ssh/config
+        await rpc('refreshSshConfig');
         const r = await rpc('listSshHosts');
         hosts = r;
         renderHostList();
+        log(`已重新读取 ~/.ssh/config，共 ${hosts.length} 个主机`, 'lo');
       } catch (e) { log(`刷新失败: ${e.message}`, 'le'); }
     }
 
