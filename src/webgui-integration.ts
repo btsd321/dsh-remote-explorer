@@ -170,6 +170,7 @@ async function handleMethod(controller: RemoteHostController, method: string, pa
     case 'listRemoteDir': return await controller.listRemoteDir(params.path);
     case 'readRemoteFile': return await controller.readRemoteFile(params.path);
     case 'statRemoteFile': return await controller.statRemoteFile(params.path);
+    case 'setWorkspace': return await controller.setWorkspace(params.path);
     default: throw new Error('未知方法: ' + method);
   }
 }

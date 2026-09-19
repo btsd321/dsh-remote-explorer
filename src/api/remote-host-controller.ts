@@ -133,4 +133,13 @@ export class RemoteHostController {
     const resolved = await adapter.realpath(path);
     return await adapter.stat(resolved);
   }
+
+  /** 设置远端工作目录 */
+  async setWorkspace(path: string): Promise<string> {
+    const adapter = this.getWorkspaceAdapter();
+    if (!adapter) throw new Error('连接未就绪');
+    const resolved = await adapter.resolveWorkspacePath(path);
+    log('[dsh-remote-ssh] 工作目录已设置: ' + resolved);
+    return resolved;
+  }
 }

@@ -125,26 +125,40 @@
     if (rb) rb.style.display = (event.state === 'lost' || event.state === 'failed') ? '' : 'none';
     var ex = document.getElementById('drs-explorer');
     if (ex) ex.style.display = event.state === 'ready' ? 'block' : 'none';
-    if (event.state === 'ready' || event.state === 'disconnected') loadHistory();
+    if (event.state === 'ready') {
+      loadHistory();
+      // 连接成功后自动浏览远端 home 目录
+      rpc('listRemoteDir', { path: '.' }).then(function (entries) {
+        renderRemoteDir('.', entries);
+      }).catch(function () {});
+    }
+    if (event.state === 'disconnected') loadHistory();
   }
 
-  function browseRemote() {
-    var path = document.getElementById('drs-path').value;
-    if (!path) return;
+  var currentRemotePath = '';
+
+  function renderRemoteDir(path, entries) {
+    currentRemotePath = path;
+    var el = document.getElementById('drs-files');
+    var pathEl = document.getElementById('drs-path');
+    if (pathEl) pathEl.textContent = path;
+    if (!el) return;
+    if (!entries || entries.length === 0) { el.innerHTML = '<div style="padding:6px;color:#555;">空目录</div>'; return; }
+    el.innerHTML = entries.map(function (e) {
+      var name = e.name || '?';
+      var type = e.type || e.kind || 'unknown';
+      var isDir = type === 'directory';
+      var fp = path === '.' ? name : (path.endsWith('/') ? path + name : path + '/' + name);
+      return '<div data-' + (isDir ? 'dir' : 'file') + '="' + fp + '" style="padding:3px 8px;cursor:pointer;border-bottom:1px solid #0f3460;"><span style="color:' + (isDir ? '#00b894' : '#aaa') + ';">' + (isDir ? '📁' : '📄') + '</span> <span style="color:#e0e0e0;">' + name + '</span>' + (e.size ? '<span style="color:#555;float:right;">' + e.size + 'B</span>' : '') + '</div>';
+    }).join('');
+    el.querySelectorAll('[data-dir]').forEach(function (d) { d.onclick = function () { browseRemoteDir(d.getAttribute('data-dir')); }; });
+    el.querySelectorAll('[data-file]').forEach(function (f) { f.onclick = function () { readRemoteFile(f.getAttribute('data-file')); }; });
+  }
+
+  function browseRemoteDir(path) {
     log('浏览: ' + path, 'info');
     rpc('listRemoteDir', { path: path }).then(function (entries) {
-      var el = document.getElementById('drs-files');
-      if (!entries || entries.length === 0) { el.innerHTML = '<div style="padding:6px;color:#555;">空目录</div>'; return; }
-      el.innerHTML = entries.map(function (e) {
-        var name = e.name || '?';
-        var type = e.type || e.kind || 'unknown';
-        var isDir = type === 'directory';
-        var fp = path.endsWith('/') ? path + name : path + '/' + name;
-        return '<div data-' + (isDir ? 'dir' : 'file') + '="' + fp + '" style="padding:3px 8px;cursor:pointer;border-bottom:1px solid #0f3460;"><span style="color:' + (isDir ? '#00b894' : '#aaa') + ';">' + (isDir ? '📁' : '📄') + '</span> <span style="color:#e0e0e0;">' + name + '</span>' + (e.size ? '<span style="color:#555;float:right;">' + e.size + 'B</span>' : '') + '</div>';
-      }).join('');
-      el.querySelectorAll('[data-dir]').forEach(function (d) { d.onclick = function () { document.getElementById('drs-path').value = d.getAttribute('data-dir'); browseRemote(); }; });
-      el.querySelectorAll('[data-file]').forEach(function (f) { f.onclick = function () { readRemoteFile(f.getAttribute('data-file')); }; });
-      log(entries.length + ' 个条目', 'ok');
+      renderRemoteDir(path, entries);
     }).catch(function (e) { log('浏览失败: ' + e.message, 'err'); });
   }
 
@@ -224,12 +238,14 @@
           '<button id="drs-reconnect" style="background:#0f3460;color:#e0e0e0;border:1px solid #1a4a7a;border-radius:3px;padding:3px 8px;cursor:pointer;font-size:11px;display:none;">重连</button>' +
         '</div>' +
         '<div id="drs-explorer" style="display:none;margin-bottom:10px;">' +
-          '<span style="font-size:12px;color:#888;">远端文件浏览器</span>' +
-          '<div style="display:flex;gap:4px;margin:4px 0;">' +
-            '<input id="drs-path" style="flex:1;padding:5px 8px;background:#0d1b2a;border:1px solid #0f3460;border-radius:4px;color:#e0e0e0;font-size:12px;" placeholder="/path/to/dir">' +
-            '<button id="drs-browse" style="background:#0f3460;color:#e0e0e0;border:1px solid #1a4a7a;border-radius:3px;padding:5px 10px;cursor:pointer;font-size:11px;">浏览</button>' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">' +
+            '<span id="drs-path" style="font-size:12px;color:#888;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">/</span>' +
+            '<div style="display:flex;gap:4px;flex-shrink:0;">' +
+              '<button id="drs-up" style="background:#0f3460;color:#e0e0e0;border:1px solid #1a4a7a;border-radius:3px;padding:3px 6px;cursor:pointer;font-size:11px;">上级</button>' +
+              '<button id="drs-set-workspace" style="background:#e94560;color:white;border:none;border-radius:3px;padding:3px 8px;cursor:pointer;font-size:11px;">设为工作目录</button>' +
+            '</div>' +
           '</div>' +
-          '<div id="drs-files" style="background:#0d1b2a;border:1px solid #0f3460;border-radius:4px;max-height:160px;overflow-y:auto;font-size:12px;"></div>' +
+          '<div id="drs-files" style="background:#0d1b2a;border:1px solid #0f3460;border-radius:4px;max-height:220px;overflow-y:auto;font-size:12px;"></div>' +
           '<div id="drs-file-content" style="display:none;background:#0d1b2a;border:1px solid #0f3460;border-radius:4px;padding:8px;margin-top:6px;max-height:200px;overflow-y:auto;font-family:Consolas,monospace;font-size:11px;white-space:pre-wrap;"></div>' +
         '</div>' +
         '<div style="margin-top:8px;"><span style="font-size:12px;color:#888;">连接历史</span>' +
@@ -243,7 +259,19 @@
     document.getElementById('drs-config').onclick = openConfigFile;
     document.getElementById('drs-disconnect').onclick = disconnectHost;
     document.getElementById('drs-reconnect').onclick = reconnectHost;
-    document.getElementById('drs-browse').onclick = browseRemote;
+    document.getElementById('drs-up').onclick = function () {
+      if (currentRemotePath === '.' || currentRemotePath === '/') return;
+      var parts = currentRemotePath.split('/');
+      parts.pop();
+      var parent = parts.join('/') || '/';
+      browseRemoteDir(parent);
+    };
+    document.getElementById('drs-set-workspace').onclick = function () {
+      var path = currentRemotePath === '.' ? '~' : currentRemotePath;
+      rpc('setWorkspace', { path: path }).then(function () {
+        log('已设为工作目录: ' + path, 'ok');
+      }).catch(function (e) { log('设置失败: ' + e.message, 'err'); });
+    };
   }
 
   function togglePanel() {
