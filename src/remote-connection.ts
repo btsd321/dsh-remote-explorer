@@ -230,10 +230,13 @@ export class ConnectionOrchestrator extends EventEmitter {
 
     this.connection = connection;
 
-    // 监听连接断开事件（Ssh2Connection 在连接丢失时会触发 'closed' 事件）
-    // 通过 RPC peer 的 'closed' 事件间接感知
-    // 这里用 ready Promise 的 reject 来检测启动失败，
-    // 运行时断开通过 connection.dispose 的失败或 RPC 请求的失败来感知
+    // 监听连接断开事件：Ssh2Connection 的 RPC peer 断开时 emit 'closed'
+    // 这里监听并自动触发断线检测和重连流程
+    connection.on('closed', (err: Error) => {
+      if (this._state === 'ready') {
+        this.notifyConnectionLost(err.message);
+      }
+    });
 
     // 等待就绪
     const hello = await connection.ready;

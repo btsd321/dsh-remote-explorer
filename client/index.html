@@ -372,7 +372,8 @@
           const type = e.type || e.kind || 'unknown';
           const isDir = type === 'directory';
           const size = e.size ? `${e.size}B` : '';
-          return `<div style="padding:4px 8px;cursor:${isDir?'pointer':'default'};border-bottom:1px solid #0f3460;" ${isDir?`onclick="document.getElementById('remote-path-input').value='${path}/${name}';browseRemote();"`:''}>
+          const fullPath = path.endsWith('/') ? `${path}${name}` : `${path}/${name}`;
+          return `<div style="padding:4px 8px;cursor:pointer;border-bottom:1px solid #0f3460;" ${isDir?`onclick="document.getElementById('remote-path-input').value='${fullPath}';browseRemote();"`:`onclick="readRemoteFile('${fullPath}')"`}>
             <span style="color:${isDir?'#00b894':'#aaa'};">${isDir?'📁':'📄'}</span>
             <span style="color:#e0e0e0;">${name}</span>
             ${size?`<span style="color:#555;float:right;">${size}</span>`:''}

@@ -373,6 +373,8 @@ export class Ssh2Connection extends EventEmitter {
     // 创建 ssh2 客户端并连接
     const client = new Client();
     this.client = client;
+
+    // 连接阶段错误处理
     await new Promise<void>((resolve, reject) => {
       const onReady = (): void => { cleanup(); resolve(); };
       const onError = (err: Error): void => { cleanup(); reject(err); };
@@ -383,9 +385,18 @@ export class Ssh2Connection extends EventEmitter {
         host: this.config.host,
         port: this.config.port,
         username: this.config.username,
+
         ...auth,
         readyTimeout: this.config.requestTimeoutMs,
       });
+    });
+
+    // 运行时错误监听：连接成功后 ssh2 client 的 error 事件代表运行时断开
+    client.on('error', (err: Error) => {
+      this.fail(err);
+    });
+    client.on('close', () => {
+      if (!this.closed) this.fail(new Error('SSH 连接已关闭'));
     });
 
     // exec 远端 helper（设置 NODE_PATH 让 helper 能找到 ~/.dsh/helper/node_modules 下的依赖）
@@ -499,12 +510,14 @@ export class Ssh2Connection extends EventEmitter {
     if (this.failure) throw this.failure;
   }
 
-  /** 标记连接失败 */
+  /** 标记连接失败，通知所有监听者 */
   private fail(error: Error): void {
     if (this.failure) return;
     this.failure = error;
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.rpc?.close(error);
     this.client?.end();
+    // 通知外部监听者（ConnectionOrchestrator 监听此事件触发断线检测）
+    this.emit('closed', error);
   }
 }

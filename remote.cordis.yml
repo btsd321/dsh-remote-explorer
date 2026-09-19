@@ -1,4 +1,5 @@
 # dsh-remote-ssh 插件 cordis.yml 示例
+#
 # 用法：
 #   dsh headless --patch /path/to/remote.cordis.yml "task"
 #   dsh web --patch /path/to/remote.cordis.yml
@@ -8,21 +9,23 @@
 # 注意：此 overlay 需要配合 dsh-ssh provider 家族使用。
 # 远端主机需要先通过 dsh-remote-ssh 的引导功能安装 Node 和 helper。
 
-# 远程主机档案注册表（持久化到 ~/.dsh/remote-hosts.json）
-$remote-hosts:
+# dsh-remote-ssh 插件入口
+- name: ./src/index.ts
   config:
-    filePath: ~/.dsh/remote-hosts.json
-
-# 远程连接编排器（管理 SSH 连接生命周期）
-$remote-connection:
-  config:
-    # helper bundle 目录路径（dsh-ssh 的构建产物）
+    # helper bundle 目录路径（dsh-ssh 的构建产物，tsdown 打包后的自包含文件）
     helperDirPath: ../../deepseek-harness/packages/ssh/ssh/lib/bundle
-
-# 远程主机管理 API controller（提供 JSON-RPC 接口给前端）
-$remote-host-controller:
-  config:
     # WebSocket 服务端口（供前端连接）
-    port: 18900
-    # 监听地址
-    host: 127.0.0.1
+    wsPort: 18900
+    # WebSocket 监听地址
+    wsHost: 127.0.0.1
+    # 主机档案持久化文件路径
+    hostsFilePath: ~/.dsh/remote-hosts.json
+    # 远程工作区持久化文件路径
+    workspacesFilePath: ~/.dsh/remote-workspaces.json
+    # 自动重连配置
+    reconnect:
+      enabled: true
+      maxAttempts: 3
+      initialDelayMs: 1000
+      backoffMultiplier: 2
+      maxDelayMs: 10000

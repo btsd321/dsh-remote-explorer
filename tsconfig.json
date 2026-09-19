@@ -16,15 +16,6 @@
     "resolveJsonModule": true,
     "allowImportingTsExtensions": true,
     "noEmit": true,
-    "paths": {
-      "@deepseek-ai/dsh-ssh": ["../../deepseek-harness/packages/ssh/ssh/src/index.ts"],
-      "@deepseek-ai/dsh-ssh/protocol": ["../../deepseek-harness/packages/ssh/ssh/src/protocol.ts"],
-      "@deepseek-ai/dsh-ssh/schemas": ["../../deepseek-harness/packages/ssh/ssh/src/schemas.ts"],
-      "@deepseek-ai/dsh-fs": ["../../deepseek-harness/packages/fs/fs/src/index.ts"],
-      "@deepseek-ai/dsh-subprocess": ["../../deepseek-harness/packages/subprocess/subprocess/src/index.ts"],
-      "@deepseek-ai/dsh-sandbox": ["../../deepseek-harness/packages/sandbox/sandbox/src/index.ts"],
-      "@deepseek-ai/dsh-sandbox-policy": ["../../deepseek-harness/packages/sandbox/sandbox-policy/src/index.ts"]
-    },
     "baseUrl": "."
   },
   "include": ["src/**/*.ts"],

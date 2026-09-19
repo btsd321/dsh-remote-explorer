@@ -1,20 +1,23 @@
 {
   "name": "@deepseek-ai/dsh-remote-ssh",
-  "version": "0.1.0",
-  "description": "远程主机开发插件：跨平台 SSH 连接、自动远端引导、主机档案管理，基于 dsh-ssh provider 家族",
+  "version": "0.3.0",
+  "description": "远程主机开发插件：跨平台 SSH 连接、自动远端引导、主机档案管理、连接编排、远程工作区适配、Web GUI",
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
     "test": "node --test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "demo": "tsx tests/start-demo.cjs"
   },
   "dependencies": {
     "ssh2": "^1.16.0",
+    "ws": "^8.18.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/ssh2": "^1.15.0",
+    "@types/ws": "^8.5.0",
     "typescript": "^5.7.0"
   }
 }
