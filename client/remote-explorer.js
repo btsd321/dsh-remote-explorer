@@ -64,11 +64,25 @@
       var info = (h.user ? h.user + '@' : '') + h.hostName + ':' + h.port;
       var jump = h.hasProxyJump ? '<div style="font-size:10px;color:#f0a500;margin-top:1px;">🔄 跳板机: ' + h.proxyJump + '</div>' : '';
       item.innerHTML = '<div style="flex:1;"><div style="font-weight:500;font-size:13px;">' + h.alias + '</div><div style="font-size:11px;color:#888;margin-top:2px;">' + info + '</div>' + jump + '</div>';
+
+      var btnGroup = document.createElement('div');
+      btnGroup.style.cssText = 'display:flex;gap:4px;align-items:center;';
+
+      var mirrorSelect = document.createElement('select');
+      mirrorSelect.title = 'Node 下载镜像源';
+      mirrorSelect.style.cssText = 'background:#0d1b2a;color:#e0e0e0;border:1px solid #0f3460;border-radius:3px;padding:3px 4px;font-size:10px;cursor:pointer;max-width:70px;';
+      mirrorSelect.innerHTML = '<option value="official">官方</option><option value="aliyun">阿里</option><option value="tsinghua">清华</option><option value="ustc">中科大</option>';
+      mirrorSelect.onclick = function (e) { e.stopPropagation(); };
+      mirrorSelect.onchange = function (e) { e.stopPropagation(); rpc('setMirror', { mirror: e.target.value }).catch(function(){}); };
+
       var btn = document.createElement('button');
       btn.textContent = '连接';
       btn.style.cssText = 'background:#e94560;color:white;border:none;border-radius:3px;padding:4px 12px;cursor:pointer;font-size:11px;';
       btn.onclick = function (e) { e.stopPropagation(); connectHost(h.alias); };
-      item.appendChild(btn);
+
+      btnGroup.appendChild(mirrorSelect);
+      btnGroup.appendChild(btn);
+      item.appendChild(btnGroup);
       el.appendChild(item);
     });
   }
