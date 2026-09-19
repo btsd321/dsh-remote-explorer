@@ -23,6 +23,7 @@ import { join, dirname } from 'node:path';
 import type { RemoteHostProfile } from './remote-hosts.js';
 import { collectHelperDependencies } from './dependency-collector.js';
 import { createNodeAddonStub } from './native-stub.js';
+import type { ResolvedHost, ResolvedHostWithJump } from './ssh-config-parser.js';
 
 /** 远端探测结果 */
 export interface RemoteProbe {
@@ -76,8 +77,8 @@ export class RemoteBootstrap {
    * @param profile - 主机档案
    * @returns 探测结果
    */
-  async probe(profile: RemoteHostProfile): Promise<RemoteProbe> {
-    const { execOutput } = await this.connect(profile, profile.proxy);
+  async probe(resolved: ResolvedHostWithJump): Promise<RemoteProbe> {
+    const { execOutput } = await this.connect(resolved);
     try {
       // 探测 OS 和架构
       const uname = await execOutput('uname -s && uname -m');
@@ -122,14 +123,14 @@ export class RemoteBootstrap {
 
   /**
    * 全自动引导远端环境
-   * @param profile - 主机档案
-   * @param helperDirPath - 本地 helper 构建目录路径（dsh-ssh 的 lib/ 目录，含 helper.js 及其 chunk 文件）
+   * @param resolved - 从 SSH config 解析的主机配置（含跳板机链）
+   * @param helperDirPath - 本地 helper 构建目录路径
    * @returns 引导结果
    */
-  async bootstrap(profile: RemoteHostProfile, helperDirPath: string): Promise<BootstrapResult> {
-    const client = await this.connectClient(profile);
+  async bootstrap(resolved: ResolvedHostWithJump, helperDirPath: string): Promise<BootstrapResult> {
+    const client = await this.connectClient(resolved);
     try {
-      const { execOutput, sftpUpload } = await this.getClientMethods(client, profile.proxy);
+      const { execOutput, sftpUpload } = await this.getClientMethods(client, undefined);
 
       // 获取远端 home 目录绝对路径（SFTP 不解析 ~）
       const homeDir = (await execOutput('echo $HOME')).trim();
@@ -147,7 +148,7 @@ export class RemoteBootstrap {
         nodePath = probe.nodePath;
       } else {
         // 尝试自动安装 Node
-      nodePath = await this.installNode(execOutput, sftpUpload, probe, homeDir, profile.proxy);
+      nodePath = await this.installNode(execOutput, sftpUpload, probe, homeDir, undefined);
         nodeInstalled = true;
       }
 
@@ -252,40 +253,71 @@ export class RemoteBootstrap {
    * @param profile - 主机档案
    * @param proxy - 可选的远端 HTTP 代理地址
    */
-  private async connect(profile: RemoteHostProfile, proxy?: string): Promise<{
+  private async connect(resolved: ResolvedHostWithJump): Promise<{
     execOutput: (cmd: string) => Promise<string>;
     disconnect: () => Promise<void>;
   }> {
-    const client = await this.connectClient(profile);
-    const { execOutput } = await this.getClientMethods(client, proxy);
+    const client = await this.connectClient(resolved);
+    const { execOutput } = await this.getClientMethods(client, undefined);
     return {
       execOutput,
       disconnect: async () => { client.end(); this.client = undefined; },
     };
   }
 
-  /** 建立 ssh2 客户端连接 */
-  private async connectClient(profile: RemoteHostProfile): Promise<Client> {
+  /** 建立 ssh2 客户端连接（支持跳板机队列） */
+  private async connectClient(resolved: ResolvedHostWithJump): Promise<Client> {
+    const target = resolved.target;
+    const jumpHosts = resolved.jumpHosts;
     const client = new Client();
     this.client = client;
     const auth: { privateKey?: Buffer; passphrase?: string; password?: string } = {};
-    if (profile.privateKeyPath) {
-      auth.privateKey = readFileSync(profile.privateKeyPath);
-      if (profile.passphrase) auth.passphrase = profile.passphrase;
-    } else if (profile.password) {
-      auth.password = profile.password;
+    if (target.identityFile) {
+      auth.privateKey = readFileSync(target.identityFile);
     } else {
-      throw new Error('主机档案需要 privateKeyPath 或 password');
+      throw new Error('主机配置需要 IdentityFile');
     }
+
+    // 如果配置了跳板机队列，逐级建立连接
+    let sock: any = undefined;
+    if (jumpHosts.length > 0) {
+      for (let i = 0; i < jumpHosts.length; i++) {
+        const jh = jumpHosts[i];
+        const jumpClient = new Client();
+        const jumpAuth: { privateKey?: Buffer; passphrase?: string; password?: string } = {};
+        if (jh.identityFile) {
+          jumpAuth.privateKey = readFileSync(jh.identityFile);
+        } else {
+          throw new Error(`跳板机 ${i + 1} (${jh.host}) 需要 IdentityFile`);
+        }
+        // 连接跳板机
+        await new Promise<void>((resolve, reject) => {
+          jumpClient.once('ready', resolve);
+          jumpClient.once('error', (err: Error) => reject(new Error(`跳板机 ${i + 1} (${jh.host}:${jh.port}) 连接失败: ${err.message}`)));
+          jumpClient.connect({
+            host: jh.host, port: jh.port, username: jh.username,
+            ...jumpAuth, readyTimeout: 30_000,
+            ...(sock ? { sock } : {}),
+          });
+        });
+        // forwardOut 到下一跳或目标
+        const nextHost = i < jumpHosts.length - 1 ? jumpHosts[i + 1] : target;
+        sock = await new Promise<any>((resolve, reject) => {
+          jumpClient.forwardOut('127.0.0.1', 0, nextHost.host, nextHost.port, (err: Error | undefined, channel: any) => {
+            if (err) reject(new Error(`跳板机 ${i + 1} forwardOut 到 ${nextHost.host}:${nextHost.port} 失败: ${err.message}`));
+            else resolve(channel);
+          });
+        });
+      }
+    }
+
     await new Promise<void>((resolve, reject) => {
       client.once('ready', resolve);
       client.once('error', reject);
       client.connect({
-        host: profile.host,
-        port: profile.port,
-        username: profile.username,
-        ...auth,
-        readyTimeout: 30_000,
+        host: target.host, port: target.port, username: target.username,
+        ...auth, readyTimeout: 30_000,
+        ...(sock ? { sock } : {}),
       });
     });
     return client;

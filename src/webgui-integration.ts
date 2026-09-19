@@ -239,13 +239,15 @@ function handleWebSocketConnection(ws: WebSocket, controller: RemoteHostControll
   });
 
   ws.on('message', async (data: Buffer) => {
+    let msgId: string | undefined;
     try {
       const msg = JSON.parse(data.toString());
-      const result = await handleMethod(controller, msg.method, msg.params, helperDir);
+      msgId = msg.id;
+      const result = await handleMethod(controller, msg.method, msg.params);
       ws.send(JSON.stringify({ id: msg.id, result }));
     } catch (err) {
       ws.send(JSON.stringify({
-        id: msg?.id,
+        id: msgId,
         error: { message: err instanceof Error ? err.message : String(err) },
       }));
     }
@@ -265,30 +267,23 @@ function handleWebSocketConnection(ws: WebSocket, controller: RemoteHostControll
  * @param helperDir - helper 目录路径
  * @returns 方法返回值
  */
-async function handleMethod(controller: RemoteHostController, method: string, params: any, helperDir: string): Promise<any> {
+async function handleMethod(controller: RemoteHostController, method: string, params: any): Promise<any> {
   switch (method) {
-    case 'list': return await controller.list();
-    case 'create': return await controller.create(params);
-    case 'update': return await controller.update(params);
-    case 'delete': return await controller.delete(params);
-    case 'probe': return await controller.probe(params);
-    case 'bootstrap': return await controller.bootstrap({ ...params, helperDirPath: helperDir });
-    case 'activate': return await controller.activate({ ...params, helperDirPath: helperDir });
-    case 'deactivate': return await controller.deactivate(params);
+    // SSH config 主机列表
+    case 'listSshHosts': return controller.listSshHosts();
+    case 'refreshSshConfig': controller.refreshSshConfig(); return true;
+    case 'setSshConfigPath': controller.setSshConfigPath(params.path); return true;
+    // 连接管理
+    case 'activate': return await controller.activate(params.alias);
+    case 'deactivate': return await controller.deactivate();
     case 'reconnect': return await controller.reconnect();
     case 'status': return await controller.status();
     case 'history': return controller.getHistory();
     case 'configureReconnect': controller.configureReconnect(params); return true;
+    // 远端文件操作
     case 'listRemoteDir': return await controller.listRemoteDir(params.path);
     case 'readRemoteFile': return await controller.readRemoteFile(params.path);
     case 'statRemoteFile': return await controller.statRemoteFile(params.path);
-    case 'createWorkspace': return await controller.createWorkspace(params.hostId, params.path, params.title);
-    case 'listWorkspaces': return controller.listWorkspaces(params?.hostId);
-    case 'getWorkspace': return controller.getWorkspace(params.id);
-    case 'renameWorkspace': return controller.renameWorkspace(params.id, params.title);
-    case 'deleteWorkspace': return controller.deleteWorkspace(params.id);
-    case 'attachSession': return controller.attachSessionToWorkspace(params.workspaceId, params.sessionId);
-    case 'detachSession': return controller.detachSessionFromWorkspace(params.workspaceId, params.sessionId);
     default: throw new Error(`未知方法: ${method}`);
   }
 }

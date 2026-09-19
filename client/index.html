@@ -7,26 +7,23 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: -apple-system, 'Segoe UI', sans-serif; background: #1a1a2e; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-    /* 顶部栏 */
     #topbar { padding: 10px 16px; background: #16213e; border-bottom: 1px solid #0f3460; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
     #topbar h1 { font-size: 15px; font-weight: 600; }
-    #topbar .actions { display: flex; gap: 6px; }
-    /* 连接状态 */
+    #topbar .actions { display: flex; gap: 6px; align-items: center; }
     #conn-status { font-size: 12px; padding: 3px 10px; border-radius: 4px; background: #0f346033; }
-    /* 主体 */
     #body { flex: 1; display: flex; overflow: hidden; }
-    /* 侧边栏 */
-    #sidebar { width: 240px; background: #16213e; border-right: 1px solid #0f3460; display: flex; flex-direction: column; flex-shrink: 0; }
+    #sidebar { width: 260px; background: #16213e; border-right: 1px solid #0f3460; display: flex; flex-direction: column; flex-shrink: 0; }
     #sidebar-header { padding: 10px 12px; border-bottom: 1px solid #0f3460; display: flex; justify-content: space-between; align-items: center; }
     #sidebar-header span { font-size: 13px; font-weight: 600; }
-    .btn-sm { background: #e94560; color: white; border: none; border-radius: 3px; padding: 3px 8px; cursor: pointer; font-size: 12px; }
-    .btn-sm:hover { background: #c73e54; }
+    .btn-sm { background: #0f3460; color: #e0e0e0; border: 1px solid #1a4a7a; border-radius: 3px; padding: 3px 8px; cursor: pointer; font-size: 12px; }
+    .btn-sm:hover { background: #1a4a7a; }
     #host-list { flex: 1; overflow-y: auto; }
     .host-item { padding: 8px 12px; border-bottom: 1px solid #0f3460; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
     .host-item:hover { background: #1a1a3e; }
     .host-item.active { background: #0f3460; }
     .host-item .title { font-weight: 500; font-size: 13px; }
     .host-item .info { font-size: 11px; color: #888; margin-top: 2px; }
+    .host-item .jumphost { font-size: 10px; color: #f0a500; margin-top: 1px; }
     .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
     .dot-disconnected { background: #555; }
     .dot-connecting { background: #f0a500; animation: pulse 1s infinite; }
@@ -34,16 +31,10 @@
     .dot-ready { background: #00b894; }
     .dot-lost, .dot-failed { background: #e94560; }
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
-    /* 主区域 */
     #main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
     #main-header { padding: 10px 16px; border-bottom: 1px solid #0f3460; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
     #main-header h2 { font-size: 15px; }
     #main-content { flex: 1; padding: 14px; overflow-y: auto; }
-    /* 表单 */
-    .fg { margin-bottom: 10px; }
-    .fg label { display: block; font-size: 12px; margin-bottom: 3px; color: #aaa; }
-    .fg input { width: 100%; padding: 6px 10px; background: #0d1b2a; border: 1px solid #0f3460; border-radius: 4px; color: #e0e0e0; font-size: 13px; }
-    .fg input:focus { outline: none; border-color: #e94560; }
     .btn { padding: 6px 14px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 500; }
     .btn-primary { background: #e94560; color: white; }
     .btn-primary:hover { background: #c73e54; }
@@ -51,7 +42,6 @@
     .btn-secondary { background: #0f3460; color: #e0e0e0; }
     .btn-secondary:hover { background: #1a4a7a; }
     .btn-secondary:disabled { opacity: .5; cursor: not-allowed; }
-    /* 信息卡片 */
     .card { background: #0d1b2a; border: 1px solid #0f3460; border-radius: 6px; padding: 12px; margin-bottom: 12px; }
     .card h3 { font-size: 13px; margin-bottom: 8px; color: #e94560; }
     .row { display: flex; justify-content: space-between; padding: 2px 0; font-size: 12px; }
@@ -59,21 +49,8 @@
     .row .v { color: #e0e0e0; }
     .row .ok { color: #00b894; }
     .row .err { color: #e94560; }
-    /* 日志 */
     #log { background: #0d1b2a; border: 1px solid #0f3460; border-radius: 6px; padding: 8px; height: 120px; overflow-y: auto; font-family: Consolas,monospace; font-size: 11px; }
-    .ll { padding: 1px 0; }
-    .lt { color: #555; }
-    .li { color: #aaa; }
-    .lo { color: #00b894; }
-    .le { color: #e94560; }
-    .lw { color: #f0a500; }
-    /* 模态框 */
-    #modal-bg { position: fixed; top:0;left:0;right:0;bottom:0; background: rgba(0,0,0,.6); display: none; justify-content: center; align-items: center; z-index: 100; }
-    #modal-bg.show { display: flex; }
-    #modal { background: #16213e; border: 1px solid #0f3460; border-radius: 8px; padding: 18px; width: 420px; max-width: 90vw; }
-    #modal h2 { margin-bottom: 12px; font-size: 16px; }
-    #modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
-    /* 远端文件浏览器 */
+    .ll { padding: 1px 0; } .lt { color: #555; } .li { color: #aaa; } .lo { color: #00b894; } .le { color: #e94560; } .lw { color: #f0a500; }
     #remote-explorer { display: none; margin-top: 10px; }
     #remote-explorer h3 { font-size: 13px; margin-bottom: 6px; color: #e94560; }
     #remote-path-bar { display: flex; gap: 6px; margin-bottom: 6px; }
@@ -82,7 +59,6 @@
     .fe { padding: 3px 8px; cursor: pointer; border-bottom: 1px solid #0f3460; }
     .fe:hover { background: #16213e; }
     #file-content { display: none; background: #0d1b2a; border: 1px solid #0f3460; border-radius: 4px; padding: 8px; margin-top: 6px; max-height: 200px; overflow-y: auto; font-family: Consolas,monospace; font-size: 11px; white-space: pre-wrap; }
-    /* 连接历史 */
     #history-section { margin-top: 10px; }
     #history-section h3 { font-size: 13px; margin-bottom: 6px; color: #e94560; }
     #history-list { background: #0d1b2a; border: 1px solid #0f3460; border-radius: 6px; padding: 8px; max-height: 100px; overflow-y: auto; font-size: 11px; }
@@ -94,43 +70,26 @@
     <div style="display:flex;gap:8px;align-items:center;">
       <span id="conn-status">未连接</span>
       <button class="btn-sm" id="reconnect-top-btn" onclick="reconnectHost()" style="display:none;">重连</button>
+      <button class="btn-sm" onclick="refreshHosts()">刷新</button>
     </div>
   </div>
   <div id="body">
     <div id="sidebar">
       <div id="sidebar-header">
-        <span>主机列表</span>
-        <button class="btn-sm" onclick="showAddModal()">+ 新增</button>
+        <span>SSH Config 主机</span>
       </div>
       <div id="host-list"></div>
     </div>
     <div id="main">
       <div id="main-header">
-        <h2 id="main-title">选择或新增一台远程主机</h2>
+        <h2 id="main-title">选择一台主机连接</h2>
       </div>
       <div id="main-content"></div>
     </div>
   </div>
-  <div id="modal-bg">
-    <div id="modal">
-      <h2>新增远程主机</h2>
-      <div class="fg"><label>显示名称</label><input id="f-title" placeholder="例如：OrangePI"></div>
-      <div class="fg"><label>主机地址</label><input id="f-host" placeholder="例如：192.168.1.82"></div>
-      <div class="fg"><label>端口</label><input id="f-port" type="number" value="22"></div>
-      <div class="fg"><label>用户名</label><input id="f-username" placeholder="例如：xlli67"></div>
-      <div class="fg"><label>私钥文件路径</label><input id="f-key" placeholder="例如：~/.ssh/xlli67"></div>
-      <div class="fg"><label>远端工作目录</label><input id="f-workspace" placeholder="例如：/home/user/projects"></div>
-      <div class="fg"><label>HTTP 代理（可选）</label><input id="f-proxy" placeholder="例如：http://127.0.0.1:18890"></div>
-      <div id="modal-actions">
-        <button class="btn btn-secondary" onclick="hideAddModal()">取消</button>
-        <button class="btn btn-primary" onclick="submitAdd()">创建</button>
-      </div>
-    </div>
-  </div>
   <script>
-    let ws = null, currentHostId = null, hosts = [], pending = new Map(), nextId = 1;
+    let ws = null, currentAlias = null, hosts = [], pending = new Map(), nextId = 1;
 
-    // WebSocket 连接——直接用当前页面的 location.host，不依赖任何写死的端口
     function connectWS() {
       const wsUrl = `ws://${location.host}/remote-ssh/ws`;
       ws = new WebSocket(wsUrl);
@@ -148,7 +107,6 @@
       };
     }
 
-    // JSON-RPC 请求
     function rpc(method, params = {}) {
       return new Promise((resolve, reject) => {
         const id = String(nextId++);
@@ -157,7 +115,6 @@
       });
     }
 
-    // 日志
     function log(msg, level = 'li') {
       const el = document.getElementById('log');
       if (!el) return;
@@ -169,69 +126,57 @@
       el.scrollTop = el.scrollHeight;
     }
 
-    // 刷新主机列表
     async function refreshHosts() {
       try {
-        const r = await rpc('list');
-        hosts = r.hosts;
+        const r = await rpc('listSshHosts');
+        hosts = r;
         renderHostList();
       } catch (e) { log(`刷新失败: ${e.message}`, 'le'); }
     }
 
-    // 渲染主机列表
     function renderHostList() {
       const el = document.getElementById('host-list');
       el.innerHTML = '';
-      if (hosts.length === 0) { el.innerHTML = '<div style="padding:12px;color:#555;font-size:12px;">暂无主机，点击新增</div>'; return; }
+      if (hosts.length === 0) { el.innerHTML = '<div style="padding:12px;color:#555;font-size:12px;">~/.ssh/config 中无主机配置</div>'; return; }
       for (const h of hosts) {
         const item = document.createElement('div');
-        item.className = `host-item ${h.id === currentHostId ? 'active' : ''}`;
-        item.onclick = () => selectHost(h.id);
-        const dc = h.id === currentHostId ? 'dot-connecting' : 'dot-disconnected';
-        item.innerHTML = `<div><div class="title">${h.title}</div><div class="info">${h.username}@${h.host}:${h.port}</div></div><div class="dot ${dc}"></div>`;
+        item.className = `host-item ${h.alias === currentAlias ? 'active' : ''}`;
+        item.onclick = () => selectHost(h.alias);
+        const dc = h.alias === currentAlias ? 'dot-connecting' : 'dot-disconnected';
+        let html = `<div><div class="title">${h.alias}</div><div class="info">${h.user}@${h.hostName}:${h.port}</div>`;
+        if (h.hasProxyJump) html += `<div class="jumphost">跳板机: ${h.proxyJump}</div>`;
+        html += `</div><div class="dot ${dc}"></div>`;
+        item.innerHTML = html;
         el.appendChild(item);
       }
     }
 
-    // 选择主机
-    function selectHost(id) {
-      currentHostId = id;
-      const h = hosts.find(x => x.id === id);
+    function selectHost(alias) {
+      currentAlias = alias;
+      const h = hosts.find(x => x.alias === alias);
       if (!h) return;
-      document.getElementById('main-title').textContent = h.title;
+      document.getElementById('main-title').textContent = h.alias;
       renderHostDetail(h);
       renderHostList();
     }
 
-    // 渲染主机详情
     function renderHostDetail(h) {
       const el = document.getElementById('main-content');
-      const bs = h.bootstrapped;
       el.innerHTML = `
-        <div class="card"><h3>主机信息</h3>
-          <div class="row"><span class="l">地址</span><span class="v">${h.host}:${h.port}</span></div>
-          <div class="row"><span class="l">用户名</span><span class="v">${h.username}</span></div>
-          <div class="row"><span class="l">工作目录</span><span class="v">${h.workspace}</span></div>
-          <div class="row"><span class="l">已配置私钥</span><span class="v ${h.hasPrivateKey?'ok':''}">${h.hasPrivateKey?'是':'否'}</span></div>
-          <div class="row"><span class="l">已配置代理</span><span class="v ${h.hasProxy?'ok':''}">${h.hasProxy?'是':'否'}</span></div>
-        </div>
-        <div class="card"><h3>远端环境</h3>
-          <div class="row"><span class="l">Node 路径</span><span class="v">${h.node||'未安装'}</span></div>
-          <div class="row"><span class="l">helper</span><span class="v">${h.helper||'未上传'}</span></div>
-          <div class="row"><span class="l">引导状态</span><span class="v ${bs?'ok':'err'}">${bs?'已完成':'未完成'}</span></div>
+        <div class="card"><h3>主机信息（来自 ~/.ssh/config）</h3>
+          <div class="row"><span class="l">别名</span><span class="v">${h.alias}</span></div>
+          <div class="row"><span class="l">地址</span><span class="v">${h.hostName}:${h.port}</span></div>
+          <div class="row"><span class="l">用户名</span><span class="v">${h.user || '(默认)'}</span></div>
+          <div class="row"><span class="l">跳板机</span><span class="v ${h.hasProxyJump?'ok':''}">${h.hasProxyJump ? h.proxyJump : '无（直连）'}</span></div>
         </div>
         <div style="display:flex;gap:6px;margin-bottom:10px;">
-          <button class="btn btn-secondary" onclick="probeHost('${h.id}')" ${!h.hasPrivateKey?'disabled':''}>探测远端</button>
-          <button class="btn btn-secondary" onclick="bootstrapHost('${h.id}')" ${!h.hasPrivateKey?'disabled':''}>自动引导</button>
-          <button class="btn btn-primary" onclick="connectHost('${h.id}')" ${!bs?'disabled':''}>连接</button>
+          <button class="btn btn-primary" onclick="connectHost('${h.alias}')">连接</button>
           <button class="btn btn-secondary" onclick="disconnectHost()">断开</button>
-          <button class="btn btn-secondary" onclick="deleteHost('${h.id}','${h.title}')" style="margin-left:auto;color:#e94560;">删除</button>
         </div>
-        <div id="probe-result"></div>
         <div id="remote-explorer">
           <h3>远端文件浏览器</h3>
           <div id="remote-path-bar">
-            <input id="remote-path-input" value="${h.workspace}" placeholder="/path/to/dir">
+            <input id="remote-path-input" placeholder="/path/to/dir">
             <button class="btn btn-secondary" onclick="browseRemote()">浏览</button>
           </div>
           <div id="file-list"></div>
@@ -244,73 +189,26 @@
       loadHistory();
     }
 
-    // 探测远端
-    async function probeHost(id) {
-      log('正在探测远端环境...', 'li');
+    async function connectHost(alias) {
+      log(`正在连接 ${alias}...`, 'li');
       try {
-        const r = await rpc('probe', { id });
-        const el = document.getElementById('probe-result');
-        el.innerHTML = `<div class="card"><h3>探测结果</h3>
-          <div class="row"><span class="l">操作系统</span><span class="v">${r.os}</span></div>
-          <div class="row"><span class="l">架构</span><span class="v">${r.arch}</span></div>
-          <div class="row"><span class="l">Node 路径</span><span class="v">${r.nodePath||'未安装'}</span></div>
-          <div class="row"><span class="l">Node 版本</span><span class="v">${r.nodeVersion||'N/A'}</span></div>
-          <div class="row"><span class="l">Node 满足</span><span class="v ${r.nodeSufficient?'ok':'err'}">${r.nodeSufficient?'是':'否'}</span></div>
-          <div class="row"><span class="l">helper 已装</span><span class="v ${r.helperInstalled?'ok':''}">${r.helperInstalled?'是':'否'}</span></div>
-        </div>`;
-        log(`探测完成: ${r.os} ${r.arch}, Node ${r.nodeVersion||'未安装'}`, r.nodeSufficient?'lo':'lw');
-      } catch (e) { log(`探测失败: ${e.message}`, 'le'); }
-    }
-
-    // 自动引导
-    async function bootstrapHost(id) {
-      log('正在自动引导远端环境...', 'li');
-      try {
-        const r = await rpc('bootstrap', { id });
-        log(`引导完成: Node ${r.nodeInstalled?'新安装':'已存在'}, helper ${r.helperUploaded?'新上传':'已存在'}`, 'lo');
-        await refreshHosts();
-        selectHost(id);
-      } catch (e) { log(`引导失败: ${e.message}`, 'le'); }
-    }
-
-    // 连接主机
-    async function connectHost(id) {
-      log('正在连接...', 'li');
-      try {
-        const r = await rpc('activate', { id });
+        const r = await rpc('activate', { alias });
         log(r ? '连接成功' : '连接失败', r ? 'lo' : 'le');
       } catch (e) { log(`连接失败: ${e.message}`, 'le'); }
     }
 
-    // 断开连接
     async function disconnectHost() {
       log('正在断开...', 'li');
       try { await rpc('deactivate', {}); log('已断开', 'li'); document.getElementById('reconnect-top-btn').style.display='none'; }
       catch (e) { log(`断开失败: ${e.message}`, 'le'); }
     }
 
-    // 删除主机
-    async function deleteHost(id, title) {
-      if (!confirm(`确定删除主机「${title}」吗？\n\n删除后不影响远端文件和已保存的 session。`)) return;
-      log(`正在删除主机: ${title}`, 'li');
-      try {
-        await rpc('delete', { id });
-        log(`已删除主机: ${title}`, 'lo');
-        currentHostId = null;
-        document.getElementById('main-title').textContent = '选择或新增一台远程主机';
-        document.getElementById('main-content').innerHTML = '';
-        await refreshHosts();
-      } catch (e) { log(`删除失败: ${e.message}`, 'le'); }
-    }
-
-    // 手动重连
     async function reconnectHost() {
       log('正在手动重连...', 'li');
       try { const r = await rpc('reconnect', {}); log(r?'重连成功':'重连失败', r?'lo':'le'); document.getElementById('reconnect-top-btn').style.display='none'; }
       catch (e) { log(`重连失败: ${e.message}`, 'le'); }
     }
 
-    // 加载连接历史
     async function loadHistory() {
       try {
         const r = await rpc('history', {});
@@ -319,12 +217,11 @@
         if (!r || r.length === 0) { el.innerHTML = '<div style="color:#555;">暂无历史</div>'; return; }
         el.innerHTML = r.slice(0, 8).map(h => {
           const rm = { manual: '手动断开', lost: '连接丢失', failed: '连接失败', null: '进行中' };
-          return `<div style="padding:3px 0;border-bottom:1px solid #0f3460;"><span style="color:#aaa;">${h.hostTitle}</span><span style="color:#888;float:right;">${rm[h.endReason]||'—'}</span>${h.lastError?`<div style="color:#e94560;font-size:10px;">${h.lastError.slice(0,60)}</div>`:''}</div>`;
+          return `<div style="padding:3px 0;border-bottom:1px solid #0f3460;"><span style="color:#aaa;">${h.hostAlias}</span><span style="color:#888;float:right;">${rm[h.endReason]||'—'}</span>${h.lastError?`<div style="color:#e94560;font-size:10px;">${h.lastError.slice(0,60)}</div>`:''}</div>`;
         }).join('');
       } catch (e) {}
     }
 
-    // 状态变化
     function onStateChange(event) {
       const cls = { ready: 'lo', failed: 'le', lost: 'le', connecting: 'li', verifying: 'li', reconnecting: 'lw', disconnected: 'li' };
       log(`连接状态: ${event.state} ${event.message||''}`, cls[event.state] || 'li');
@@ -339,7 +236,6 @@
       if (event.state === 'ready' || event.state === 'disconnected') loadHistory();
     }
 
-    // 远端目录浏览
     async function browseRemote() {
       const path = document.getElementById('remote-path-input').value;
       if (!path) return;
@@ -359,7 +255,6 @@
       } catch (e) { log(`浏览失败: ${e.message}`, 'le'); }
     }
 
-    // 读取远端文件
     async function readRemoteFile(fp) {
       log(`读取文件: ${fp}`, 'li');
       try {
@@ -371,31 +266,6 @@
       } catch (e) { log(`读取失败: ${e.message}`, 'le'); }
     }
 
-    // 新增主机模态框
-    function showAddModal() { document.getElementById('modal-bg').classList.add('show'); }
-    function hideAddModal() { document.getElementById('modal-bg').classList.remove('show'); }
-
-    // 提交新增
-    async function submitAdd() {
-      const p = {
-        title: document.getElementById('f-title').value,
-        host: document.getElementById('f-host').value,
-        port: parseInt(document.getElementById('f-port').value) || 22,
-        username: document.getElementById('f-username').value,
-        privateKeyPath: document.getElementById('f-key').value || undefined,
-        workspace: document.getElementById('f-workspace').value,
-        proxy: document.getElementById('f-proxy').value || undefined,
-      };
-      if (!p.title || !p.host || !p.username || !p.workspace) { alert('请填写所有必填字段'); return; }
-      try {
-        await rpc('create', p);
-        hideAddModal();
-        await refreshHosts();
-        log(`已创建主机: ${p.title}`, 'lo');
-      } catch (e) { alert(`创建失败: ${e.message}`); }
-    }
-
-    // 启动
     connectWS();
   </script>
 </body>

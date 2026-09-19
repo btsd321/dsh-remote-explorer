@@ -43,10 +43,30 @@ export interface RemoteHostProfile {
   bootstrapHash?: string;
   /** 远端 HTTP 代理地址（用于下载 Node 等，如 http://127.0.0.1:18890） */
   proxy?: string;
+  /** 跳板机队列（按顺序连接，空数组或 undefined 表示直连） */
+  jumpHosts?: JumpHostConfig[];
+  /** SSH config 中的 Host 别名（如 "OrangePI"），连接时从 ~/.ssh/config 解析 */
+  sshHost?: string;
   /** 创建时间（ISO-8601） */
   createdAt: string;
   /** 最后更新时间（ISO-8601） */
   updatedAt: string;
+}
+
+/** 跳板机配置（单级跳板机） */
+export interface JumpHostConfig {
+  /** 跳板机地址 */
+  host: string;
+  /** SSH 端口 */
+  port: number;
+  /** 登录用户名 */
+  username: string;
+  /** 私钥文件路径 */
+  privateKeyPath?: string;
+  /** 私钥口令 */
+  passphrase?: string;
+  /** 密码 */
+  password?: string;
 }
 
 /** 创建主机档案的输入 */
@@ -69,6 +89,10 @@ export interface CreateHostInput {
   workspace: string;
   /** 远端 HTTP 代理地址（用于下载 Node 等，如 http://127.0.0.1:18890） */
   proxy?: string;
+  /** 跳板机队列（按顺序连接，空数组或 undefined 表示直连） */
+  jumpHosts?: JumpHostConfig[];
+  /** SSH config 中的 Host 别名（如 "OrangePI"），连接时从 ~/.ssh/config 解析 */
+  sshHost?: string;
 }
 
 /** 更新主机档案的输入（所有字段可选） */
@@ -84,6 +108,10 @@ export type UpdateHostInput = Partial<Omit<CreateHostInput, 'host'>> & {
   bootstrapHash?: string;
   /** 更新代理地址 */
   proxy?: string;
+  /** 更新跳板机队列 */
+  jumpHosts?: JumpHostConfig[];
+  /** 更新 SSH config Host 别名 */
+  sshHost?: string;
 };
 
 /**
@@ -132,6 +160,8 @@ export class RemoteHostRegistry {
       helperHash: '',
       workspace: input.workspace,
       ...(input.proxy ? { proxy: input.proxy } : {}),
+      ...(input.jumpHosts && input.jumpHosts.length > 0 ? { jumpHosts: input.jumpHosts } : {}),
+      ...(input.sshHost ? { sshHost: input.sshHost } : {}),
       createdAt: now,
       updatedAt: now,
     };
@@ -179,6 +209,7 @@ export class RemoteHostRegistry {
     if (input.bootstrapPath !== undefined) profile.bootstrapPath = input.bootstrapPath;
     if (input.bootstrapHash !== undefined) profile.bootstrapHash = input.bootstrapHash;
     if (input.proxy !== undefined) profile.proxy = input.proxy;
+    if (input.jumpHosts !== undefined) profile.jumpHosts = input.jumpHosts;
     profile.updatedAt = new Date().toISOString();
     this.save();
     return profile;

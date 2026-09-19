@@ -22,9 +22,6 @@
 
 import type { Context } from '@deepseek-ai/cordis';
 import { RemoteHostController } from './api/remote-host-controller.js';
-import { RemoteHostRegistry } from './remote-hosts.js';
-import { ConnectionOrchestrator } from './remote-connection.js';
-import { RemoteWorkspaceRegistry } from './remote-workspace-registry.js';
 import { registerWebGuiRoutes } from './webgui-integration.js';
 
 // === 模块导出 ===
@@ -84,8 +81,8 @@ export const name = 'dsh-remote-ssh';
 export interface Config {
   /** 本地 helper bundle 目录路径（dsh-ssh 的构建产物） */
   helperDirPath?: string;
-  /** 主机档案持久化文件路径 */
-  hostsFilePath?: string;
+  /** SSH config 文件路径（默认 ~/.ssh/config） */
+  sshConfigPath?: string;
   /** 远程工作区持久化文件路径 */
   workspacesFilePath?: string;
   /** 自动重连配置 */
@@ -101,43 +98,31 @@ export interface Config {
 /**
  * Cordis 插件激活函数。
  *
- * 当 Loader 加载此插件时调用，在此：
- * 1. 创建 RemoteHostRegistry（主机档案管理）
- * 2. 创建 RemoteWorkspaceRegistry（远程工作区管理）
- * 3. 创建 RemoteHostController（API controller）
- * 4. 注册 ctx.remoteHostController 服务（供其他插件和前端使用）
- * 5. 如果配置了 wsPort，启动 WebSocket 桥接服务
- * 6. 如果配置了 reconnect，配置自动重连参数
- *
- * @param ctx - Cordis 上下文
- * @param config - 插件配置
+ * 不再持久化主机档案——主机列表来自 ~/.ssh/config，用户通过编辑 ssh config 管理主机。
  */
 export function apply(ctx: Context, config: Config): void {
-  // 1. 创建主机档案注册表
-  const registry = new RemoteHostRegistry(config.hostsFilePath);
+  // 1. 创建 API controller（直接从 ssh config 解析主机）
+  const controller = new RemoteHostController(config.helperDirPath || '');
 
-  // 2. 创建远程工作区注册表
-  const workspaceRegistry = new RemoteWorkspaceRegistry(config.workspacesFilePath);
-
-  // 3. 创建 API controller（内部持有 ConnectionOrchestrator）
-  const controller = new RemoteHostController(registry);
-
-  // 4. 配置自动重连参数
-  if (config.reconnect) {
-    controller.connectionOrchestrator.configureReconnect(config.reconnect);
+  // 2. 配置 SSH config 路径
+  if (config.sshConfigPath) {
+    controller.setSshConfigPath(config.sshConfigPath);
   }
 
-  // 5. 注册 ctx 服务（让其他插件和前端通过 ctx.remoteHostController 访问）
-  ctx.provide('remoteHostController', controller);
-  ctx.provide('remoteWorkspaceRegistry', workspaceRegistry);
+  // 3. 配置自动重连
+  if (config.reconnect) {
+    controller.configureReconnect(config.reconnect);
+  }
 
-  // 6. 在 dsh webServer 可用时注册 /remote-ssh 路由（让管理页面出现在 dsh Web GUI 中）
-  //    不使用独立端口——HTTP 和 WebSocket 都复用 dsh webServer 的端口
+  // 4. 注册 ctx 服务
+  ctx.provide('remoteHostController', controller);
+
+  // 5. 在 dsh webServer 可用时注册 /remote-ssh 路由
   ctx.inject(['webServer'], (webServerCtx: Context) => {
     registerWebGuiRoutes(webServerCtx, controller, config);
   });
 
-  // 7. 在 ctx 销毁时断开 SSH 连接
+  // 6. 在 ctx 销毁时断开 SSH 连接
   ctx.effect(() => () => {
     void controller.connectionOrchestrator.deactivate().catch(() => {});
   });

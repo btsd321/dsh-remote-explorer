@@ -15,6 +15,7 @@ import type { Readable, Writable, Duplex } from 'node:stream';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { SshStreamEndpoint } from './schemas.js';
+import type { JumpHostConfig } from './remote-hosts.js';
 
 /** TLS-PSK 选项：与 dsh-ssh 的 stream-security.ts 保持一致 */
 const SSH_STREAM_TLS_OPTIONS = {
@@ -62,6 +63,8 @@ export interface Ssh2Config {
   maxPending?: number;
   /** helper 心跳租约（毫秒） */
   leaseMs?: number;
+  /** 跳板机队列（按顺序连接，空数组或 undefined 表示直连） */
+  jumpHosts?: JumpHostConfig[];
 }
 
 /** helper 启动握手返回的远端标识 */
@@ -374,6 +377,58 @@ export class Ssh2Connection extends EventEmitter {
     const client = new Client();
     this.client = client;
 
+    // 如果配置了跳板机队列，逐级建立连接
+    let sock: any = undefined;
+    if (this.config.jumpHosts && this.config.jumpHosts.length > 0) {
+      const jumpHosts = this.config.jumpHosts!;
+      for (let i = 0; i < jumpHosts.length; i++) {
+        const jh = jumpHosts[i];
+        const jumpClient = new Client();
+        const jumpAuth: { privateKey?: Buffer; passphrase?: string; password?: string } = {};
+        if (jh.privateKeyPath) {
+          jumpAuth.privateKey = readFileSync(jh.privateKeyPath);
+          if (jh.passphrase) jumpAuth.passphrase = jh.passphrase;
+        } else if (jh.password) {
+          jumpAuth.password = jh.password;
+        } else {
+          throw new Error(`跳板机 ${i + 1} (${jh.host}) 需要 privateKeyPath 或 password`);
+        }
+
+        // 连接跳板机
+        await new Promise<void>((resolve, reject) => {
+          jumpClient.once('ready', resolve);
+          jumpClient.once('error', (err: Error) => reject(new Error(`跳板机 ${i + 1} (${jh.host}:${jh.port}) 连接失败: ${err.message}`)));
+          jumpClient.connect({
+            host: jh.host,
+            port: jh.port,
+            username: jh.username,
+            ...jumpAuth,
+            readyTimeout: this.config.requestTimeoutMs,
+            ...(sock ? { sock } : {}),
+          });
+        });
+
+        // 如果不是最后一级跳板机，forwardOut 到下一级
+        if (i < jumpHosts.length - 1) {
+          const next = jumpHosts[i + 1];
+          sock = await new Promise<any>((resolve, reject) => {
+            jumpClient.forwardOut('127.0.0.1', 0, next.host, next.port, (err: Error | undefined, channel: any) => {
+              if (err) reject(new Error(`跳板机 ${i + 1} forwardOut 到 ${next.host}:${next.port} 失败: ${err.message}`));
+              else resolve(channel);
+            });
+          });
+        } else {
+          // 最后一级跳板机，forwardOut 到目标主机
+          sock = await new Promise<any>((resolve, reject) => {
+            jumpClient.forwardOut('127.0.0.1', 0, this.config.host, this.config.port, (err: Error | undefined, channel: any) => {
+              if (err) reject(new Error(`跳板机 ${i + 1} forwardOut 到目标主机 ${this.config.host}:${this.config.port} 失败: ${err.message}`));
+              else resolve(channel);
+            });
+          });
+        }
+      }
+    }
+
     // 连接阶段错误处理
     await new Promise<void>((resolve, reject) => {
       const onReady = (): void => { cleanup(); resolve(); };
@@ -388,6 +443,7 @@ export class Ssh2Connection extends EventEmitter {
 
         ...auth,
         readyTimeout: this.config.requestTimeoutMs,
+        ...(sock ? { sock } : {}),
       });
     });
 
