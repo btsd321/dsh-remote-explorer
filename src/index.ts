@@ -23,6 +23,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import { RemoteHostController } from './api/remote-host-controller.js';
 import { registerWebGuiRoutes } from './webgui-integration.js';
+import { installRemoteDirectoryPicker } from './remote-directory-picker.js';
 
 // === 模块导出 ===
 
@@ -122,7 +123,12 @@ export function apply(ctx: Context, config: Config): void {
     registerWebGuiRoutes(webServerCtx, controller, config);
   });
 
-  // 6. 在 ctx 销毁时断开 SSH 连接
+  // 6. 在 directoryPicker 可用时安装远程目录选择器适配
+  ctx.inject(['directoryPicker'], () => {
+    installRemoteDirectoryPicker(ctx, controller);
+  });
+
+  // 7. 在 ctx 销毁时断开 SSH 连接
   ctx.effect(() => () => {
     void controller.connectionOrchestrator.deactivate().catch(() => {});
   });
