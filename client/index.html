@@ -236,9 +236,14 @@
           <button class="btn btn-secondary" onclick="bootstrapHost('${host.id}')" ${!host.hasPrivateKey ? 'disabled' : ''}>自动引导</button>
           <button class="btn btn-primary" onclick="connectHost('${host.id}')" ${!bootstrapped ? 'disabled' : ''}>连接</button>
           <button class="btn btn-secondary" onclick="disconnectHost()">断开</button>
+          <button class="btn btn-primary" id="reconnect-btn" onclick="reconnectHost()" style="display:none;">手动重连</button>
         </div>
         <div id="probe-result"></div>
-        <h3 style="font-size: 14px; margin-bottom: 8px; color: #e94560;">操作日志</h3>
+        <div id="history-section" style="margin-top: 16px;">
+          <h3 style="font-size: 14px; margin-bottom: 8px; color: #e94560;">连接历史</h3>
+          <div id="history-list" style="background: #0d1b2a; border: 1px solid #0f3460; border-radius: 8px; padding: 12px; max-height: 150px; overflow-y: auto; font-size: 12px;"></div>
+        </div>
+        <h3 style="font-size: 14px; margin-bottom: 8px; margin-top: 16px; color: #e94560;">操作日志</h3>
         <div id="log"></div>
       `;
     }
@@ -293,16 +298,52 @@
       try {
         await rpc('deactivate', {});
         log('已断开', 'info');
+        document.getElementById('reconnect-btn').style.display = 'none';
       } catch (e) { log(`断开失败: ${e.message}`, 'err'); }
+    }
+
+    // 手动重连
+    async function reconnectHost() {
+      log('正在手动重连...', 'info');
+      try {
+        const result = await rpc('reconnect', {});
+        log(result ? '重连成功' : '重连失败', result ? 'ok' : 'err');
+        document.getElementById('reconnect-btn').style.display = 'none';
+      } catch (e) { log(`重连失败: ${e.message}`, 'err'); }
+    }
+
+    // 加载连接历史
+    async function loadHistory() {
+      try {
+        const result = await rpc('history', {});
+        const el = document.getElementById('history-list');
+        if (!el) return;
+        if (!result || result.length === 0) { el.innerHTML = '<div style="color:#555;">暂无历史记录</div>'; return; }
+        el.innerHTML = result.slice(0, 10).map(h => {
+          const dur = h.disconnectedAt ? new Date(h.disconnectedAt).getTime() - new Date(h.connectedAt).getTime() : 0;
+          const durStr = dur > 0 ? `${Math.round(dur/1000)}s` : '—';
+          const reasonMap = { manual: '手动断开', lost: '连接丢失', failed: '连接失败', null: '进行中' };
+          return `<div style="padding:4px 0;border-bottom:1px solid #0f3460;">
+            <span style="color:#aaa;">${h.hostTitle}</span>
+            <span style="color:#888;float:right;">${reasonMap[h.endReason]} ${durStr}</span>
+            ${h.lastError ? `<div style="color:#e94560;font-size:11px;">${h.lastError.slice(0,80)}</div>` : ''}
+          </div>`;
+        }).join('');
+      } catch (e) { /* 忽略 */ }
     }
 
     // 状态变化处理
     function onStateChange(event) {
       log(`连接状态: ${event.state} ${event.message || ''}`, event.state === 'ready' ? 'ok' : event.state === 'failed' || event.state === 'lost' ? 'err' : 'info');
       const el = document.getElementById('connection-status');
-      const labels = { disconnected: '未连接', connecting: '连接中...', verifying: '验证中...', ready: '已连接', lost: '连接丢失', failed: '连接失败' };
+      const labels = { disconnected: '未连接', connecting: '连接中...', verifying: '验证中...', ready: '已连接', lost: '连接丢失', failed: '连接失败', reconnecting: '重连中...' };
       el.textContent = labels[event.state] || event.state;
       el.style.background = event.state === 'ready' ? '#00b89433' : event.state === 'failed' || event.state === 'lost' ? '#e9456033' : '#0f346033';
+      // lost/failed 时显示重连按钮
+      const reconnectBtn = document.getElementById('reconnect-btn');
+      if (reconnectBtn) reconnectBtn.style.display = (event.state === 'lost' || event.state === 'failed') ? '' : 'none';
+      // ready 时刷新历史
+      if (event.state === 'ready' || event.state === 'disconnected') loadHistory();
     }
 
     // 订阅状态

@@ -10,7 +10,7 @@
 
 import { RemoteHostRegistry, type RemoteHostProfile } from '../remote-hosts.js';
 import { RemoteBootstrap, type RemoteProbe, type BootstrapResult } from '../remote-bootstrap.js';
-import { ConnectionOrchestrator, type ConnectionEvent } from '../remote-connection.js';
+import { ConnectionOrchestrator, type ConnectionEvent, type ConnectionHistoryEntry } from '../remote-connection.js';
 import type {
   RemoteHostValue,
   RemoteHostCreateRequest,
@@ -189,6 +189,37 @@ export class RemoteHostController {
   async deactivate(_request?: RemoteHostDeactivateRequest): Promise<boolean> {
     await this.orchestrator.deactivate();
     return true;
+  }
+
+  /**
+   * 手动重连（用于 lost/failed/disconnected 状态）
+   * @returns 是否成功
+   */
+  async reconnect(): Promise<boolean> {
+    await this.orchestrator.reconnect();
+    return this.orchestrator.state === 'ready';
+  }
+
+  /**
+   * 配置自动重连参数
+   * @param config - 重连配置（部分字段可选）
+   */
+  configureReconnect(config: {
+    enabled?: boolean;
+    maxAttempts?: number;
+    initialDelayMs?: number;
+    backoffMultiplier?: number;
+    maxDelayMs?: number;
+  }): void {
+    this.orchestrator.configureReconnect(config);
+  }
+
+  /**
+   * 获取连接历史记录
+   * @returns 历史记录列表（最近 50 条，新的在前）
+   */
+  getHistory(): ConnectionHistoryEntry[] {
+    return [...this.orchestrator.history];
   }
 
   /**

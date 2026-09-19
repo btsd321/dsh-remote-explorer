@@ -47,9 +47,19 @@ ws.on('open', async () => {
       const status2 = await rpc('status');
       console.log('状态:', JSON.stringify(status2, null, 2));
 
+      console.log('\n=== 查询连接历史 ===');
+      const history = await rpc('history');
+      console.log('历史:', JSON.stringify(history, null, 2));
+
       console.log('\n=== 断开连接 ===');
       await rpc('deactivate', {});
       console.log('已断开');
+
+      await new Promise(r => setTimeout(r, 500));
+
+      console.log('\n=== 查询连接历史（断开后）===');
+      const history2 = await rpc('history');
+      console.log('历史:', JSON.stringify(history2, null, 2));
     }
   }
 

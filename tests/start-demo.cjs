@@ -95,7 +95,10 @@ async function handleMethod(controller, method, params, helperDir) {
     case 'bootstrap': return await controller.bootstrap({ ...params, helperDirPath: helperDir });
     case 'activate': return await controller.activate({ ...params, helperDirPath: helperDir });
     case 'deactivate': return await controller.deactivate(params);
+    case 'reconnect': return await controller.reconnect();
     case 'status': return await controller.status();
+    case 'history': return controller.getHistory();
+    case 'configureReconnect': controller.configureReconnect(params); return true;
     default: throw new Error(`未知方法: ${method}`);
   }
 }
