@@ -182,7 +182,8 @@ export class ConnectionOrchestrator extends EventEmitter {
       ...(target.identityFile ? { privateKeyPath: target.identityFile } : {}),
       node: bootstrapResult?.node || '/home/' + target.username + '/.dsh/node/node',
       helper: bootstrapResult?.helper || '/home/' + target.username + '/.dsh/helper/helper.mjs',
-      helperHash: bootstrapResult?.helperHash || '',
+      // 首次尝试时跳过 hash 校验（helperHash 为 undefined 时 Ssh2Connection 不校验）
+      ...(bootstrapResult?.helperHash ? { helperHash: bootstrapResult.helperHash } : {}),
       workspace: '/home/' + target.username,
       ...(jumpHosts.length > 0 ? { jumpHosts: jumpHosts.map(jh => ({
         host: jh.host,

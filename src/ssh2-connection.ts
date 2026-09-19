@@ -485,8 +485,10 @@ export class Ssh2Connection extends EventEmitter {
       ...(this.config.bootstrapPath ? { bootstrapPath: this.config.bootstrapPath } : {}),
     }, helloSchema, AbortSignal.timeout(this.config.requestTimeoutMs));
 
-    // 校验 helper 摘要
-    if (hello.hash !== this.config.helperHash) throw new Error('SSH helper 摘要与配置不符');
+    // 校验 helper 摘要（helperHash 为空时跳过校验，用于首次连接未引导的场景）
+    if (this.config.helperHash && hello.hash !== this.config.helperHash) {
+      throw new Error('SSH helper 摘要与配置不符');
+    }
     if (this.config.bootstrapHash && hello.bootstrapHash !== this.config.bootstrapHash) {
       throw new Error('SSH PTC bootstrap 摘要与配置不符');
     }
