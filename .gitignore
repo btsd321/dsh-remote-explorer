@@ -1,0 +1,11 @@
+# 依赖
+node_modules/
+lib/
+*.tgz
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 测试缓存
+*.tmp
