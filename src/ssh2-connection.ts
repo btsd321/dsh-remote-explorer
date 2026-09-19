@@ -79,6 +79,12 @@ export interface Hello {
   root: string;
   /** bootstrap SHA-256（若配置了 bootstrapPath） */
   bootstrapHash?: string;
+  /** 远端平台标识（helper 可选回传） */
+  platform?: string;
+  /** 远端 Node 版本（helper 可选回传） */
+  nodeVersion?: string;
+  /** helper 生效的工作目录绝对路径（helper 回显 hello 请求里的 workspace） */
+  workspace?: string;
 }
 
 /** hello 响应的 Zod schema */

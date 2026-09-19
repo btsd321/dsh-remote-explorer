@@ -124,8 +124,9 @@ export function apply(ctx: Context, config: Config): void {
   });
 
   // 6. 在 directoryPicker 可用时安装远程目录选择器适配
-  ctx.inject(['directoryPicker'], () => {
-    installRemoteDirectoryPicker(ctx, controller);
+  //    用注入后的 ctx（而非外层 ctx），保证拿到的是已注册该服务的上下文
+  ctx.inject(['directoryPicker'], (pickerCtx: Context) => {
+    installRemoteDirectoryPicker(pickerCtx, controller);
   });
 
   // 7. 在 ctx 销毁时断开 SSH 连接

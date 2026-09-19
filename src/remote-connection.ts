@@ -67,11 +67,20 @@ export class ConnectionOrchestrator extends EventEmitter {
   private reconnectTimer: NodeJS.Timeout | undefined;
   private _history: ConnectionHistoryEntry[] = [];
   private currentHistoryEntry: ConnectionHistoryEntry | undefined;
+  private remoteHome: string | undefined;
 
   get state(): ConnectionState { return this._state; }
   get activeConnection(): Ssh2Connection | undefined { return this._state === 'ready' ? this.connection : undefined; }
   get currentHostAlias(): string | undefined { return this.currentAlias; }
   get history(): readonly ConnectionHistoryEntry[] { return this._history; }
+
+  /**
+   * 当前远端 home 目录绝对路径（连接就绪后可用）。
+   *
+   * 远端 helper 的 fs.resolve 不展开 `~`（传 `~` 会得到 `<cwd>/~`），
+   * 所以需要浏览远端目录的调用方必须从这里取绝对路径作为起点。
+   */
+  get currentRemoteHome(): string | undefined { return this.remoteHome; }
 
   configureReconnect(config: Partial<ReconnectConfig>): void {
     this.reconnectConfig = { ...this.reconnectConfig, ...config };
@@ -130,6 +139,7 @@ export class ConnectionOrchestrator extends EventEmitter {
       this.archiveHistoryEntry();
     }
     this.currentAlias = undefined;
+    this.remoteHome = undefined;
     this.setState('disconnected');
   }
 
@@ -175,17 +185,19 @@ export class ConnectionOrchestrator extends EventEmitter {
   private async tryConnect(resolved: ResolvedHostWithJump, bootstrapResult?: BootstrapResult): Promise<Hello> {
     const target = resolved.target;
     const jumpHosts = resolved.jumpHosts;
+    /** 远端 home 目录推测值（POSIX 远端的常规布局） */
+    const homeGuess = '/home/' + target.username;
 
     const connection = new Ssh2Connection({
       host: target.host,
       port: target.port,
       username: target.username,
       ...(target.identityFile ? { privateKeyPath: target.identityFile } : {}),
-      node: bootstrapResult?.node || '/home/' + target.username + '/.dsh/node/node',
-      helper: bootstrapResult?.helper || '/home/' + target.username + '/.dsh/helper/helper.mjs',
+      node: bootstrapResult?.node || homeGuess + '/.dsh/node/node',
+      helper: bootstrapResult?.helper || homeGuess + '/.dsh/helper/helper.mjs',
       // 首次尝试时跳过 hash 校验（helperHash 为 undefined 时 Ssh2Connection 不校验）
       ...(bootstrapResult?.helperHash ? { helperHash: bootstrapResult.helperHash } : {}),
-      workspace: '/home/' + target.username,
+      workspace: homeGuess,
       ...(jumpHosts.length > 0 ? { jumpHosts: jumpHosts.map(jh => ({
         host: jh.host,
         port: jh.port,
@@ -200,6 +212,8 @@ export class ConnectionOrchestrator extends EventEmitter {
     });
 
     const hello = await connection.ready;
+    // helper 会回显 hello 请求里的 workspace；缺失时回落到按用户名推测的 home
+    this.remoteHome = hello.workspace || homeGuess;
     this.setState('ready', `已连接到 ${this.currentAlias} (${target.host})`);
     return hello;
   }
