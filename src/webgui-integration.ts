@@ -1,12 +1,13 @@
 /**
  * @file Web GUI 集成模块
- * @description 通过 dsh 的 ctx.webServer 注册 HTTP 路由，
- *              将远程主机管理页面挂载到 dsh Web GUI 的同一个 HTTP 服务上。
- *              用户访问 http://127.0.0.1:<dsh-port>/remote-ssh 即可使用。
+ * @description 通过 dsh 的 ctx.webServer 注册 HTTP 路由和 index injection，
+ *              将远程主机管理页面嵌入到 dsh Web GUI 中。
  *
- * 路由：
- * - GET /remote-ssh → 返回管理页面 HTML
- * - WS  /remote-ssh/ws → WebSocket JSON-RPC 桥接
+ * 功能：
+ * 1. 注册 /remote-ssh HTTP 路由 → 返回管理页面 HTML（不需要正则替换，页面内直接用 location.host）
+ * 2. 注册 /remote-ssh/ws WebSocket 升级路由 → JSON-RPC 桥接
+ * 3. 通过 webserver/index-inject 事件注入内联 JS → 在 dsh sidebar 底部添加"远程主机"按钮
+ * 4. 点击按钮在主内容区弹出 overlay iframe 加载 /remote-ssh 页面
  */
 
 import type { Context } from '@deepseek-ai/cordis';
@@ -17,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { RemoteHostController } from './api/remote-host-controller.js';
 
-/** 插件配置（与 index.ts 的 Config 一致） */
+/** 插件配置 */
 export interface WebGuiConfig {
   /** 本地 helper bundle 目录路径 */
   helperDirPath?: string;
@@ -36,40 +37,143 @@ export interface WebGuiConfig {
 }
 
 /**
- * 获取注入了正确端口的 HTML 页面
- * @param port - dsh webserver 端口
+ * 获取管理页面 HTML（直接读取，不做正则替换——页面内已用 location.host）
  * @returns HTML 字符串
  */
-function getHtml(port: number): string {
+function getHtml(): string {
   const htmlPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'client', 'index.html');
-  let html: string;
   try {
-    html = readFileSync(htmlPath, 'utf8');
+    return readFileSync(htmlPath, 'utf8');
   } catch {
     try {
-      html = readFileSync(join(process.cwd(), 'client', 'index.html'), 'utf8');
+      return readFileSync(join(process.cwd(), 'client', 'index.html'), 'utf8');
     } catch {
       return '<html><body><h1>dsh-remote-ssh: client/index.html not found</h1></body></html>';
     }
   }
-  // 注入正确的 WebSocket URL：用 location.host 动态获取端口
-  html = html.replace(
-    /const port = new URLSearchParams\(location\.search\)\.get\('port'\) \|\| '18900';/,
-    `const port = String(location.port || ${port});`
-  );
-  html = html.replace(
-    /ws:\/\/127\.0\.0\.1:\$\{port\}\/ws/g,
-    `ws://${'${location.host}'}/remote-ssh/ws`
-  );
-  return html;
 }
 
 /**
- * 在 dsh 的 webServer 上注册远程主机管理路由。
+ * 注入到 dsh 主页面的内联 JS 脚本。
  *
- * 注册两个路由：
- * 1. GET /remote-ssh → 返回管理页面 HTML
- * 2. WS /remote-ssh/ws → WebSocket JSON-RPC 桥接
+ * 功能：
+ * 1. 在 dsh sidebar 底部添加"远程主机"按钮
+ * 2. 点击按钮在主内容区弹出 overlay iframe 加载 /remote-ssh 页面
+ * 3. 再次点击关闭 overlay
+ */
+const ENTRY_BUTTON_SCRIPT = `
+(function() {
+  function addRemoteHostButton() {
+    // 避免重复添加
+    if (document.getElementById('dsh-remote-ssh-btn')) return;
+
+    // 创建按钮
+    var btn = document.createElement('button');
+    btn.id = 'dsh-remote-ssh-btn';
+    btn.title = '远程主机管理';
+    btn.style.cssText = [
+      'display:flex', 'align-items:center', 'justify-content:center',
+      'width:36px', 'height:36px', 'border:none', 'border-radius:8px',
+      'background:transparent', 'color:var(--dsw-text-secondary, #aaa)',
+      'cursor:pointer', 'font-size:18px', 'transition:background .2s',
+      'margin:4px'
+    ].join(';');
+    btn.innerHTML = '🖥';
+    btn.onmouseenter = function() { btn.style.background = 'var(--dsw-surface-hover, #ffffff1a)'; };
+    btn.onmouseleave = function() { btn.style.background = 'transparent'; };
+    btn.onclick = toggleRemoteHostPanel;
+
+    // 尝试找到 dsh sidebar 底部区域
+    var sidebar = document.querySelector('[class*="sidebar"] [class*="footer"]')
+      || document.querySelector('[class*="SidebarRoot"] [class*="footer"]')
+      || document.querySelector('[class*="sidebar-footer"]')
+      || document.querySelector('nav[class*="sidebar"]')
+      || document.querySelector('aside')
+      || document.querySelector('[class*="sidebar"]');
+
+    if (sidebar) {
+      sidebar.appendChild(btn);
+    } else {
+      // 如果找不到 sidebar，放一个浮动按钮在右下角
+      btn.style.position = 'fixed';
+      btn.style.bottom = '16px';
+      btn.style.right = '16px';
+      btn.style.zIndex = '9999';
+      btn.style.background = '#16213e';
+      btn.style.border = '1px solid #0f3460';
+      document.body.appendChild(btn);
+    }
+  }
+
+  // overlay 容器
+  var overlay = null;
+  var iframe = null;
+
+  function toggleRemoteHostPanel() {
+    if (overlay) {
+      closePanel();
+    } else {
+      openPanel();
+    }
+  }
+
+  function openPanel() {
+    overlay = document.createElement('div');
+    overlay.id = 'dsh-remote-ssh-overlay';
+    overlay.style.cssText = [
+      'position:fixed', 'top:0', 'right:0', 'width:80vw', 'height:100vh',
+      'background:#1a1a2e', 'border-left:2px solid #0f3460', 'z-index:99998',
+      'box-shadow:-4px 0 20px rgba(0,0,0,.3)', 'display:flex', 'flex-direction:column'
+    ].join(';');
+
+    // 顶部栏
+    var header = document.createElement('div');
+    header.style.cssText = 'padding:10px 16px;background:#16213e;border-bottom:1px solid #0f3460;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;';
+    var title = document.createElement('span');
+    title.textContent = '远程主机管理';
+    title.style.cssText = 'font-size:15px;font-weight:600;color:#e0e0e0;';
+    var closeBtn = document.createElement('button');
+    closeBtn.textContent = '✕ 关闭';
+    closeBtn.style.cssText = 'background:transparent;border:1px solid #0f3460;color:#aaa;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;';
+    closeBtn.onmouseenter = function() { closeBtn.style.color = '#e0e0e0'; closeBtn.style.borderColor = '#e94560'; };
+    closeBtn.onmouseleave = function() { closeBtn.style.color = '#aaa'; closeBtn.style.borderColor = '#0f3460'; };
+    closeBtn.onclick = closePanel;
+    header.appendChild(title);
+    header.appendChild(closeBtn);
+    overlay.appendChild(header);
+
+    // iframe 加载管理页面
+    iframe = document.createElement('iframe');
+    iframe.src = '/remote-ssh';
+    iframe.style.cssText = 'flex:1;border:none;width:100%;';
+    overlay.appendChild(iframe);
+
+    document.body.appendChild(overlay);
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closePanel() {
+    if (overlay) {
+      document.body.removeChild(overlay);
+      overlay = null;
+      iframe = null;
+      document.body.style.overflow = '';
+    }
+  }
+
+  // 等待 DOM 加载完成
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function() {
+      setTimeout(addRemoteHostButton, 500);
+    });
+  } else {
+    setTimeout(addRemoteHostButton, 500);
+  }
+})();
+`;
+
+/**
+ * 在 dsh 的 webServer 上注册远程主机管理路由和 index injection。
  *
  * @param ctx - Cordis 上下文（需要 ctx.webServer 可用）
  * @param controller - 远程主机管理 controller
@@ -85,14 +189,13 @@ export function registerWebGuiRoutes(ctx: Context, controller: RemoteHostControl
   const port = webServer.port;
   const helperDir = config.helperDirPath || '';
 
-  // 1. 注册 HTTP 路由：GET /remote-ssh → 返回 HTML 页面
+  // 1. 注册 HTTP 路由：GET /remote-ssh → 返回 HTML 页面（直接读取，不做替换）
   ctx.effect(() => webServer.register({
     kind: 'exact' as const,
     path: '/remote-ssh',
     handler: (_req: IncomingMessage, res: ServerResponse) => {
-      const html = getHtml(port);
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(html);
+      res.end(getHtml());
     },
   }));
 
@@ -107,7 +210,17 @@ export function registerWebGuiRoutes(ctx: Context, controller: RemoteHostControl
     },
   }));
 
+  // 3. 通过 index injection 在 dsh 主页面注入入口按钮脚本
+  ctx.on('webserver/index-inject', (table: any[]) => {
+    table.push({
+      kind: 'script',
+      placement: 'body',
+      text: ENTRY_BUTTON_SCRIPT,
+    });
+  });
+
   console.log(`[dsh-remote-ssh] Web GUI 已注册: http://127.0.0.1:${port}/remote-ssh`);
+  console.log(`[dsh-remote-ssh] 入口按钮已注入到 dsh 主界面 sidebar`);
 }
 
 /**
@@ -119,14 +232,12 @@ export function registerWebGuiRoutes(ctx: Context, controller: RemoteHostControl
 function handleWebSocketConnection(ws: WebSocket, controller: RemoteHostController, helperDir: string): void {
   console.log('[dsh-remote-ssh] 前端 WebSocket 已连接');
 
-  // 订阅连接状态变化
   const unsub = controller.subscribeStateChanges((event) => {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'event', event: 'stateChange', data: event }));
     }
   });
 
-  // 处理 JSON-RPC 请求
   ws.on('message', async (data: Buffer) => {
     try {
       const msg = JSON.parse(data.toString());
