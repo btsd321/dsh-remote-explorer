@@ -1,0 +1,34 @@
+/**
+ * @file dsh-remote-ssh 插件的 Cordis 补丁层
+ * @description 当此 bundle 被 profile 列入时，此补丁文件被应用为配置层。
+ *              它插入插件入口行，让 Loader 加载 src/index.ts。
+ *
+ * 加载顺序（later layer wins per row）：
+ * 1. @deepseek-ai/dsh-base（base 层）
+ * 2. @deepseek-ai/dsh-web-app 或 @deepseek-ai/dsh-headless（应用层）
+ * 3. dsh-remote-ssh（本插件层）
+ * 4. profile 的 cordis.patch.yml
+ * 5. --patch overlays
+ */
+
+# 插入远程主机开发插件入口
+- insert:
+    - id: remote-ssh
+      name: '@deepseek-ai/dsh-remote-ssh'
+      # 可选配置：helper bundle 目录路径（dsh-ssh 的构建产物）
+      config:
+        helperDirPath: ../../deepseek-harness/packages/ssh/ssh/lib/bundle
+        # WebSocket 服务端口（供前端连接）
+        wsPort: 18900
+        wsHost: 127.0.0.1
+        # 主机档案持久化文件路径
+        hostsFilePath: ~/.dsh/remote-hosts.json
+        # 远程工作区持久化文件路径
+        workspacesFilePath: ~/.dsh/remote-workspaces.json
+        # 自动重连配置
+        reconnect:
+          enabled: true
+          maxAttempts: 3
+          initialDelayMs: 1000
+          backoffMultiplier: 2
+          maxDelayMs: 10000
