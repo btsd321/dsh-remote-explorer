@@ -159,12 +159,21 @@
   function openConfigFile() {
     var input = document.createElement('input');
     input.type = 'file';
+    input.accept = '.txt,.config,text/plain,*';
     input.onchange = function (e) {
       var file = e.target.files[0];
-      if (file) {
-        rpc('setSshConfigPath', { path: file.name }).then(function () { refreshHosts(); }).catch(function (e) { log('配置失败: ' + e.message, 'err'); });
-        log('已选择: ' + file.name, 'ok');
-      }
+      if (!file) return;
+      log('正在读取: ' + file.name + '...', 'info');
+      var reader = new FileReader();
+      reader.onload = function (ev) {
+        var content = ev.target.result;
+        rpc('setSshConfigContent', { content: content }).then(function (r) {
+          log('已加载: ' + file.name + '，' + r + ' 个主机', 'ok');
+          refreshHosts();
+        }).catch(function (e) { log('配置失败: ' + e.message, 'err'); });
+      };
+      reader.onerror = function () { log('文件读取失败', 'err'); };
+      reader.readAsText(file);
     };
     input.click();
   }

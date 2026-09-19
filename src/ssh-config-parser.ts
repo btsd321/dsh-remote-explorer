@@ -65,6 +65,8 @@ const DEFAULT_CONFIG_PATH = join(homedir(), '.ssh', 'config');
 /** 缓存的 SSH config 解析结果 */
 let cachedConfig: any[] | undefined;
 let cachedPath = DEFAULT_CONFIG_PATH;
+/** 直接设置的 config 文本内容（优先于文件路径） */
+let cachedContent: string | undefined;
 
 /**
  * 设置 SSH config 文件路径（允许用户配置）
@@ -72,20 +74,36 @@ let cachedPath = DEFAULT_CONFIG_PATH;
  */
 export function setConfigPath(path: string): void {
   cachedPath = path;
+  cachedContent = undefined;
   cachedConfig = undefined;
 }
 
 /**
- * 读取并解析 SSH config 文件
+ * 直接设置 SSH config 文本内容（浏览器上传文件时使用）
+ * 优先于文件路径——设置后不再从文件读取
+ * @param content - SSH config 文本内容
+ */
+export function setConfigContent(content: string): void {
+  cachedContent = content;
+  cachedConfig = undefined;
+}
+
+/**
+ * 读取并解析 SSH config（优先使用直接设置的内容，其次从文件路径读取）
  * @returns SSHConfig 条目数组
  */
 function loadConfig(): any[] {
   if (cachedConfig) return cachedConfig;
-  if (!existsSync(cachedPath)) {
-    cachedConfig = [];
-    return cachedConfig;
+  let text: string;
+  if (cachedContent !== undefined) {
+    text = cachedContent;
+  } else {
+    if (!existsSync(cachedPath)) {
+      cachedConfig = [];
+      return cachedConfig;
+    }
+    text = readFileSync(cachedPath, 'utf8');
   }
-  const text = readFileSync(cachedPath, 'utf8');
   cachedConfig = SSHConfig.parse(text);
   return cachedConfig;
 }

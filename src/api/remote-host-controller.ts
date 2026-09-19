@@ -8,7 +8,7 @@ import { RemoteBootstrap, type RemoteProbe, type BootstrapResult, setNodeMirror,
 import { ConnectionOrchestrator, type ConnectionEvent, type ConnectionHistoryEntry } from '../remote-connection.js';
 import { RemoteWorkspaceAdapter, type RemoteDirEntry } from '../remote-workspace.js';
 import { RemoteWorkspaceRegistry } from '../remote-workspace-registry.js';
-import { listHosts, resolveHost, setConfigPath, refreshConfig, type SshHostSummary } from '../ssh-config-parser.js';
+import { listHosts, resolveHost, setConfigPath, setConfigContent, refreshConfig, type SshHostSummary } from '../ssh-config-parser.js';
 import { z } from 'zod';
 import type { RemoteConnectionStatusValue, RemoteConnectionEvent } from './types.js';
 
@@ -34,6 +34,13 @@ export class RemoteHostController {
   setSshConfigPath(path: string): void {
     setConfigPath(path);
     refreshConfig();
+  }
+
+  /** 直接设置 SSH config 文本内容（浏览器上传文件时使用） */
+  setSshConfigContent(content: string): number {
+    setConfigContent(content);
+    refreshConfig();
+    return listHosts().length;
   }
 
   /** 刷新 SSH config 缓存 */

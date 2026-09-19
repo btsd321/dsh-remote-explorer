@@ -20,7 +20,6 @@ import { Client, type ClientChannel, type SFTPWrapper } from 'ssh2';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
-import type { RemoteHostProfile } from './remote-hosts.js';
 import { collectHelperDependencies } from './dependency-collector.js';
 import { createNodeAddonStub } from './native-stub.js';
 import type { ResolvedHost, ResolvedHostWithJump } from './ssh-config-parser.js';
