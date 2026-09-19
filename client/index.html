@@ -225,6 +225,7 @@
           <button class="btn btn-secondary" onclick="bootstrapHost('${h.id}')" ${!h.hasPrivateKey?'disabled':''}>自动引导</button>
           <button class="btn btn-primary" onclick="connectHost('${h.id}')" ${!bs?'disabled':''}>连接</button>
           <button class="btn btn-secondary" onclick="disconnectHost()">断开</button>
+          <button class="btn btn-secondary" onclick="deleteHost('${h.id}','${h.title}')" style="margin-left:auto;color:#e94560;">删除</button>
         </div>
         <div id="probe-result"></div>
         <div id="remote-explorer">
@@ -286,6 +287,20 @@
       log('正在断开...', 'li');
       try { await rpc('deactivate', {}); log('已断开', 'li'); document.getElementById('reconnect-top-btn').style.display='none'; }
       catch (e) { log(`断开失败: ${e.message}`, 'le'); }
+    }
+
+    // 删除主机
+    async function deleteHost(id, title) {
+      if (!confirm(`确定删除主机「${title}」吗？\n\n删除后不影响远端文件和已保存的 session。`)) return;
+      log(`正在删除主机: ${title}`, 'li');
+      try {
+        await rpc('delete', { id });
+        log(`已删除主机: ${title}`, 'lo');
+        currentHostId = null;
+        document.getElementById('main-title').textContent = '选择或新增一台远程主机';
+        document.getElementById('main-content').innerHTML = '';
+        await refreshHosts();
+      } catch (e) { log(`删除失败: ${e.message}`, 'le'); }
     }
 
     // 手动重连
