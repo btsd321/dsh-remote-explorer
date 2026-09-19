@@ -9,3 +9,7 @@ Thumbs.db
 
 # 测试缓存
 *.tmp
+
+# 临时输出文件
+dsh-*-*.txt
+

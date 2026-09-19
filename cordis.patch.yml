@@ -9,9 +9,9 @@
 
 - insert:
     - id: remote-ssh
-      name: '@deepseek-ai/dsh-remote-ssh'
+      name: ./src/index.ts
       config:
-        helperDirPath: ../../deepseek-harness/packages/ssh/ssh/lib/bundle
+        helperDirPath: ../deepseek-harness/packages/ssh/ssh/lib/bundle
         hostsFilePath: ~/.dsh/remote-hosts.json
         workspacesFilePath: ~/.dsh/remote-workspaces.json
         reconnect:

@@ -22,7 +22,6 @@
 
 import type { Context } from '@deepseek-ai/cordis';
 import { RemoteHostController } from './api/remote-host-controller.js';
-import { RemoteHostBridge } from './api/websocket-bridge.js';
 import { RemoteHostRegistry } from './remote-hosts.js';
 import { ConnectionOrchestrator } from './remote-connection.js';
 import { RemoteWorkspaceRegistry } from './remote-workspace-registry.js';
@@ -85,10 +84,6 @@ export const name = 'dsh-remote-ssh';
 export interface Config {
   /** 本地 helper bundle 目录路径（dsh-ssh 的构建产物） */
   helperDirPath?: string;
-  /** WebSocket 服务端口（供前端连接） */
-  wsPort?: number;
-  /** WebSocket 监听地址 */
-  wsHost?: string;
   /** 主机档案持久化文件路径 */
   hostsFilePath?: string;
   /** 远程工作区持久化文件路径 */
@@ -136,22 +131,13 @@ export function apply(ctx: Context, config: Config): void {
   ctx.provide('remoteHostController', controller);
   ctx.provide('remoteWorkspaceRegistry', workspaceRegistry);
 
-  // 6. 如果配置了 WebSocket 端口，启动独立桥接服务（向后兼容）
-  if (config.wsPort) {
-    const bridge = new RemoteHostBridge(controller, {
-      port: config.wsPort,
-      host: config.wsHost ?? '127.0.0.1',
-    });
-    bridge.start();
-    ctx.effect(() => () => bridge.stop());
-  }
-
-  // 7. 在 dsh webServer 可用时注册 /remote-ssh 路由（让管理页面出现在 dsh Web GUI 中）
+  // 6. 在 dsh webServer 可用时注册 /remote-ssh 路由（让管理页面出现在 dsh Web GUI 中）
+  //    不使用独立端口——HTTP 和 WebSocket 都复用 dsh webServer 的端口
   ctx.inject(['webServer'], (webServerCtx: Context) => {
     registerWebGuiRoutes(webServerCtx, controller, config);
   });
 
-  // 8. 在 ctx 销毁时断开 SSH 连接
+  // 7. 在 ctx 销毁时断开 SSH 连接
   ctx.effect(() => () => {
     void controller.connectionOrchestrator.deactivate().catch(() => {});
   });
