@@ -153,7 +153,8 @@ export class ConnectionOrchestrator extends EventEmitter {
     this.setState('verifying', '正在验证已有配置...');
     try {
       return await this.tryConnect(resolved, undefined);
-    } catch {
+    } catch (e) {
+      console.error('[dsh-remote-ssh] 首次连接失败:', e instanceof Error ? e.message : String(e));
       this.setState('connecting', '已有配置失败，正在重新引导...');
     }
 

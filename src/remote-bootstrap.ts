@@ -17,7 +17,7 @@
  */
 
 import { Client, type ClientChannel, type SFTPWrapper } from 'ssh2';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { collectHelperDependencies } from './dependency-collector.js';
@@ -494,12 +494,38 @@ const MIRROR_URLS: Record<NodeMirror, string> = {
   ustc: 'https://mirrors.ustc.edu.cn/node',
 };
 
-/** 当前镜像源（默认官方） */
-let currentMirror: NodeMirror = 'official';
+/** 镜像源持久化文件路径 */
+const MIRROR_CONFIG_PATH = join(homedir(), '.dsh', 'remote-ssh-mirror.json');
 
-/** 设置 Node 下载镜像源 */
+/** 当前镜像源（从持久化文件加载，默认官方） */
+let currentMirror: NodeMirror = loadMirrorConfig();
+
+/** 从 ~/.dsh/remote-ssh-mirror.json 加载镜像源配置 */
+function loadMirrorConfig(): NodeMirror {
+  try {
+    if (existsSync(MIRROR_CONFIG_PATH)) {
+      const data = JSON.parse(readFileSync(MIRROR_CONFIG_PATH, 'utf8'));
+      if (data.mirror && ['official', 'aliyun', 'tsinghua', 'ustc'].includes(data.mirror)) {
+        return data.mirror as NodeMirror;
+      }
+    }
+  } catch { /* 文件损坏或不存在，用默认值 */ }
+  return 'official';
+}
+
+/** 保存镜像源到 ~/.dsh/remote-ssh-mirror.json */
+function saveMirrorConfig(mirror: NodeMirror): void {
+  try {
+    const dir = join(homedir(), '.dsh');
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(MIRROR_CONFIG_PATH, JSON.stringify({ mirror }, null, 2), 'utf8');
+  } catch { /* 持久化失败不影响运行时使用 */ }
+}
+
+/** 设置 Node 下载镜像源（并持久化） */
 export function setNodeMirror(mirror: NodeMirror): void {
   currentMirror = mirror;
+  saveMirrorConfig(mirror);
 }
 
 /** 获取当前镜像源 */
