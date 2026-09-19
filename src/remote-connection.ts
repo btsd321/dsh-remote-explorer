@@ -149,10 +149,10 @@ export class ConnectionOrchestrator extends EventEmitter {
    * 连接+引导组合逻辑
    */
   private async connectWithBootstrap(resolved: ResolvedHostWithJump, helperDirPath: string): Promise<Hello> {
-    // 先尝试直接连接（如果已有 helper 配置）
+    // 先尝试直接连接（使用远端已安装的 Node 和 helper）
     this.setState('verifying', '正在验证已有配置...');
     try {
-      return await this.tryConnect(resolved);
+      return await this.tryConnect(resolved, undefined);
     } catch {
       this.setState('connecting', '已有配置失败，正在重新引导...');
     }
@@ -162,13 +162,16 @@ export class ConnectionOrchestrator extends EventEmitter {
     const bootstrap = new RemoteBootstrap();
     const result = await bootstrap.bootstrap(resolved, helperDirPath);
     this.setState('connecting', '正在建立 SSH 连接...');
-    return await this.tryConnect(resolved);
+    // 用引导结果中的 node/helper/helperHash 创建连接
+    return await this.tryConnect(resolved, result);
   }
 
   /**
    * 用解析后的配置创建 Ssh2Connection 并等待就绪
+   * @param resolved - 从 SSH config 解析的主机配置
+   * @param bootstrapResult - 引导结果（如果已引导），包含 node/helper/helperHash
    */
-  private async tryConnect(resolved: ResolvedHostWithJump): Promise<Hello> {
+  private async tryConnect(resolved: ResolvedHostWithJump, bootstrapResult?: BootstrapResult): Promise<Hello> {
     const target = resolved.target;
     const jumpHosts = resolved.jumpHosts;
 
@@ -177,10 +180,10 @@ export class ConnectionOrchestrator extends EventEmitter {
       port: target.port,
       username: target.username,
       ...(target.identityFile ? { privateKeyPath: target.identityFile } : {}),
-      node: '',  // 引导前为空，引导后填充
-      helper: '',
-      helperHash: '',
-      workspace: process.env.HOME || '/tmp',
+      node: bootstrapResult?.node || '/home/' + target.username + '/.dsh/node/node',
+      helper: bootstrapResult?.helper || '/home/' + target.username + '/.dsh/helper/helper.mjs',
+      helperHash: bootstrapResult?.helperHash || '',
+      workspace: '/home/' + target.username,
       ...(jumpHosts.length > 0 ? { jumpHosts: jumpHosts.map(jh => ({
         host: jh.host,
         port: jh.port,
