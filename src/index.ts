@@ -36,6 +36,10 @@ export type { ConnectionState, ConnectionEvent, ConnectionHistoryEntry, Reconnec
 export { RemoteWorkspaceAdapter } from './remote-workspace.js';
 export type { RemoteFsInfo, RemoteFsTarget, RemoteDirEntry } from './remote-workspace.js';
 
+// === 远程工作区注册表 ===
+export { RemoteWorkspaceRegistry } from './remote-workspace-registry.js';
+export type { RemoteWorkspaceRecord, CreateRemoteWorkspaceInput, RemoteWorkspaceValue } from './remote-workspace-registry.js';
+
 // === 依赖收集 ===
 export { collectHelperDependencies } from './dependency-collector.js';
 export type { DependencyFile } from './dependency-collector.js';

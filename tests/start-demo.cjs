@@ -103,6 +103,14 @@ async function handleMethod(controller, method, params, helperDir) {
     case 'listRemoteDir': return await controller.listRemoteDir(params.path);
     case 'readRemoteFile': return await controller.readRemoteFile(params.path);
     case 'statRemoteFile': return await controller.statRemoteFile(params.path);
+    // 远程工作区管理
+    case 'createWorkspace': return await controller.createWorkspace(params.hostId, params.path, params.title);
+    case 'listWorkspaces': return controller.listWorkspaces(params?.hostId);
+    case 'getWorkspace': return controller.getWorkspace(params.id);
+    case 'renameWorkspace': return controller.renameWorkspace(params.id, params.title);
+    case 'deleteWorkspace': return controller.deleteWorkspace(params.id);
+    case 'attachSession': return controller.attachSessionToWorkspace(params.workspaceId, params.sessionId);
+    case 'detachSession': return controller.detachSessionFromWorkspace(params.workspaceId, params.sessionId);
     default: throw new Error(`未知方法: ${method}`);
   }
 }

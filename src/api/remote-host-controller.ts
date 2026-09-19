@@ -12,6 +12,7 @@ import { RemoteHostRegistry, type RemoteHostProfile } from '../remote-hosts.js';
 import { RemoteBootstrap, type RemoteProbe, type BootstrapResult } from '../remote-bootstrap.js';
 import { ConnectionOrchestrator, type ConnectionEvent, type ConnectionHistoryEntry } from '../remote-connection.js';
 import { RemoteWorkspaceAdapter, type RemoteDirEntry } from '../remote-workspace.js';
+import { RemoteWorkspaceRegistry, type RemoteWorkspaceRecord } from '../remote-workspace-registry.js';
 import { z } from 'zod';
 import type {
   RemoteHostValue,
@@ -43,6 +44,8 @@ export class RemoteHostController {
   private readonly registry: RemoteHostRegistry;
   /** 连接编排器 */
   private readonly orchestrator: ConnectionOrchestrator;
+  /** 远程工作区注册表 */
+  private readonly workspaceRegistry: RemoteWorkspaceRegistry;
   /** 探测结果缓存（hostId → probe） */
   private readonly probeCache = new Map<string, RemoteProbe>();
 
@@ -52,6 +55,7 @@ export class RemoteHostController {
   constructor(registry?: RemoteHostRegistry) {
     this.registry = registry ?? new RemoteHostRegistry();
     this.orchestrator = new ConnectionOrchestrator();
+    this.workspaceRegistry = new RemoteWorkspaceRegistry();
   }
 
   /** 获取连接编排器实例（供高级用户直接操作） */
@@ -62,6 +66,11 @@ export class RemoteHostController {
   /** 获取主机档案注册表实例 */
   get hostRegistry(): RemoteHostRegistry {
     return this.registry;
+  }
+
+  /** 获取远程工作区注册表实例 */
+  get remoteWorkspaceRegistry(): RemoteWorkspaceRegistry {
+    return this.workspaceRegistry;
   }
 
   /**
@@ -343,5 +352,82 @@ export class RemoteHostController {
     // 简化版：直接通过 fs 读取 /proc 或用 process.prepare
     // 完整实现需要 subprocess-ssh 的 spawn 接口，这里用 fs 间接验证
     return `远端可执行文件路径: ${executable}`;
+  }
+
+  // ===== 远程工作区管理 =====
+
+  /**
+   * 创建远程工作区（通过远端 RPC 规范化路径 + 验证目录 + 持久化记录）
+   * @param hostId - 主机档案 ID
+   * @param path - 远端路径
+   * @param title - 可选显示标题
+   * @returns 创建的工作区前端投影
+   */
+  async createWorkspace(hostId: string, path: string, title?: string): Promise<unknown> {
+    const adapter = this.getWorkspaceAdapter();
+    if (!adapter) throw new Error('连接未就绪，请先激活连接');
+    const record = await this.workspaceRegistry.create(adapter, { hostId, path, title });
+    return this.workspaceRegistry.toValue(record);
+  }
+
+  /**
+   * 列出远程工作区（可按主机过滤）
+   * @param hostId - 可选主机 ID
+   * @returns 工作区前端投影列表
+   */
+  listWorkspaces(hostId?: string): unknown[] {
+    return this.workspaceRegistry.list(hostId).map(r => this.workspaceRegistry.toValue(r));
+  }
+
+  /**
+   * 获取远程工作区
+   * @param id - 工作区 ID
+   * @returns 工作区前端投影，不存在返回 null
+   */
+  getWorkspace(id: string): unknown | null {
+    const record = this.workspaceRegistry.get(id);
+    return record ? this.workspaceRegistry.toValue(record) : null;
+  }
+
+  /**
+   * 重命名远程工作区
+   * @param id - 工作区 ID
+   * @param title - 新标题
+   * @returns 更新后的前端投影，不存在返回 null
+   */
+  renameWorkspace(id: string, title: string): unknown | null {
+    const record = this.workspaceRegistry.rename(id, title);
+    return record ? this.workspaceRegistry.toValue(record) : null;
+  }
+
+  /**
+   * 删除远程工作区
+   * @param id - 工作区 ID
+   * @returns 是否删除成功
+   */
+  deleteWorkspace(id: string): boolean {
+    return this.workspaceRegistry.delete(id);
+  }
+
+  /**
+   * 绑定 session 到远程工作区
+   * @param workspaceId - 工作区 ID
+   * @param sessionId - session ID
+   * @returns 更新后的前端投影
+   */
+  attachSessionToWorkspace(workspaceId: string, sessionId: string): unknown | null {
+    const record = this.workspaceRegistry.attachSession(workspaceId, sessionId);
+    return record ? this.workspaceRegistry.toValue(record) : null;
+  }
+
+  /**
+   * 解绑 session
+   * @param workspaceId - 工作区 ID
+   * @param sessionId - session ID
+   * @returns 更新后的前端投影
+   */
+  detachSessionFromWorkspace(workspaceId: string, sessionId: string): unknown | null {
+    const record = this.workspaceRegistry.detachSession(workspaceId, sessionId);
+    return record ? this.workspaceRegistry.toValue(record) : null;
   }
 }
