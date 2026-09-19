@@ -443,6 +443,10 @@ export class Ssh2Connection extends EventEmitter {
 
         ...auth,
         readyTimeout: this.config.requestTimeoutMs,
+        // ServerAliveInterval → keepaliveInterval（秒转毫秒）
+        keepaliveInterval: 10000,
+        // ServerAliveCountMax → keepaliveCountMax
+        keepaliveCountMax: 3,
         ...(sock ? { sock } : {}),
       });
     });
