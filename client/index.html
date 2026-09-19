@@ -11,6 +11,8 @@
     #topbar h1 { font-size: 15px; font-weight: 600; }
     #topbar .actions { display: flex; gap: 6px; align-items: center; }
     #conn-status { font-size: 12px; padding: 3px 10px; border-radius: 4px; background: #0f346033; }
+    .select-sm { background: #0d1b2a; color: #e0e0e0; border: 1px solid #0f3460; border-radius: 3px; padding: 3px 6px; font-size: 12px; cursor: pointer; }
+    .select-sm option { background: #16213e; }
     #body { flex: 1; display: flex; overflow: hidden; }
     #sidebar { width: 260px; background: #16213e; border-right: 1px solid #0f3460; display: flex; flex-direction: column; flex-shrink: 0; }
     #sidebar-header { padding: 10px 12px; border-bottom: 1px solid #0f3460; display: flex; justify-content: space-between; align-items: center; }
@@ -70,6 +72,12 @@
     <div style="display:flex;gap:8px;align-items:center;">
       <span id="conn-status">未连接</span>
       <button class="btn-sm" id="reconnect-top-btn" onclick="reconnectHost()" style="display:none;">重连</button>
+      <select class="select-sm" id="mirror-select" onchange="setMirror(this.value)" title="Node 下载镜像源">
+        <option value="official">官方源</option>
+        <option value="aliyun">阿里源</option>
+        <option value="tsinghua">清华源</option>
+        <option value="ustc">中科大源</option>
+      </select>
       <button class="btn-sm" onclick="refreshHosts()">刷新</button>
     </div>
   </div>
@@ -93,7 +101,7 @@
     function connectWS() {
       const wsUrl = `ws://${location.host}/remote-ssh/ws`;
       ws = new WebSocket(wsUrl);
-      ws.onopen = () => { log('WebSocket 已连接', 'lo'); refreshHosts(); };
+      ws.onopen = () => { log('WebSocket 已连接', 'lo'); refreshHosts(); loadMirror(); };
       ws.onclose = () => { log('WebSocket 断开，3秒后重试', 'le'); setTimeout(connectWS, 3000); };
       ws.onmessage = (e) => {
         const msg = JSON.parse(e.data);
@@ -128,13 +136,27 @@
 
     async function refreshHosts() {
       try {
-        // 先通知服务端清除 SSH config 缓存，重新读取 ~/.ssh/config
         await rpc('refreshSshConfig');
         const r = await rpc('listSshHosts');
         hosts = r;
         renderHostList();
         log(`已重新读取 ~/.ssh/config，共 ${hosts.length} 个主机`, 'lo');
       } catch (e) { log(`刷新失败: ${e.message}`, 'le'); }
+    }
+
+    async function setMirror(mirror) {
+      try {
+        await rpc('setMirror', { mirror });
+        const labels = { official: '官方源', aliyun: '阿里源', tsinghua: '清华源', ustc: '中科大源' };
+        log(`镜像源已切换: ${labels[mirror] || mirror}`, 'lo');
+      } catch (e) { log(`镜像源设置失败: ${e.message}`, 'le'); }
+    }
+
+    async function loadMirror() {
+      try {
+        const m = await rpc('getMirror');
+        document.getElementById('mirror-select').value = m;
+      } catch (e) {}
     }
 
     function renderHostList() {

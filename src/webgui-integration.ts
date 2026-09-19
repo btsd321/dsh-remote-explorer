@@ -273,6 +273,8 @@ async function handleMethod(controller: RemoteHostController, method: string, pa
     case 'listSshHosts': return controller.listSshHosts();
     case 'refreshSshConfig': controller.refreshSshConfig(); return true;
     case 'setSshConfigPath': controller.setSshConfigPath(params.path); return true;
+    case 'setMirror': controller.setMirror(params.mirror); return true;
+    case 'getMirror': return controller.getMirror();
     // 连接管理
     case 'activate': return await controller.activate(params.alias);
     case 'deactivate': return await controller.deactivate();

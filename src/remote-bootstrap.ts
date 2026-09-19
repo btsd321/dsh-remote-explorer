@@ -384,10 +384,39 @@ export class RemoteBootstrap {
     return { nodePath, nodeVersion, nodeSufficient, os, arch };
   }
 
-  /**
-   * 自动安装 Node 到远端
-   * 策略：1. 尝试包管理器（apt/dnf/yum）2. 下载二进制解压 3. 本地下载 scp 上传
-   */
+/** Node 下载镜像源 */
+export type NodeMirror = 'official' | 'aliyun' | 'tsinghua' | 'ustc';
+
+/** 镜像源 URL 前缀映射 */
+const MIRROR_URLS: Record<NodeMirror, string> = {
+  official: 'https://nodejs.org/dist',
+  aliyun: 'https://npmmirror.com/mirrors/node',
+  tsinghua: 'https://mirrors.tuna.tsinghua.edu.cn/nodejs-release',
+  ustc: 'https://mirrors.ustc.edu.cn/node',
+};
+
+/** 当前镜像源（默认官方） */
+let currentMirror: NodeMirror = 'official';
+
+/**
+ * 设置 Node 下载镜像源
+ * @param mirror - 镜像源标识
+ */
+export function setNodeMirror(mirror: NodeMirror): void {
+  currentMirror = mirror;
+}
+
+/**
+ * 获取当前镜像源
+ */
+export function getNodeMirror(): NodeMirror {
+  return currentMirror;
+}
+
+/**
+ * 自动安装 Node 到远端
+ * 策略：1. 尝试包管理器（apt/dnf/yum）2. 下载二进制解压 3. 本地下载 scp 上传
+ */
   private async installNode(
     execOutput: (cmd: string) => Promise<string>,
     sftpUpload: (data: Buffer, remotePath: string) => Promise<void>,
@@ -409,7 +438,8 @@ export class RemoteBootstrap {
     else nodeArch = 'x64';
 
     const tarballName = `node-${targetVersion}-linux-${nodeArch}.tar.xz`;
-    const url = `https://nodejs.org/dist/${targetVersion}/${tarballName}`;
+    const baseUrl = MIRROR_URLS[currentMirror];
+    const url = `${baseUrl}/${targetVersion}/${tarballName}`;
 
     // 策略 1：尝试包管理器安装（快速但版本可能不够新）
     try {

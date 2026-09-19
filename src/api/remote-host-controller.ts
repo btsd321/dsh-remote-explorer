@@ -4,7 +4,7 @@
  *              提供主机列表、连接激活/断开/重连/状态/历史、远端文件操作接口。
  */
 
-import { RemoteBootstrap, type RemoteProbe, type BootstrapResult } from '../remote-bootstrap.js';
+import { RemoteBootstrap, type RemoteProbe, type BootstrapResult, setNodeMirror, getNodeMirror, type NodeMirror } from '../remote-bootstrap.js';
 import { ConnectionOrchestrator, type ConnectionEvent, type ConnectionHistoryEntry } from '../remote-connection.js';
 import { RemoteWorkspaceAdapter, type RemoteDirEntry } from '../remote-workspace.js';
 import { RemoteWorkspaceRegistry } from '../remote-workspace-registry.js';
@@ -44,6 +44,16 @@ export class RemoteHostController {
   /** 列出 SSH config 中的所有主机 */
   listSshHosts(): SshHostSummary[] {
     return listHosts();
+  }
+
+  /** 设置 Node 下载镜像源 */
+  setMirror(mirror: NodeMirror): void {
+    setNodeMirror(mirror);
+  }
+
+  /** 获取当前镜像源 */
+  getMirror(): NodeMirror {
+    return getNodeMirror();
   }
 
   /** 通过 SSH config 别名激活连接 */
