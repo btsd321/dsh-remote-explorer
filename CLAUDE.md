@@ -8,92 +8,86 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 这是什么
 
-`@deepseek-ai/dsh-remote-ssh` 是 deepseek-harness（dsh）的 Cordis 插件，提供远程主机开发能力：跨平台 SSH 连接、远端环境全自动引导、连接编排状态机、远程工作区适配、注入到 dsh Web GUI 的远程资源管理器面板。
+`@deepseek-ai/dsh-remote` 是一个**独立 CLI**（不是 Cordis 插件）：把 dsh 装到远程主机上运行，本机只留浏览器，LLM 凭据不离开本机。
 
-**没有构建步骤。** `tsconfig.json` 是 `noEmit: true` + `allowImportingTsExtensions: true`——dsh 通过 tsx 实时编译 TypeScript 源码，插件以 `.ts` 形式被直接加载。不要添加打包产物或 `outDir` 流程。
+参照 VS Code Remote-SSH / Zed / JetBrains Gateway 的做法——代码与会话都在远端，本机只做呈现。完整架构依据、调研来源、实测数据见 [PLAN.md](PLAN.md)。
+
+**没有构建步骤。** `tsconfig.json` 是 `noEmit: true` + `allowImportingTsExtensions: true`，源码以 `.ts` 形式经 tsx 直接运行。不要添加打包产物或 `outDir` 流程。
+
+### 重要：0.4.0 是架构重写
+
+0.3.x 是 Cordis 插件形态（dsh 跑本机 + helper RPC 把文件操作转到远端）。那套代码**已全部删除**：helper RPC、TLS-PSK 流、依赖收集器、native stub、三个 workspace shim、注入式 Web 面板、WebSocket 桥接。
+
+如果你在 git 历史或旧文档里看到 `Ssh2Connection`、`RemoteHostController`、`RemoteWorkspaceAdapter`、`installRemoteDirectoryPicker`、`collectHelperDependencies`、`cordis.patch.yml`——那些都是旧架构，不要参考，不要恢复。
 
 ## 常用命令
 
 ```bash
-# 类型检查（见下方"已知问题"，本地 tsc 目前跑不起来，用这条替代）
+# 类型检查（见下方"已知问题"，本地 tsc 跑不起来，用这条替代）
 npx -y -p typescript@5.7.3 tsc --noEmit
 
-# 独立运行演示服务（不嵌入 dsh），然后浏览器打开 http://127.0.0.1:18900
-npx tsx tests/start-demo.cjs --helperDir <dsh-ssh>/lib/bundle
+# 列出 ~/.ssh/config 中的主机（纯本地，不连接）
+npx tsx src/cli/bin.ts list
 
-# 单个测试脚本（tests/ 下每个文件都是独立可执行脚本，不是 node:test 套件）
-npx tsx tests/test-quick-connect.ts     # 最快的连接冒烟测试
-npx tsx tests/test-connect.cjs          # SSH 连接 + SFTP
-npx tsx tests/test-bootstrap.cjs        # 全自动引导
-npx tsx tests/test-e2e.cjs              # 端到端连接编排
-npx tsx tests/test-ssh-config.ts        # ssh config 解析
+# 诊断某台主机的引导条件（P1 唯一的端到端验证手段）
+npx tsx src/cli/bin.ts doctor OrangePI
+npx tsx src/cli/bin.ts doctor OrangePI --refresh-mirrors
 ```
 
-`npm test`（`node --test`）跑不出有效结果——`tests/` 里没有 `node:test` 用例。
+**改动传输层或引导逻辑后，必须跑一次真实 `doctor`**。类型检查通过不等于连得上——远端 shell 差异、脚本拼接错误这类问题只有实跑才暴露。
 
-**测试需要真实远端主机。** 现有脚本硬编码了别名 `OrangePI`（aarch64 Linux, 192.168.1.82），从 `~/.ssh/config` 解析。改动连接/引导逻辑后，至少跑一次 `test-quick-connect.ts` 验证，不能只靠类型检查。
-
-在 dsh 中加载插件的三种方式见 [INSTALL.md](INSTALL.md)，开发调试首选 `pnpm dsh web --patch ../dsh_remote_ssh/cordis.patch.yml`。
+测试主机：别名 `OrangePI`（aarch64 Linux, 192.168.1.82），从 `~/.ssh/config` 解析。
 
 ## 架构
 
-四层，数据自上往下：
+五层，依赖严格单向向下，下层不得 import 上层：
 
 ```
-client/remote-explorer.js  ← 注入进 dsh 主页面的面板（原生 JS，无框架、无构建）
-client/index.html          ← /remote-ssh 独立页面
-        │ WebSocket JSON-RPC  /remote-ssh/ws
-src/webgui-integration.ts  ← 路由注册 + handleMethod 方法分发表
-        │
-src/api/remote-host-controller.ts  ← 门面：主机列表、连接生命周期、远端文件操作
-        │
-src/remote-connection.ts   ← ConnectionOrchestrator 状态机 + 自动重连 + 连接历史
-        │
-src/ssh2-connection.ts     ← Ssh2Connection：ssh2 客户端 + RpcPeer + TLS-PSK 流
-        │ 4 字节大端长度前缀 + JSON 帧
-远端 helper（dsh-ssh 构建产物，跑在远端 Node 上）
+入口层      cli/          命令分派、参数解析、终端输出
+编排层      session/      会话生命周期、心跳、重连、多会话簿记        [P3]
+能力层      provision/    装 Node 与 dsh、镜像测速、生成会话 profile
+            tunnel/       正反向端口转发                             [P3]
+            credential/   LLM 凭据代理                               [P4]
+传输层      transport/    ssh2 连接、命令执行、SFTP、转发、通道配额
+基础层      hosts/        ssh config 解析（主机配置唯一来源）
+            util/         shell 转义、错误类型
 ```
 
-旁路模块：
-- [src/ssh-config-parser.ts](src/ssh-config-parser.ts) — 主机配置的**唯一**来源
-- [src/remote-bootstrap.ts](src/remote-bootstrap.ts) — 远端环境引导（装 Node、传 helper 和依赖）
-- [src/remote-directory-picker.ts](src/remote-directory-picker.ts) — 劫持 dsh 的 `ctx.directoryPicker` 走远端
-- [src/remote-workspace.ts](src/remote-workspace.ts) — 用 helper RPC 替代本地 `node:fs` 的 realpath/stat/list
+另有第二个交付物 `dsh-remote-guard`——装在**远端**的 Cordis 插件，只负责补一个免认证探活端点（P5）。
 
-### 必须知道的几件事
+## 必须知道的几件事
 
-**1. 主机配置来自 `~/.ssh/config`，不做持久化。** 这是近期的架构转向。`listHosts()` / `resolveHost(alias)` 用 `ssh-config` 库的 `compute()` 合并 `Host *` 默认值并递归解析 `ProxyJump` 跳板机链。解析结果带模块级缓存，改了 config 文件必须调 `refreshConfig()`。
+**1. 主机配置来自 `~/.ssh/config`，不做持久化。** `listHosts()` / `resolveHost(alias)` 用 `ssh-config` 库的 `compute()` 合并 `Host *` 默认值并递归解析 `ProxyJump` 跳板机链。解析结果带模块级缓存，改了 config 文件必须调 `refreshConfig()`。认证只支持私钥（`IdentityFile`），不接受明文密码。
 
-[src/remote-hosts.ts](src/remote-hosts.ts) 的 `RemoteHostRegistry`（主机档案 CRUD + `remote-hosts.json`）是**遗留代码**，仍从 `index.ts` 导出、仍被老的 `.cjs` 测试引用，但运行时路径已经不走它。新代码不要用它。
+**2. 远端安装按版本入名，多版本并存，不做 hash 校验。** 路径形如 `~/.dsh-remote/versions/dsh-<版本>/`、`~/.dsh-remote/node/<版本>/`，存在性检查是直接执行 `<bin> --version` 成功即复用（Zed 的做法，完整性由 npm 自己兜底）。这是为了避免升级时原地覆盖——那正是"运行中的进程占着文件，写入报 Text file busy"的根因。
 
-**2. 连接是"先试后引导"。** `connectWithBootstrap()` 先用猜测路径（`~/.dsh/node/node`、`~/.dsh/helper/helper.mjs`）直连并**跳过 hash 校验**（`helperHash` 为空时 `Ssh2Connection` 不校验），失败才跑完整引导，再带着引导出的 hash 重连。这是为了避免已引导主机每次重复引导。改这里要保持两条路径都能走通。
+**3. 安装共享、会话状态隔离。** dsh 装在 `versions/` 下所有会话共享；每个会话有独立的 `DSH_HOME=~/.dsh-remote/sessions/<会话 id>/`。这条成立是因为 dsh 的模块解析是双锚的（bundle 名先从 dsh 安装位置解析、再从 profile 目录解析），所以"装在哪"与"`DSH_HOME` 指向哪"解耦。`DSH_HOME` 只能走 `env` 前缀传，它是 bootstrap-only，任何 `.env` 都改不了它。
 
-**3. RPC 协议必须与 dsh-ssh 保持二进制兼容。** `SSH_PROTOCOL_VERSION = 1`，帧格式是 4 字节大端长度 + JSON body，`RpcPeer` 与 dsh-ssh 的 `SshRpcPeer` 可互操作。流转发用 ssh2 的 OpenSSH 扩展 `openssh_forwardOutStream` 直连远端 Unix 域套接字，再叠一层 TLS-PSK（`PSK-AES256-GCM-SHA384`，TLS 1.2 锁定，与 dsh-ssh 的 `stream-security.ts` 一致）。这些常量不能单方面改。
+**4. 所有远端路径由 [src/provision/remote-paths.ts](src/provision/remote-paths.ts) 统一提供**，任何模块不得自己拼。构造远端路径一律用 `/` 拼字符串，**不要用 `node:path` 的 `join`**——本机可能是 Windows，会产出反斜杠。
 
-**4. 引导上传的是散装文件，不是 tarball。** `collectHelperDependencies()` 从工作队列递归收集 `@deepseek-ai/*` 和 `zod` 的传递依赖（约 588 个文件），逐个 SFTP 上传到远端 `~/.dsh/helper/node_modules/`；原生模块 `node-addon-system` 用 [src/native-stub.ts](src/native-stub.ts) 的 no-op 桩替换，因为二进制无法跨平台。helper 通过 `NODE_PATH` 环境变量找到这些依赖。上传全部走**单个 SFTP 会话串行**执行——并发会超 SSH 通道上限。
+**5. 远端命令统一经 `sh -c` 包裹。** `SshTransport.exec()` 已做这件事。ssh exec 用的是用户登录 shell，而各 shell 行为有实质差异：zsh 遇到未匹配的 glob 会直接报 `no matches found` 并中止，bash 则保留字面量。写远端脚本时还要注意**多行命令用 `\n` 连接，不能用空格**——`head=$(...) if [ ... ]` 是语法错误，整段脚本在解析期就失败，表现为所有探测"无输出"。
 
-**5. 面板是注入进去的，不是独立页面。** `webServer.tapIndex()` 把 `client/remote-explorer.js` 整个内联到 dsh 主页面 `</body>` 之前。脚本内容有模块级缓存，改完要重启 dsh 才生效。`remote-directory-picker.ts` 的做法更激进：直接**原地改写** `ctx.directoryPicker` capability 对象的 `list` 方法，连接断开时还原。
+**6. 拼进远端命令的任何动态值必须过 [src/util/shell-quote.ts](src/util/shell-quote.ts) 的 `quote()`。** 不要用模板字符串直接插值，那等于命令注入。注意 `quote('$HOME/x')` 会阻止 shell 展开 `$HOME`——需要展开时写 `"$HOME"/${quote(名字)}`。
 
-**6. 加新 WebSocket 方法要改两处。** [src/webgui-integration.ts](src/webgui-integration.ts) 的 `handleMethod` switch 是真正生效的分发表，前端调用点在 `client/remote-explorer.js`。
+**7. 远端 dsh 已内置令牌认证。** 启动输出形如 `dsh web: http://127.0.0.1:<端口>/?token=<43 字符>`，无令牌访问返回 401，令牌换 `HttpOnly` + `SameSite=Strict` cookie。**令牌不落盘**，只在启动输出首行——所以启动日志文件既是诊断来源也是令牌唯一来源，不能丢。
 
-**7. 落盘位置。** 镜像源选择存 `~/.dsh/remote-ssh-mirror.json`，远程工作区存 `~/.dsh/remote-workspaces.json`。Node 下载镜像源支持官方/阿里/清华/中科大四选一。
+**8. 停远端进程不能用 `pkill -f <模式>`。** 承载命令的 shell 其命令行也含该模式，会把自己的 SSH 会话一起杀掉（实测踩过）。用会话目录下的 pid 文件，或按监听端口定位。
+
+**9. 远端 Node 必须用 v24 系，且装完要做稳定性自检。** v22.23.2 在 aarch64 上起进程崩溃率 35%（V8 初始化 isolate 随机失败，报 OOM 但内存充足）。`npm install` 要起几十次 node，必然失败，且报错会误导到最后一个失败的包。[src/provision/probe.ts](src/provision/probe.ts) 的 `checkNodeStability()` 强制自检，容错次数为 0。
+
+**10. 镜像测速在远端执行，必须带 `-L` 并校验响应内容。** 测的是远端到镜像的连通性，本机测没意义。阿里源对 `index.json` 返回 302，只测时间会把重定向页当成成功并选出错误的"最快"镜像。腾讯与华为镜像已从候选移除（DNS 解析失败）。
 
 ## 已知问题
 
-动手前先了解这些，别当成自己改出来的：
-
-- **`npm run typecheck` 跑不起来。** `node_modules` 里的 typescript 是 7.0.2，缺 `@typescript/typescript-win32-x64` 平台包。用 `npx -y -p typescript@5.7.3 tsc --noEmit` 替代。
-- **`ssh-config` 没进 package.json。** `ssh-config-parser.ts` 依赖它，`node_modules` 里有 5.3.0，但 `dependencies` 没声明。干净安装会崩。
-- **`zod` 实际装的是 4.6.5，package.json 写 `^3.24.0`。** 这导致 `remote-workspace.ts:106` 等处 zod 类型推导报错。
-- **`src/api/websocket-bridge.ts` 已失效。** 它调用的 `controller.list/create/update/delete/probe/bootstrap` 在 controller 上都不存在了（随主机管理迁移到 ssh config 一起废弃）。但 `tests/start-demo.cjs` 还在 require 它。生效的 WS 实现是 `webgui-integration.ts`。
-- **`remote-bootstrap.ts` 有未定义引用**：`probe()` 里用了不存在的 `profile`（108、111 行），`homedir` 没 import（498、519 行）。`bootstrap()` 路径不经过这些行所以运行时没暴露。
-- **`remote-host-controller.ts:142` 调了未定义的 `log()`**。
-- `ConnectionState` 的 `'reconnecting'` 不在 `api/types.ts` 的 `RemoteConnectionStateValue` 里，两处类型不一致。
-
-现有类型错误共约 25 个。改代码时至少不要让它变多；顺手修掉相关的那几个更好。
+- **`npm run typecheck` 跑不起来。** `node_modules` 里的 typescript 版本缺 win32 平台包。用 `npx -y -p typescript@5.7.3 tsc --noEmit` 替代。
+- **远端主机 OrangePI 的内核未启用 landlock**（LSM 列表 `capability,yama,kbox_capability`），`node-addon-system` 的 `probe()` 返回 `unusable`。这是该主机的内核配置问题，与本项目架构无关；`flock` 在同一台机器上可用。
+- 远端遗留一个陈旧的 18903 反向端口监听（P0 测试残留，已不可连接，随 sshd 回收）。
 
 ## 约束
 
-- 远端只支持 POSIX（Linux/macOS）；客户端支持 Windows/Linux/macOS，所以**不要引入依赖系统 `ssh` 命令的实现**——用纯 JS 的 ssh2 就是为了这个。
-- 认证只用私钥文件路径引用，不在代码或配置里落明文密钥。`remote-bootstrap.ts` 的 `connectClient()` 目前硬要求 `IdentityFile`。
-- 断线语义与 dsh-ssh 一致：连接丢失后所有挂起操作作废，`Ssh2Connection` 自身不重连，重连由 `ConnectionOrchestrator` 负责（有限次指数退避，默认 3 次）。
+- 远端只支持 POSIX（Linux/macOS）；客户端支持 Windows/Linux/macOS，所以**不要引入依赖系统 `ssh` 命令的实现**——用纯 JS 的 ssh2 就是为了这个。代价是 ControlMaster 那类现成便利拿不到，通道配额要自己管（[src/transport/channel-pool.ts](src/transport/channel-pool.ts)）。
+- 认证只用私钥文件路径引用，不在代码或配置里落明文密钥。日志与错误消息不打印密钥、令牌、口令内容。
+- 远端 webserver **必须**绑 `127.0.0.1`，反向转发的远端监听地址也必须是 `127.0.0.1`。dsh webserver 的 `host` 只接受 `127.0.0.1` 与 `0.0.0.0`，且其自身不携带 TLS——绑 `0.0.0.0` 等于把 GUI 挂到网上。
+- 本机 CLI 必须活满整个会话：反向隧道代理持有 LLM key，CLI 退出则远端模型调用全部失败。这是凭据方案的既定代价，不是缺陷。
+- 对远端资源的批量操作默认**串行**；要并发必须确认通道配额能承受。
+- 新增运行时依赖必须写进 `package.json`，版本锁定或用窄范围。

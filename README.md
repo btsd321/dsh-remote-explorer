@@ -1,118 +1,128 @@
-# dsh_remote_ssh
+# dsh-remote
 
-DeepSeek Harness 远程主机开发插件——基于 dsh-ssh provider 家族，在之上提供跨平台连接、自动引导、主机档案管理、连接编排、远程工作区适配和 Web GUI 能力。
+远程开发启动器：把 dsh 装到远程主机上运行，本机只留浏览器。LLM 凭据不离开本机。
 
-## 功能
+参照 VS Code Remote-SSH、Zed、JetBrains Gateway 的做法——**代码与会话都在远端，本机只做呈现**。
+完整架构依据、调研来源与实测数据见 [PLAN.md](PLAN.md)。
 
-- **跨平台 SSH 连接**：基于 ssh2 纯 JS 库，支持 Windows/Linux/macOS 客户端连接 POSIX 远程主机
-- **全自动远端引导**：自动检测、安装 Node 运行时，上传 harness helper 及所有依赖（含 native stub）
-- **代理配置**：支持远端 HTTP 代理（用于被墙环境下载 Node 等）
-- **主机档案管理**：持久化远程主机配置，密钥通过文件路径引用不落明文
-- **连接编排状态机**：可观测的连接生命周期（disconnected → connecting → verifying → ready → reconnecting → lost）
-- **断线检测与自动重连**：有限次指数退避自动重连 + 手动重连
-- **连接历史记录**：记录连接开始/结束时间、断开原因
-- **远程工作区适配**：通过 helper RPC 实现远端 realpath/stat/listDir/readText
-- **Web GUI**：主机面板、连接向导、状态徽标、远端文件浏览器、操作日志、连接历史
+## 与旧版的区别
+
+0.3.x 是 Cordis 插件：dsh 跑在本机，用 helper RPC 把文件系统操作逐个转到远端。
+这条路线要为 dsh 每个碰文件系统的功能补一个 shim，且远端原生模块只能用 no-op 桩替换
+（landlock 沙箱与 flock 因此失效）。
+
+0.4.0 起改为独立 CLI：远端装完整 dsh，本机不跑 dsh。约 2000 行 shim 随之删除，
+远端拿到真实的预编译原生模块。
+
+## 当前状态
+
+按 [PLAN.md](PLAN.md) 的里程碑推进中。
+
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| P0 | 可行性验证（手动全流程） | ✅ 五步通过 |
+| P1 | 连接闭环：传输层、主机解析、探测、镜像测速 | ✅ `list` / `doctor` 可用 |
+| P2 | 引导闭环：装 Node 与 dsh、生成会话 profile | 未开始 |
+| P3 | 会话闭环：隧道、心跳重连、多主机并行 | 未开始 |
+| P4 | 凭据闭环：反向隧道代理 | 未开始 |
+| P5 | `dsh-remote-guard` 远端插件与打磨 | 未开始 |
+
+## 安装与使用
+
+无构建步骤——源码以 `.ts` 形式经 tsx 直接运行。
+
+```bash
+npm install
+
+# 列出 ~/.ssh/config 中的主机
+npx tsx src/cli/bin.ts list
+
+# 诊断某台主机的引导条件
+npx tsx src/cli/bin.ts doctor OrangePI
+npx tsx src/cli/bin.ts doctor OrangePI --refresh-mirrors   # 强制重测镜像
+```
+
+`doctor` 会检查连接、平台、基础命令、磁盘余量、已装运行时、**Node 运行时稳定性**
+与各镜像实测延迟。它是排查远程环境问题的首选手段——远程开发的故障大多出在环境而非代码。
 
 ## 架构
 
 ```
-┌─ Web GUI (client/index.html) ───────────────────┐
-│  主机面板 │ 连接向导 │ 远端文件浏览器 │ 连接历史 │
-└────────────────────┬───────────────────────────┘
-                     │ WebSocket JSON-RPC
-┌─ Host: API Controller + Bridge ─────────────────┐
-│  CRUD/探测/引导/连接/重连/历史/远端文件操作      │
-└────────────────────┬───────────────────────────┘
-                     │ Ssh2Connection RPC
-┌─ 远端 Helper (dsh-ssh) ─────────────────────────┐
-│  fs.resolve/stat/list/readText + process.*      │
-└─────────────────────────────────────────────────┘
+本机 (Windows/Linux/macOS)                      远端 (Linux/macOS)
+┌────────────────────────────────┐              ┌──────────────────────────────┐
+│ 浏览器                          │              │ dsh（完整 npm 安装）          │
+│ 127.0.0.1:<本地端口>            │              │ webserver 127.0.0.1:<端口>    │
+└───────────────┬────────────────┘              │                              │
+                │ HTTP / WS + 会话令牌           │  ├ session / agent           │
+┌───────────────▼────────────────┐  正向转发     │  ├ fs / subprocess           │
+│ dsh-remote CLI（常驻）          │══════════════▶│  ├ terminal / lsp            │
+│ ├ transport  ssh2 连接与转发     │              │  └ sandbox                   │
+│ ├ provision  装 Node 与 dsh      │              │                              │
+│ ├ tunnel     端口转发            │  反向转发     │                              │
+│ ├ session    心跳与重连          │◀═════════════│  baseURL → 127.0.0.1:<反向>  │
+│ └ credential LLM 代理            │              │                              │
+│   ▲ DEEPSEEK_API_KEY 只在这里    │              └──────────────────────────────┘
+└───┼────────────────────────────┘
+    │
+真实 LLM API（本机直连出网）
 ```
 
-## 模块
+依赖方向严格单向向下，下层不得 import 上层：
 
-| 模块 | 文件 | 职责 |
-|---|---|---|
-| 跨平台 SSH 连接 | `src/ssh2-connection.ts` | 基于 ssh2 的连接，RPC 通道，TLS-PSK 流认证 |
-| 远端环境引导器 | `src/remote-bootstrap.ts` | 探测 Node、自动安装、上传 helper 和依赖、代理支持 |
-| 主机档案注册表 | `src/remote-hosts.ts` | CRUD + 持久化，密钥引用，代理配置 |
-| 连接编排状态机 | `src/remote-connection.ts` | 引导→连接→就绪→断开，断线检测，自动重连，连接历史 |
-| 依赖收集器 | `src/dependency-collector.ts` | 递归收集 helper 的所有传递依赖 |
-| 原生插件 stub | `src/native-stub.ts` | node-addon-system 的 no-op 替代 |
-| 远程工作区适配 | `src/remote-workspace.ts` | 通过 helper RPC 实现远端 realpath/stat/listDir |
-| API controller | `src/api/remote-host-controller.ts` | 远程主机管理 API（含远端文件操作） |
-| WebSocket 桥接 | `src/api/websocket-bridge.ts` | WebSocket JSON-RPC 桥接服务 |
-| API 类型定义 | `src/api/types.ts` | 请求/响应类型 |
-| 协议 schema | `src/schemas.ts` | helper RPC 返回值的 Zod schema |
+```
+入口层      cli/
+编排层      session/
+能力层      provision/   tunnel/   credential/
+传输层      transport/
+基础层      hosts/   util/
+```
 
-## 使用
+| 模块 | 职责 |
+|---|---|
+| [src/util/](src/util/) | shell 转义、错误类型 |
+| [src/hosts/ssh-config-parser.ts](src/hosts/ssh-config-parser.ts) | 主机配置的**唯一**来源：解析 ssh config，递归解析 ProxyJump |
+| [src/transport/types.ts](src/transport/types.ts) | 传输抽象接口（按多传输设计，日后可加 Docker / WSL） |
+| [src/transport/ssh-transport.ts](src/transport/ssh-transport.ts) | ssh2 实现：跳板机链、命令执行、SFTP、正反向转发 |
+| [src/transport/channel-pool.ts](src/transport/channel-pool.ts) | SSH 通道配额，避免超 `MaxSessions` |
+| [src/provision/probe.ts](src/provision/probe.ts) | 远端探测 + **Node 稳定性自检** |
+| [src/provision/mirror-selector.ts](src/provision/mirror-selector.ts) | 在远端实测镜像延迟并自适应选取 |
+| [src/provision/remote-paths.ts](src/provision/remote-paths.ts) | 远端路径规则的唯一真源 |
+| [src/cli/](src/cli/) | 命令分派与终端输出 |
+
+## 几件容易踩的事
+
+这些都是实测踩出来的，改代码时别踩回去（详见 [PLAN.md](PLAN.md) 第十一章）：
+
+- **远端 Node 必须用 v24 系。** v22.23.2 在 aarch64 上起进程崩溃率 35%，
+  表现为 V8 报 OOM 但机器内存充足。`npm install` 要起几十次 node，必然失败，
+  且报错会误导到最后一个失败的包。`probe.ts` 因此强制做稳定性自检。
+- **镜像测速必须带 `-L` 并校验响应内容。** 阿里源对 `index.json` 返回 302，
+  只测时间会把重定向页当成成功，并选出错误的"最快"镜像。
+- **远端命令统一经 `sh -c` 包裹。** ssh exec 用的是用户登录 shell；zsh 遇到
+  未匹配的 glob 会直接报错中止，bash 则保留字面量。不锁定 POSIX 语义，
+  同一段脚本在不同用户机器上行为不同。
+- **停远端进程不能用 `pkill -f <模式>`。** 承载命令的 shell 其命令行也含该模式，
+  会把自己的 SSH 会话一起杀掉。用 pid 文件或按监听端口定位。
+- **构造远端路径一律用 `/` 拼字符串**，不要用 `node:path` 的 `join`——
+  本机可能是 Windows，会产出反斜杠。
+
+## 开发
 
 ```bash
-# 1. 启动演示服务
-npx tsx tests/start-demo.cjs --helperDir /path/to/dsh-ssh/lib/bundle
-
-# 2. 在浏览器打开
-# http://127.0.0.1:18900?helperDir=/path/to/dsh-ssh/lib/bundle
-
-# 3. 在 Web GUI 中：
-#    - 新增远程主机（填写地址/用户/密钥/工作目录/代理）
-#    - 点击"自动引导"（自动装 Node + 上传 helper）
-#    - 点击"连接"
-#    - 连接就绪后浏览远端目录、查看文件
+# 类型检查（本地 tsc 不可用，原因见 CLAUDE.md）
+npx -y -p typescript@5.7.3 tsc --noEmit
 ```
 
-## 编程接口
+代码规范见 [docs/type_script_style.md](docs/type_script_style.md)，写任何代码前先读。
+交流、注释、提交信息一律用中文。
 
-```typescript
-import { RemoteHostRegistry, RemoteBootstrap, ConnectionOrchestrator, RemoteWorkspaceAdapter } from './src/index.js';
+## 验证环境
 
-// 1. 创建主机档案
-const registry = new RemoteHostRegistry();
-const profile = registry.create({
-  title: 'My Server', host: '192.168.1.82', port: 22,
-  username: 'user', privateKeyPath: '~/.ssh/id_rsa',
-  workspace: '/home/user/projects',
-  proxy: 'http://127.0.0.1:18890', // 可选
-});
+OrangePI（aarch64 Linux, 192.168.1.82, Ubuntu glibc 2.35, 内核 5.10.0+），客户端 Windows 11。
 
-// 2. 全自动引导
-const bootstrap = new RemoteBootstrap();
-const result = await bootstrap.bootstrap(profile, '/path/to/dsh-ssh/lib/bundle');
-registry.update(profile.id, { node: result.node, helper: result.helper, helperHash: result.helperHash });
+P0 实测：装 Node v24.11.1 + dsh 0.1.6-alpha.2 约 75 秒 / 700M；
+`ssh -L` 隧道取到完整 GUI 页面；`ssh -R` 凭据回打通，远端环境无任何 API key。
 
-// 3. 连接编排
-const orchestrator = new ConnectionOrchestrator();
-orchestrator.on('stateChange', (e) => console.log(e.state, e.message));
-const hello = await orchestrator.activate(profile, '/path/to/dsh-ssh/lib/bundle');
-
-// 4. 远程工作区操作
-const adapter = new RemoteWorkspaceAdapter(orchestrator.activeConnection);
-const entries = await adapter.listDir(await adapter.realpath('/home/user'));
-const content = await orchestrator.activeConnection.request('fs.readText', { target: { targetKey: path, displayPath: path } }, z.string());
-
-// 5. 断开
-await orchestrator.deactivate();
-```
-
-## 测试
-
-```bash
-npx tsx tests/test-connect.cjs          # SSH 连接 + SFTP
-npx tsx tests/test-bootstrap.cjs        # 全自动引导
-npx tsx tests/test-direct-connect.cjs    # 直接连接 + RPC
-npx tsx tests/test-e2e.cjs               # 端到端连接编排
-npx tsx tests/test-remote-workspace.cjs  # 远程工作区适配
-npx tsx tests/start-demo.cjs             # 演示服务
-node tests/test-ws-client.cjs            # WebSocket 客户端
-node tests/test-remote-api.cjs           # 远端文件操作 API
-```
-
-## 测试环境
-
-已在 OrangePI（aarch64 Linux, 192.168.1.82）上验证：
-- Windows → ARM64 Linux SSH 连接 + SFTP
-- 全自动引导（Node v22.20.0 + helper + 588 依赖文件）
-- helper hello 握手 + RPC executable 查找
-- 远端目录浏览（45 个条目）+ 文件读取（.bashrc 3771 字节）
-- 连接状态机全流程 + 断线重连 + 连接历史
+一个已知的环境限制：该主机内核未启用 landlock（LSM 列表为 `capability,yama,kbox_capability`），
+所以 `node-addon-system` 的 `probe()` 返回 `unusable`。这取决于远端内核配置，与架构无关；
+`flock` 在同一台机器上可用。

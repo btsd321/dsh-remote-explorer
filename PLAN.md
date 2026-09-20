@@ -344,7 +344,11 @@ const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
 pub const MAX_RECONNECT_ATTEMPTS: usize = 3;
 ```
 
-现有 `remote-connection.ts` 默认重连 3 次，与 Zed 一致，这个选择是对的，直接沿用。
+现有 `remote-connection.ts` 默认重连 3 次，与 Zed 一致，这个选择是对的，直接沿用。其退避参数照搬（该文件已在 P1 删除，参数记录在此以免 P3 去翻 git 历史）：
+
+```
+enabled: true, maxAttempts: 3, initialDelayMs: 1000, backoffMultiplier: 2, maxDelayMs: 10_000
+```
 
 状态机同样借 Zed 的枚举（`remote_client.rs:175-205`），比现有 7 状态更能区分故障阶段：
 
