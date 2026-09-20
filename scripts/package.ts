@@ -1,7 +1,7 @@
 /**
  * @file 分发包打包脚本
  * @description 产出「目标机零依赖、解压即用」的安装包：esbuild 把 CLI 连同全部
- *              运行时依赖（ssh2 / ssh-config / yaml）打进单个 .mjs，再按目标
+ *              运行时依赖（ssh2 / ssh-config / yaml）打进单个 .cjs，再按目标
  *              平台打入官方 Node 二进制与启动器。
  *
  * 与「仓库无构建步骤」的关系：开发流程仍然 tsx 直跑 .ts，本脚本只服务分发，
@@ -271,7 +271,7 @@ function extractNodeBinary(archive: string, member: string, destFile: string): v
  * 组装单个平台的 staging 目录。
  *
  * @param stagingRoot - staging 根目录（其下建 dsh-remote/）
- * @param bundleFile - 已生成的 dsh-remote.mjs 路径
+ * @param bundleFile - 已生成的 dsh-remote.cjs 路径
  * @param nodeBinaryFile - 已提取的 Node 二进制路径
  * @param target - 目标平台
  */
@@ -287,15 +287,15 @@ function assembleStaging(
 
   // 1. 运行时三件套：Node 二进制、单文件 CLI、启动器
   cpSync(nodeBinaryFile, join(pkgDir, target.os === 'win32' ? 'node.exe' : 'node'));
-  cpSync(bundleFile, join(pkgDir, 'dsh-remote.mjs'));
+  cpSync(bundleFile, join(pkgDir, 'dsh-remote.cjs'));
   if (target.os === 'win32') {
     // cmd 启动器：%~dp0 带结尾反斜杠；@ 抑制命令回显
     writeFileSync(join(pkgDir, 'dsh-remote.cmd'),
-      '@"%~dp0node.exe" "%~dp0dsh-remote.mjs" %*\r\n');
+      '@"%~dp0node.exe" "%~dp0dsh-remote.cjs" %*\r\n');
   } else {
-    // sh 启动器：以脚本自身位置定位 node 与 mjs，可在任意目录调用
+    // sh 启动器：以脚本自身位置定位 node 与 cjs，可在任意目录调用
     writeFileSync(join(pkgDir, 'dsh-remote'),
-      '#!/bin/sh\nexec "$(dirname "$0")/node" "$(dirname "$0")/dsh-remote.mjs" "$@"\n');
+      '#!/bin/sh\nexec "$(dirname "$0")/node" "$(dirname "$0")/dsh-remote.cjs" "$@"\n');
   }
 
   // 2. 文档（许可必须随分发走）
@@ -429,11 +429,14 @@ async function main(): Promise<number> {
   println(bold(`打包 dsh-remote ${pkg.version}（Node ${nodeVersion}，${mirror} 镜像）`));
   const progress = new ProgressReporter();
   progress.start('esbuild 打包单文件 CLI');
-  const bundleFile = join(workDir, 'dsh-remote.mjs');
+  const bundleFile = join(workDir, 'dsh-remote.cjs');
   await build({
     entryPoints: [BUNDLE_ENTRY],
     outfile: bundleFile,
-    format: 'esm',
+    // CJS 而非 ESM：ssh2 内部有惰性 require('net') 等动态 require，ESM 输出下
+    // esbuild 的 __require 垫片会直接抛错；CJS 输出下动态 require 原生可用。
+    // 源码无顶层 await，CJS 化没有障碍
+    format: 'cjs',
     platform: 'node',
     target: 'node20',
     bundle: true,
@@ -441,7 +444,6 @@ async function main(): Promise<number> {
     // ssh2 的 try/catch 兜住回落纯 JS；nan 只在编译 cpu-features 时用到
     external: ['cpu-features', 'nan'],
     minify: values.minify === true,
-    banner: { js: '#!/usr/bin/env node' },
   });
   progress.done(`${(statSync(bundleFile).size / 1_000_000).toFixed(1)} MB`);
 
