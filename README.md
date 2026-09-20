@@ -8,20 +8,39 @@ Inspired by VS Code Remote-SSH, Zed, and JetBrains Gateway — **code and sessio
 
 ## Supported environments
 
-- **Local (client)**: Windows / Linux / macOS, Node.js v20.19+ or v22+ (for running tsx).
+- **Local (client)**: Windows / Linux / macOS. Node.js v20.19+ or v22+ is only needed for the **source-run** mode; release packages bundle their own Node runtime.
 - **Remote host**: Linux or macOS (POSIX); aarch64 (arm64) and x86_64 both work. No Node preinstalled required — the tool installs and self-checks it.
 - **SSH authentication**: private key (`IdentityFile`, recommended); with no key configured, an interactive terminal prompts for a password (no echo); `--password` also works (leaks via process list / shell history — the CLI warns).
 - Hosts come from `Host` entries in `~/.ssh/config`, or ad-hoc `user@host[:port]` (IPv6 must go through the config).
 
-## Installation
+## Installation and running
 
-No build step — source is run directly via tsx.
+Pick either mode — commands and options are identical.
+
+### Option 1: run from source
+
+The repository has no build step; `.ts` source is executed directly via tsx. After fetching the source:
 
 ```bash
 npm install
+npx tsx src/cli/bin.ts list
 ```
 
+### Option 2: run a release package
+
+Download the archive for your platform from the release page (produced by the [packaging script](#packaging), named `dsh-remote-<version>-<platform>.<zip|tar.gz>`), unpack it, and run directly — no Node, npm, or network required on the target:
+
+| Platform | Archive | How to run after unpacking |
+|---|---|---|
+| win32-x64 | `.zip` | `dsh-remote.cmd <command>` |
+| linux-x64 / linux-arm64 | `.tar.gz` | `./dsh-remote <command>` |
+| darwin-x64 / darwin-arm64 | `.tar.gz` | `./dsh-remote <command>` |
+
+Each package bundles the official Node binary (SHASUMS256-verified at download time) and a single-file CLI `dsh-remote.cjs` (all dependencies bundled in). Verify the archive against the sha256 published with the release.
+
 ## Quick start
+
+> Examples below use the **source-run** form. With a release package, replace `npx tsx src/cli/bin.ts` with `./dsh-remote` (Windows: `dsh-remote.cmd`) — the options are identical.
 
 ```bash
 # List hosts from ~/.ssh/config
@@ -151,14 +170,31 @@ Foundation   hosts/   util/
 ```bash
 # Type check (local tsc has issues, see CLAUDE.md)
 npx -y -p typescript@5.7.3 tsc --noEmit
-
-# Build distributable packages: single-file CLI + target-platform Node binary,
-# unpack-and-run on the target (output lands in dist/, gitignored)
-npx tsx scripts/package.ts --all          # full platform matrix
-npx tsx scripts/package.ts --os linux --arch arm64
 ```
 
 Code style guide is in [docs/type_script_style.md](docs/type_script_style.md) — read it before writing any code.
+
+## Packaging
+
+Produces release packages (see [Installation and running](#option-2-run-a-release-package)): esbuild bundles the CLI with all runtime dependencies into a single `dsh-remote.cjs`, then the official Node binary for the target platform is added, along with launchers and docs, and everything is archived. Output lands in `dist/` (gitignored) — **this does not change how the source itself runs via tsx**.
+
+```bash
+npx tsx scripts/package.ts                        # package for the current platform
+npx tsx scripts/package.ts --all                  # full five-platform matrix
+npx tsx scripts/package.ts --os linux --arch arm64
+```
+
+| Option | Description |
+|---|---|
+| `--os <os>` | Target OS: `win32` / `linux` / `darwin` (default: current platform) |
+| `--arch <arch>` | Target architecture: `x64` / `arm64` (default: current architecture) |
+| `--all` | Build the full five-platform matrix; ignores `--os` / `--arch` |
+| `--node-version <ver>` | Node version to bundle (default: `v24.11.1`) |
+| `--mirror <mirror>` | Node download source: `npmmirror` (default) / `official` / custom URL prefix |
+| `--out-dir <dir>` | Output directory (default: `dist`) |
+| `--minify` | Minify the bundle (off by default, keeps readable stack traces) |
+
+Node distributions are verified against SHASUMS256 on download and cached in `dist/.node-cache`, so repeated packaging skips the download. Each run prints the path, size, and sha256 of every artifact.
 
 ## License
 

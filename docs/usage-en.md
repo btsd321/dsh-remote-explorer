@@ -4,6 +4,8 @@
 
 This document provides a detailed walkthrough of every `dsh-remote` command, its options, and common workflows.
 
+> Examples use the source-run form (`npx tsx src/cli/bin.ts <command>`). With a release package, substitute `./dsh-remote <command>` (Windows: `dsh-remote.cmd <command>`) — commands and options are identical.
+
 ## Table of contents
 
 - [Prerequisites](#prerequisites)

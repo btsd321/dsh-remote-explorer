@@ -4,6 +4,8 @@
 
 本文档详细介绍 `dsh-remote` 的每个命令、参数及常见工作流。
 
+> 示例统一以源码方式（`npx tsx src/cli/bin.ts <命令>`）书写；用 release 分发包时把它替换为 `./dsh-remote <命令>`（Windows 为 `dsh-remote.cmd <命令>`），命令与参数完全一致。
+
 ## 目录
 
 - [前置条件](#前置条件)

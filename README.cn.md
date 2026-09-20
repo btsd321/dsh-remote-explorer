@@ -8,20 +8,39 @@
 
 ## 支持的环境
 
-- **本机（客户端）**：Windows / Linux / macOS，Node.js v20.19+ 或 v22+（运行 tsx）。
+- **本机（客户端）**：Windows / Linux / macOS。Node.js v20.19+ 或 v22+ 仅**源码运行方式**需要；release 包自带 Node 运行时。
 - **远端主机**：Linux 或 macOS（POSIX）；aarch64（arm64）与 x86_64 均可。远端无需预装 Node——工具会自动安装并自检。
 - **SSH 认证**：私钥（`IdentityFile`，推荐）；无私钥时在交互式终端提示输入密码（不回显）；也可 `--password` 明文传入（有泄露风险，CLI 会警告）。
 - 主机来自 `~/.ssh/config` 的 `Host` 条目，或 `user@host[:port]` 直连（IPv6 需写进 config）。
 
-## 安装
+## 安装与运行
 
-无构建步骤——源码以 `.ts` 形式经 tsx 直接运行。
+两种方式任选其一，命令与参数完全一致。
+
+### 方式一：源码运行
+
+本仓库无构建步骤，源码以 `.ts` 形式经 tsx 直接执行。取到源码后：
 
 ```bash
 npm install
+npx tsx src/cli/bin.ts list
 ```
 
+### 方式二：release 包运行
+
+从发布处下载对应平台的压缩包（由 [打包](#打包)脚本产出，命名 `dsh-remote-<版本>-<平台>.<zip|tar.gz>`），解压后直接运行——目标机无需 Node、npm 与网络：
+
+| 平台 | 包格式 | 解压后的运行方式 |
+|---|---|---|
+| win32-x64 | `.zip` | `dsh-remote.cmd <命令>` |
+| linux-x64 / linux-arm64 | `.tar.gz` | `./dsh-remote <命令>` |
+| darwin-x64 / darwin-arm64 | `.tar.gz` | `./dsh-remote <命令>` |
+
+包内自带官方 Node 二进制（下载时经 SHASUMS256 校验）与单文件 CLI `dsh-remote.cjs`（全部依赖已打进单文件）。下载后建议按发布处公布的 sha256 校验压缩包完整性。
+
 ## 快速开始
+
+> 下文示例统一以**源码方式**书写；用 release 包时把 `npx tsx src/cli/bin.ts` 替换为 `./dsh-remote`（Windows 为 `dsh-remote.cmd`），参数完全一致。
 
 ```bash
 # 列出 ~/.ssh/config 中的主机
@@ -151,13 +170,31 @@ npx tsx src/cli/bin.ts list --ssh-config /path/to/config
 ```bash
 # 类型检查（本地 tsc 不可用，原因见 CLAUDE.md）
 npx -y -p typescript@5.7.3 tsc --noEmit
-
-# 打分发包：单文件 CLI + 目标平台 Node 二进制，目标机解压即用（产物在 dist/）
-npx tsx scripts/package.ts --all          # 五平台矩阵
-npx tsx scripts/package.ts --os linux --arch arm64
 ```
 
 代码规范见 [docs/type_script_style.md](docs/type_script_style.md)，写任何代码前先读。
+
+## 打包
+
+产出 release 分发包（见[安装与运行](#方式二release-包运行)）：esbuild 把 CLI 与全部运行时依赖打进单个 `dsh-remote.cjs`，再按目标平台打入官方 Node 二进制，组装启动器与文档后压缩。产物在 `dist/`（已 gitignore），**不改变源码的 tsx 运行方式**。
+
+```bash
+npx tsx scripts/package.ts                        # 打当前运行平台
+npx tsx scripts/package.ts --all                  # 五平台全矩阵
+npx tsx scripts/package.ts --os linux --arch arm64
+```
+
+| 参数 | 说明 |
+|---|---|
+| `--os <os>` | 目标平台：`win32` / `linux` / `darwin`（默认当前平台） |
+| `--arch <arch>` | 目标架构：`x64` / `arm64`（默认当前架构） |
+| `--all` | 打全部五平台矩阵，忽略 `--os` / `--arch` |
+| `--node-version <版本>` | 打入的 Node 版本（默认 `v24.11.1`） |
+| `--mirror <镜像>` | Node 下载源：`npmmirror`（默认，国内可达）/ `official` / 自定义 URL 前缀 |
+| `--out-dir <目录>` | 产物目录（默认 `dist`） |
+| `--minify` | 压缩产物体积（默认关闭，保留可读堆栈） |
+
+Node 发行包下载时按 SHASUMS256 校验，缓存在 `dist/.node-cache`，重复打包不重新下载。打包完会打印每个产物的路径、体积与 sha256。
 
 ## 许可
 
