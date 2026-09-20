@@ -25,6 +25,7 @@ import { RemoteHostController } from './api/remote-host-controller.js';
 import { registerWebGuiRoutes } from './webgui-integration.js';
 import { installRemoteDirectoryPicker } from './remote-directory-picker.js';
 import { installRemoteWorkspaceBridge } from './remote-workspace-bridge.js';
+import { installDiagnostics } from './diagnostics.js';
 
 // === 模块导出 ===
 
@@ -138,7 +139,11 @@ export function apply(ctx: Context, config: Config): void {
     installRemoteWorkspaceBridge(workspaceCtx, controller);
   });
 
-  // 8. 在 ctx 销毁时断开 SSH 连接
+  // 8. 临时诊断：捕获 agent/error 的原始错误对象并打全栈
+  //    定位 ".prepare" 报错用；问题解决后删除 src/diagnostics.ts 及此段
+  installDiagnostics(ctx);
+
+  // 9. 在 ctx 销毁时断开 SSH 连接
   ctx.effect(() => () => {
     void controller.connectionOrchestrator.deactivate().catch(() => {});
   });
