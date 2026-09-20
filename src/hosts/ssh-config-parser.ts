@@ -3,6 +3,7 @@
  * @description 主机配置的**唯一**来源：读取并解析 ~/.ssh/config，用 ssh-config 库的
  *              compute() 合并 `Host *` 通配默认值，并递归解析 ProxyJump 跳板机链。
  *              本插件不持久化主机档案——用户通过编辑 ssh config 管理主机。
+ *              不在 config 里的主机可用 user@host[:port] 直连语法（ad-hoc）。
  *
  * compute() 自动处理：
  * - `Host *` 通配符的全局默认值合并
@@ -18,6 +19,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import SSHConfig from 'ssh-config';
 import { RemoteError } from '../util/errors.js';
+import { isInteractiveTerminal } from '../util/password-prompt.js';
 
 /**
  * compute() 返回的合并结果。
@@ -196,15 +198,55 @@ export function listHosts(): SshHostSummary[] {
   return result;
 }
 
+/** user@host[:port] 直连语法（ad-hoc 主机，不经 config） */
+const AD_HOC_HOST_RE = /^([^@\s]+)@([^@\s]+?)(?::(\d+))?$/;
+
+/**
+ * 解析 user@host[:port] 形式的直连主机。
+ *
+ * IPv6 字面量不支持内联（冒号与端口后缀冲突），需写进 ssh config。
+ * 直连主机无 IdentityFile、无 ProxyJump——认证走交互式密码或 --password。
+ *
+ * @param alias - 命令行给出的主机参数
+ * @returns 解析出的主机配置；不匹配直连语法时 undefined
+ * @throws RemoteError('HOST_CONFIG_INVALID') 直连语法带无效端口
+ */
+function parseAdHocHost(alias: string): ResolvedHost | undefined {
+  const match = AD_HOC_HOST_RE.exec(alias);
+  if (match === null) return undefined;
+  const username = match[1];
+  const host = match[2];
+  const portText = match[3];
+  if (username === undefined || host === undefined) return undefined;
+
+  let port = DEFAULT_SSH_PORT;
+  if (portText !== undefined) {
+    port = Number.parseInt(portText, 10);
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+      throw new RemoteError(
+        'HOST_CONFIG_INVALID',
+        `直连语法 ${alias} 的端口无效：${portText}（需 1–65535）`,
+        { hostAlias: alias },
+      );
+    }
+  }
+
+  return { host, port, username };
+}
+
 /**
  * 解析 Host 别名获取完整连接配置（含递归解析 ProxyJump 跳板机链）。
+ *
+ * 别名优先按 config 解析（config 条目可能本身就含 @）；config 中不存在时
+ * 尝试 user@host[:port] 直连语法。
  *
  * ProxyJump 格式："jump1" 或 "jump1,jump2"（多级跳板机，逗号分隔）。
  * 每个跳板机别名也会被递归解析（若其自身也配了 ProxyJump）。
  *
- * @param alias - SSH config 中的 Host 别名
+ * @param alias - SSH config 中的 Host 别名，或 user@host[:port] 直连语法
  * @returns 含跳板机链的完整配置
- * @throws RemoteError('HOST_NOT_FOUND') config 中没有该别名的可用配置
+ * @throws RemoteError('HOST_NOT_FOUND') 既不在 config 也不匹配直连语法
+ * @throws RemoteError('HOST_CONFIG_INVALID') 直连语法带无效端口
  */
 export function resolveHost(alias: string): ResolvedHostWithJump {
   const config = loadConfig();
@@ -214,9 +256,12 @@ export function resolveHost(alias: string): ResolvedHostWithJump {
   // 它会让任意别名都得到一份（只含通配默认值的）结果，于是"别名不存在"
   // 会被误报成"缺少 User、IdentityFile"，把用户引向错误的排查方向。
   if (!hasMatchingHostEntry(config, alias)) {
+    const adHoc = parseAdHocHost(alias);
+    if (adHoc !== undefined) return { target: adHoc, jumpHosts: [] };
     throw new RemoteError(
       'HOST_NOT_FOUND',
-      `在 ${cachedPath} 中找不到主机别名 ${alias}；用 dsh-remote list 查看可用别名`,
+      `在 ${cachedPath} 中找不到主机别名 ${alias}；用 dsh-remote list 查看可用别名，`
+        + '或用 user@host[:port] 直连',
       { hostAlias: alias },
     );
   }
@@ -238,32 +283,91 @@ export function resolveHost(alias: string): ResolvedHostWithJump {
   return { target, jumpHosts };
 }
 
+/** 命令行认证覆盖（--private-key / --password），只作用于目标主机 */
+export interface AuthOverrides {
+  /** 私钥文件路径（--private-key）：优先于 config 的 IdentityFile */
+  privateKey?: string;
+  /** 固定密码（--password）：显式走密码认证，优先于 config 的 IdentityFile */
+  password?: string;
+}
+
+/**
+ * 解析主机并应用命令行认证覆盖。
+ *
+ * 优先级：--private-key > --password > config IdentityFile（两者同给时
+ * --password 被忽略——密钥更安全）。跳板机不受覆盖影响，仍来自 config。
+ *
+ * @param alias - 主机别名或 user@host[:port] 直连语法
+ * @param auth - 认证覆盖
+ * @returns 应用覆盖后的完整配置
+ * @throws RemoteError 同 {@link resolveHost}
+ */
+export function resolveHostWithAuth(alias: string, auth: AuthOverrides): ResolvedHostWithJump {
+  const resolved = resolveHost(alias);
+  if (auth.privateKey !== undefined) {
+    return {
+      ...resolved,
+      target: { ...resolved.target, identityFile: expandTilde(auth.privateKey) },
+    };
+  }
+  if (auth.password !== undefined) {
+    // 显式密码意图：去掉 config 私钥，让传输层走密码认证。
+    // 用 delete 而不是写 undefined，保持可选属性不含显式 undefined
+    const target = { ...resolved.target };
+    delete target.identityFile;
+    return { ...resolved, target };
+  }
+  return resolved;
+}
+
+/** assertConnectable 的可选项 */
+export interface AssertConnectableOptions {
+  /** 已显式提供密码（--password）：无 IdentityFile 也放行，非交互终端同样有效 */
+  passwordAuth?: boolean;
+}
+
 /**
  * 校验主机配置含连接所必需的字段。
  *
- * 认证只支持私钥文件路径引用，不接受明文密钥；这与仓库的凭据约束一致。
+ * 认证途径：IdentityFile（私钥），或「无 IdentityFile + 交互式终端」（连接时
+ * 提示输密码，不回显，密码只存内存不落盘），或 --password 显式提供。
  *
  * @param resolved - 解析结果
  * @param alias - 主机别名（错误消息用）
- * @throws RemoteError('HOST_CONFIG_INVALID') 缺少 User 或 IdentityFile
+ * @param options - 密码认证可用性（--password 时为 true）
+ * @throws RemoteError('HOST_CONFIG_INVALID') 缺少 User，或无任何可用认证途径
  */
-export function assertConnectable(resolved: ResolvedHostWithJump, alias: string): void {
+export function assertConnectable(
+  resolved: ResolvedHostWithJump,
+  alias: string,
+  options?: AssertConnectableOptions,
+): void {
   const missing: string[] = [];
   if (!resolved.target.username) missing.push('User');
-  if (!resolved.target.identityFile) missing.push('IdentityFile');
+  // 无 IdentityFile 且既非交互终端也无显式密码时才视为缺配置——
+  // 管道/CI 场景保持报错退出，绝不挂死等输入
+  if (!resolved.target.identityFile
+    && !isInteractiveTerminal()
+    && options?.passwordAuth !== true) {
+    missing.push('IdentityFile');
+  }
   if (missing.length > 0) {
     throw new RemoteError(
       'HOST_CONFIG_INVALID',
       `主机 ${alias} 的 ssh config 缺少必要字段：${missing.join('、')}`
-        + `（${cachedPath}）。本工具只支持私钥认证，请补上 IdentityFile`,
+        + `（${cachedPath}）。请补上 IdentityFile，或在交互式终端下用密码登录，`
+        + '或用 --password',
       { hostAlias: alias },
     );
   }
+  // 跳板机不走 --password（覆盖只作用于目标主机）：无 IdentityFile 时
+  // 只有交互式终端能救——连接时逐级提示输密码
   for (const [index, jump] of resolved.jumpHosts.entries()) {
-    if (!jump.identityFile) {
+    if (!jump.identityFile && !isInteractiveTerminal()) {
       throw new RemoteError(
         'HOST_CONFIG_INVALID',
-        `主机 ${alias} 的跳板机 ${index + 1}（${jump.host}:${jump.port}）缺少 IdentityFile`,
+        `主机 ${alias} 的跳板机 ${index + 1}（${jump.host}:${jump.port}）缺少 IdentityFile`
+          + '（跳板机不走 --password，需配置私钥或交互式终端）',
         { hostAlias: alias },
       );
     }

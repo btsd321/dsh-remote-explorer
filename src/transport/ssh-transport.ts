@@ -10,10 +10,25 @@
  *
  * 断线语义（与 dsh-ssh 一致）：本层自身**不重连**。连接丢失后挂起操作全部作废，
  * 重连由会话编排层负责。
+ *
+ * 认证：有 IdentityFile 时走 ssh2 默认顺序（none→publickey→agent），行为与
+ * 早期版本一致；无 IdentityFile 时若上层注入了 getPassword 回调，则改走密码
+ * 认证（ssh2 authHandler，被拒后重新取，最多 3 次；服务端只开
+ * keyboard-interactive 时用同一份密码应答）。传输层不感知终端——提示由
+ * 回调实现（cli/session 注入，见 util/password-prompt.ts）。
  */
 
 import { readFileSync } from 'node:fs';
-import { Client, type ClientChannel, type SFTPWrapper } from 'ssh2';
+import {
+  Client,
+  type AuthHandlerMiddleware,
+  type AuthenticationType,
+  type ClientChannel,
+  type KeyboardInteractiveAuthMethod,
+  type NextAuthHandler,
+  type PasswordAuthMethod,
+  type SFTPWrapper,
+} from 'ssh2';
 import { RemoteError, toErrorMessage } from '../util/errors.js';
 import { quote } from '../util/shell-quote.js';
 import { ChannelPool, type ChannelPoolConfig } from './channel-pool.js';
@@ -30,6 +45,20 @@ import type {
 } from './types.js';
 import type { ResolvedHost, ResolvedHostWithJump } from '../hosts/ssh-config-parser.js';
 
+/**
+ * 密码提供回调：无 IdentityFile 的主机认证时由传输层调用。
+ *
+ * @param hostKey - 主机标识（"user@host:port"，由传输层构造）
+ * @param label - 定位标签（「主机 xxx」/「跳板机 1（host:port）」）
+ * @param attempt - 第几次尝试，从 1 起；> 1 表示上一份密码已被服务器拒绝
+ * @returns 密码；undefined 表示放弃认证（用户取消或无可用凭据）
+ */
+export type PasswordProviderFn = (
+  hostKey: string,
+  label: string,
+  attempt: number,
+) => Promise<string | undefined>;
+
 /** 传输层配置 */
 export interface SshTransportConfig {
   /** 连接与命令的默认超时（毫秒） */
@@ -40,6 +69,11 @@ export interface SshTransportConfig {
   keepaliveCountMax?: number;
   /** 通道配额覆盖 */
   channelPool?: Partial<ChannelPoolConfig>;
+  /**
+   * 密码提供回调：无 IdentityFile 的主机认证时调用。
+   * 不提供则维持「只支持私钥」——连接无 IdentityFile 的主机直接报错。
+   */
+  getPassword?: PasswordProviderFn;
 }
 
 /** 默认超时：与 dsh-ssh 的 requestTimeoutMs 默认值保持一致 */
@@ -50,6 +84,43 @@ const DEFAULT_KEEPALIVE_INTERVAL_MS = 10_000;
 
 /** 默认 keepalive 失败上限 */
 const DEFAULT_KEEPALIVE_COUNT_MAX = 3;
+
+/** 密码认证最大尝试次数（每次被拒后经 getPassword 重新取） */
+const MAX_PASSWORD_ATTEMPTS = 3;
+
+/**
+ * 密码路径的 readyTimeout：ssh2 的 readyTimeout 覆盖整个握手（含认证阶段），
+ * 默认 30 秒会在用户打字输密码时超时。TCP 拒连/不可达不受影响（立刻报错），
+ * 只有「握手成功但认证挂住」这种罕见情形才会等满 120 秒
+ */
+const PASSWORD_READY_TIMEOUT_MS = 120_000;
+
+/** 单次密码认证的内部状态（connectClient 内局部持有，不逃逸到方法外） */
+interface PasswordAuthState {
+  /** 当前尝试的密码；undefined 表示尚未取得或已被消费（用于判定被拒） */
+  password: string | undefined;
+  /** 已被服务器拒绝的密码份数 */
+  failures: number;
+  /** 放弃原因标记，供 describeAuthFailure 翻译错误消息 */
+  outcome: 'cancelled' | 'exhausted' | 'unsupported' | undefined;
+}
+
+/**
+ * 判断错误是否为 SSH 认证失败（密码或密钥被服务器拒绝）。
+ *
+ * ssh2 给认证失败的 Error 挂 level='client-authentication'（含
+ * next(false) 触发的「All configured authentication methods failed」），
+ * 沿 cause 链识别。供会话层在无人值守重连时立即放弃——重试不会让密码变对。
+ *
+ * @param error - 捕获的错误（通常是包装了 ssh2 错误的 RemoteError）
+ * @returns 是否认证失败
+ */
+export function isAuthFailure(error: unknown): boolean {
+  return error instanceof RemoteError
+    && error.cause instanceof Error
+    // level 是 ssh2 自挂的非标准属性，就近断言读取
+    && (error.cause as { level?: string }).level === 'client-authentication';
+}
 
 /** 反向转发时远端必须监听的地址——绝不能对外暴露 */
 const REVERSE_BIND_ADDR = '127.0.0.1';
@@ -90,6 +161,7 @@ export class SshTransport implements RemoteTransport {
   private readonly timeoutMs: number;
   private readonly keepaliveIntervalMs: number;
   private readonly keepaliveCountMax: number;
+  private readonly getPassword: PasswordProviderFn | undefined;
   private detectedPlatform: RemotePlatform | undefined;
   private disposed = false;
   private failure: Error | undefined;
@@ -107,6 +179,7 @@ export class SshTransport implements RemoteTransport {
     this.timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.keepaliveIntervalMs = config.keepaliveIntervalMs ?? DEFAULT_KEEPALIVE_INTERVAL_MS;
     this.keepaliveCountMax = config.keepaliveCountMax ?? DEFAULT_KEEPALIVE_COUNT_MAX;
+    this.getPassword = config.getPassword;
     this.pool = new ChannelPool(config.channelPool);
   }
 
@@ -396,11 +469,16 @@ export class SshTransport implements RemoteTransport {
   /**
    * 连接单个 ssh2 客户端。
    *
+   * 认证：有 IdentityFile 走 ssh2 默认顺序（行为与早期版本一致）；无
+   * IdentityFile 且注入了 getPassword 回调时走密码认证（authHandler 重试，
+   * 见 {@link SshTransport.createPasswordAuthHandler}）。
+   *
    * @param client - 待连接的客户端
    * @param host - 目标主机配置
    * @param sock - 上游通道（经跳板机时提供）
    * @param label - 错误消息中的定位标签
    * @throws RemoteError('CONNECT_FAILED') 连接或认证失败
+   * @throws RemoteError('HOST_CONFIG_INVALID') 无 IdentityFile 且无密码途径，或私钥读取失败
    */
   private async connectClient(
     client: Client,
@@ -408,24 +486,34 @@ export class SshTransport implements RemoteTransport {
     sock: ClientChannel | undefined,
     label: string,
   ): Promise<void> {
-    if (!host.identityFile) {
+    // 1. 私钥路径：有 IdentityFile 时行为与「只支持私钥」时期完全一致
+    let privateKey: Buffer | undefined;
+    if (host.identityFile) {
+      try {
+        privateKey = readFileSync(host.identityFile);
+      } catch (error) {
+        throw new RemoteError(
+          'HOST_CONFIG_INVALID',
+          `${label} 的私钥文件读取失败：${host.identityFile}（${toErrorMessage(error)}）`,
+          { cause: error, hostAlias: this.hostAlias },
+        );
+      }
+    } else if (this.getPassword === undefined) {
+      // 闸门（assertConnectable）通常已拦下；此处兜底未走闸门的直接调用方
       throw new RemoteError(
         'HOST_CONFIG_INVALID',
-        `${label} 缺少 IdentityFile；本工具只支持私钥认证`,
+        `${label} 缺少 IdentityFile，且未提供密码输入途径（需要交互式终端或 --password）`,
         { hostAlias: this.hostAlias },
       );
     }
 
-    let privateKey: Buffer;
-    try {
-      privateKey = readFileSync(host.identityFile);
-    } catch (error) {
-      throw new RemoteError(
-        'HOST_CONFIG_INVALID',
-        `${label} 的私钥文件读取失败：${host.identityFile}（${toErrorMessage(error)}）`,
-        { cause: error, hostAlias: this.hostAlias },
-      );
-    }
+    // 2. 密码认证（仅无私钥时）：state 在单次 connectClient 内局部持有
+    const usePasswordAuth = privateKey === undefined && this.getPassword !== undefined;
+    const auth: PasswordAuthState = { password: undefined, failures: 0, outcome: undefined };
+    const hostKey = `${host.username}@${host.host}:${host.port}`;
+    const authHandler = usePasswordAuth
+      ? this.createPasswordAuthHandler(host, hostKey, label, auth)
+      : undefined;
 
     await new Promise<void>((resolve, reject) => {
       const cleanup = (): void => {
@@ -435,9 +523,13 @@ export class SshTransport implements RemoteTransport {
       const onReady = (): void => { cleanup(); resolve(); };
       const onError = (error: Error): void => {
         cleanup();
+        // 密码路径把 ssh2 原文翻译成带上下文的中文；私钥路径保持原文不变
+        const detail = usePasswordAuth
+          ? this.describeAuthFailure(label, auth, error)
+          : error.message;
         reject(new RemoteError(
           'CONNECT_FAILED',
-          `${label} 连接失败: ${error.message}`,
+          `${label} 连接失败: ${detail}`,
           { cause: error, hostAlias: this.hostAlias },
         ));
       };
@@ -447,13 +539,141 @@ export class SshTransport implements RemoteTransport {
         host: host.host,
         port: host.port,
         username: host.username,
-        privateKey,
-        readyTimeout: this.timeoutMs,
+        ...(privateKey ? { privateKey } : {}),
+        ...(authHandler ? { authHandler } : {}),
+        // 密码场景 readyTimeout 覆盖认证阶段，30 秒会在用户打字时超时，放宽到 120 秒
+        readyTimeout: authHandler !== undefined ? PASSWORD_READY_TIMEOUT_MS : this.timeoutMs,
         keepaliveInterval: this.keepaliveIntervalMs,
         keepaliveCountMax: this.keepaliveCountMax,
         ...(sock ? { sock } : {}),
       });
     });
+  }
+
+  /**
+   * 构造密码认证的 authHandler。
+   *
+   * ssh2 每次 authHandler 调用意味着上一认证方法被拒（首调除外）；handler
+   * 里异步向 provider 要密码再应答是官方支持的路径（返回 undefined 后延后
+   * 调 next，见 ssh2 tryNextAuth 的 hasSentAuth 守卫）。
+   *
+   * @param host - 目标主机配置
+   * @param hostKey - 主机标识（provider 缓存键）
+   * @param label - 提示文案中的定位标签
+   * @param auth - 单次连接的密码认证状态
+   * @returns ssh2 authHandler 中间件
+   */
+  private createPasswordAuthHandler(
+    host: ResolvedHost,
+    hostKey: string,
+    label: string,
+    auth: PasswordAuthState,
+  ): AuthHandlerMiddleware {
+    // 首次调用运行时传 null（ssh2 源码 curAuthsLeft 初始为 null），@types/ssh2
+    // 声明为数组；这里放宽参数类型（接受更宽参数的函数可赋给窄签名，逆变成立）
+    const handler = (
+      authsLeft: AuthenticationType[] | null,
+      _partialSuccess: boolean,
+      next: NextAuthHandler,
+    ): void => {
+      // 必须恰好调用一次 next（hasSentAuth 只防同步重入，双发会把两份认证
+      // 请求发到同一连接）；单出口链保证不会
+      void this.nextPasswordAuth(host, hostKey, label, auth, authsLeft)
+        .then((method) => {
+          // next(false) 表示放弃认证：运行时支持，@types/ssh2 的
+          // NextAuthHandler 类型漏标了 false，这里断言补上（经 unknown 中转）
+          (next as unknown as (auth: false | PasswordAuthMethod | KeyboardInteractiveAuthMethod) => void)(
+            method ?? false,
+          );
+        })
+        .catch(() => {
+          (next as unknown as (auth: false) => void)(false);
+        });
+    };
+    return handler;
+  }
+
+  /**
+   * 计算密码认证的下一步。
+   *
+   * @param host - 目标主机配置
+   * @param hostKey - 主机标识（provider 缓存键）
+   * @param label - 提示文案中的定位标签
+   * @param auth - 单次连接的密码认证状态
+   * @param authsLeft - 服务端告知的剩余认证方法；首调为 null
+   * @returns 下一个认证方法；undefined 表示放弃（原因记入 auth.outcome）
+   */
+  private async nextPasswordAuth(
+    host: ResolvedHost,
+    hostKey: string,
+    label: string,
+    auth: PasswordAuthState,
+    authsLeft: AuthenticationType[] | null,
+  ): Promise<PasswordAuthMethod | KeyboardInteractiveAuthMethod | undefined> {
+    // 1. 服务器明确不再接受 password/keyboard-interactive：放弃并标记原因
+    if (authsLeft !== null
+      && !authsLeft.includes('password')
+      && !authsLeft.includes('keyboard-interactive')) {
+      auth.outcome = 'unsupported';
+      return undefined;
+    }
+    // 2. 上一份密码已被拒（auth.password 尚存表示已发出过一份）：计数并丢弃；
+    //    达上限放弃
+    if (auth.password !== undefined) {
+      auth.failures += 1;
+      auth.password = undefined;
+      if (auth.failures >= MAX_PASSWORD_ATTEMPTS) {
+        auth.outcome = 'exhausted';
+        return undefined;
+      }
+    }
+    // 3. 取密码（attempt > 1 时 provider 会弃缓存重新提示）
+    const password = await this.getPassword?.(hostKey, label, auth.failures + 1);
+    if (password === undefined) {
+      auth.outcome = 'cancelled';
+      return undefined;
+    }
+    auth.password = password;
+    // 4. 服务器允许 password 优先用；只开 keyboard-interactive 的 sshd
+    //    用同一份密码应答（INFO_REQUEST 走 prompt 回调）
+    if (authsLeft === null || authsLeft.includes('password')) {
+      return { type: 'password', username: host.username, password };
+    }
+    return {
+      type: 'keyboard-interactive',
+      username: host.username,
+      prompt: (_name, _instructions, _lang, prompts, finish) => {
+        finish(prompts.map(() => password));
+      },
+    };
+  }
+
+  /**
+   * 把密码路径的 ssh2 原始错误翻译成带上下文的中文。
+   *
+   * @param label - 定位标签
+   * @param auth - 密码认证状态（outcome 由放弃路径先行置位）
+   * @param error - ssh2 的原始错误
+   * @returns 翻译后的消息；无对应翻译时返回原文
+   */
+  private describeAuthFailure(label: string, auth: PasswordAuthState, error: Error): string {
+    if (auth.outcome === 'cancelled') {
+      // failures > 0 说明密码已发出且被拒后 provider 不再提供（--password 场景）
+      return auth.failures > 0
+        ? `${label} 密码认证失败（提供的密码被拒绝）`
+        : `${label} 密码输入已取消`;
+    }
+    if (auth.outcome === 'exhausted') {
+      return `${label} 密码认证失败（已尝试 ${MAX_PASSWORD_ATTEMPTS} 次）`;
+    }
+    if (auth.outcome === 'unsupported') {
+      return `${label} 不接受密码或键盘交互认证`;
+    }
+    // ssh2 的握手超时错误挂 level='client-timeout'（非标准属性，就近断言读取）
+    if ((error as { level?: string }).level === 'client-timeout') {
+      return `${label} 认证超时（${PASSWORD_READY_TIMEOUT_MS / 1_000} 秒内未完成，含等待输入密码的时间）`;
+    }
+    return error.message;
   }
 
   /**

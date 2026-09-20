@@ -25,7 +25,7 @@ This document provides a detailed walkthrough of every `dsh-remote` command, its
 ## Prerequisites
 
 - **Node.js** v20.19+ or v22+ on the local machine (for running tsx).
-- An **SSH config** (`~/.ssh/config`) with `Host` entries for your remote machines. Authentication must use private key files (`IdentityFile`); plaintext passwords are not supported.
+- A reachable remote host: either a `Host` entry in `~/.ssh/config`, or an ad-hoc `user@host[:port]` target (IPv6 must go through the config). Authentication supports private keys (`IdentityFile`, overridable with `--private-key`); with no key configured and an interactive terminal, you will be prompted for a password (no echo; kept in memory only, never written to disk). You can also pass `--password <password>` — **this leaks**: the plaintext is visible in the process list and shell history. The CLI prints a warning; treat it as a stopgap.
 - The remote host must be **Linux or macOS** (POSIX). The local client supports Windows, Linux, and macOS.
 - **API keys** for whichever LLM providers you use (e.g. `DEEPSEEK_API_KEY`, `ASTUDIO_API_KEY`), set as environment variables in the shell where you run `dsh-remote connect`.
 

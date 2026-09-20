@@ -11,7 +11,6 @@
  * 承载该命令的 shell 其命令行也含模式串，会把自己的 SSH 会话一起杀掉。
  */
 
-import { assertConnectable, resolveHost } from '../../hosts/ssh-config-parser.js';
 import { SshTransport } from '../../transport/ssh-transport.js';
 import { probeRemote } from '../../provision/probe.js';
 import { createRemotePaths } from '../../provision/remote-paths.js';
@@ -19,16 +18,21 @@ import { stopRemoteDsh } from '../../session/remote-process.js';
 import { listSessions, removeSession } from '../../session/session-registry.js';
 import { computeSessionId } from '../../util/session-id.js';
 import { quote } from '../../util/shell-quote.js';
+import { prepareHostAuth } from '../host-auth.js';
 import { bold, cyan, dim, green, println, yellow, ProgressReporter } from '../output.js';
 
 /** kill 命令选项 */
 export interface KillCommandOptions {
-  /** 主机别名 */
+  /** 主机别名或 user@host[:port] 直连语法 */
   alias: string;
   /** 远端工作目录；与 --all 互斥 */
   cwd: string;
   /** 停止该主机上的全部会话 */
   all: boolean;
+  /** 私钥文件路径覆盖（--private-key） */
+  privateKey?: string;
+  /** 固定密码（--password）：显式走密码认证 */
+  password?: string;
 }
 
 /**
@@ -38,14 +42,15 @@ export interface KillCommandOptions {
  * @returns 进程退出码
  */
 export async function runKill(options: KillCommandOptions): Promise<number> {
-  const resolved = resolveHost(options.alias);
-  assertConnectable(resolved, options.alias);
+  const { resolved, passwords } = prepareHostAuth(options.alias, options);
 
   println(bold(`停止主机 ${cyan(options.alias)} 上的远端 dsh`));
   println();
 
   const progress = new ProgressReporter();
-  const transport = new SshTransport(options.alias, resolved);
+  const transport = new SshTransport(options.alias, resolved, {
+    getPassword: (hostKey, label, attempt) => passwords.get(hostKey, label, attempt),
+  });
 
   try {
     progress.start('建立 SSH 连接');
@@ -98,6 +103,8 @@ export async function runKill(options: KillCommandOptions): Promise<number> {
     return 0;
   } finally {
     await transport.dispose();
+    // 短命进程，清空是仪式性 hygiene，但与 session 路径保持一致
+    passwords.clear();
   }
 }
 

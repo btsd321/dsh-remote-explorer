@@ -1,6 +1,6 @@
 {
   "name": "@deepseek-ai/dsh-remote",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "远程开发启动器：把 dsh 装到远程主机并在本机浏览器中使用，凭据不离开本机",
   "type": "module",
   "bin": {

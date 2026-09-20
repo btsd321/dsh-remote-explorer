@@ -20,7 +20,7 @@ import {
 
 /** connect 命令选项 */
 export interface ConnectCommandOptions {
-  /** 主机别名 */
+  /** 主机别名或 user@host[:port] 直连语法 */
   alias: string;
   /** 远端工作目录 */
   cwd: string;
@@ -38,6 +38,10 @@ export interface ConnectCommandOptions {
   keepRemote: boolean;
   /** 强制重测镜像 */
   refreshMirrors: boolean;
+  /** 私钥文件路径覆盖（--private-key）：优先于 config 的 IdentityFile */
+  privateKey?: string;
+  /** 固定密码（--password）：显式走密码认证；只存内存不落盘 */
+  password?: string;
 }
 
 /**
@@ -74,6 +78,10 @@ export async function runConnect(options: ConnectCommandOptions): Promise<number
       ...(options.dshVersion ? { dshVersion: options.dshVersion } : {}),
       ...(options.forceRestart ? { forceRestart: true } : {}),
       ...(options.refreshMirrors ? { refreshMirrors: true } : {}),
+      ...(options.privateKey ? { privateKey: options.privateKey } : {}),
+      ...(options.password !== undefined && options.privateKey === undefined
+        ? { password: options.password }
+        : {}),
       onStageStart: (stage) => progress.start(stage),
       onStageDone: (detail) => progress.done(detail),
       onStageSkip: (reason) => progress.skip(reason),

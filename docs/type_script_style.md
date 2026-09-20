@@ -370,7 +370,7 @@ const infoSchema = z.object({}).passthrough();
    - 不要依赖系统 `ssh`/`scp` 命令，用纯 JS 的 ssh2
    - 构造远端路径用 `/` 字符串拼接，**不要用 `node:path` 的 `join`**（Windows 上会产出反斜杠）
    - 本地路径转远端相对路径时显式 `.replace(/\\/g, '/')`
-6. **不落明文凭据**：私钥只以文件路径引用，日志和错误消息不打印密钥、口令、PSK 内容。
+6. **不落明文凭据**：私钥只以文件路径引用，日志和错误消息不打印密钥、口令、PSK 内容。SSH 密码（交互输入或 `--password` 传入）只存进程内存：交互提示用 node:readline 加只吞字节的 output 实现不回显（零新依赖），`--password` 是用户显式选择、CLI 打警告但不写日志；JS 字符串不可清零，只能丢弃引用靠 GC（已知限制，注释里如实写明，不假装安全）。
 7. **落盘配置放 `~/.dsh/` 下**，读取时容错（文件缺失或损坏回落默认值），写入失败不影响运行时。
 8. **新增 WebSocket 方法要同步改两处**：`webgui-integration.ts` 的 `handleMethod` 分发表 + `client/remote-explorer.js` 的调用点。
 9. **前端脚本无框架无构建**：`client/` 下是原生 JS，保持零依赖，不要引入打包器。

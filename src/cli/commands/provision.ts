@@ -9,16 +9,16 @@
  * 幂等：重复执行会命中已装版本并跳过，不重装。
  */
 
-import { assertConnectable, resolveHost } from '../../hosts/ssh-config-parser.js';
 import { SshTransport } from '../../transport/ssh-transport.js';
 import { provision, DEFAULT_DSH_VERSION } from '../../provision/provisioner.js';
 import { DEFAULT_NODE_VERSION } from '../../provision/node-installer.js';
 import { computeSessionId } from '../../util/session-id.js';
+import { prepareHostAuth } from '../host-auth.js';
 import { bold, cyan, dim, green, println, printTable, ProgressReporter } from '../output.js';
 
 /** provision 命令选项 */
 export interface ProvisionCommandOptions {
-  /** 主机别名 */
+  /** 主机别名或 user@host[:port] 直连语法 */
   alias: string;
   /** 远端工作目录；参与会话 id 计算 */
   cwd: string;
@@ -28,6 +28,10 @@ export interface ProvisionCommandOptions {
   dshVersion?: string;
   /** 强制重测镜像 */
   refreshMirrors: boolean;
+  /** 私钥文件路径覆盖（--private-key） */
+  privateKey?: string;
+  /** 固定密码（--password）：显式走密码认证 */
+  password?: string;
 }
 
 /**
@@ -37,8 +41,7 @@ export interface ProvisionCommandOptions {
  * @returns 进程退出码
  */
 export async function runProvision(options: ProvisionCommandOptions): Promise<number> {
-  const resolved = resolveHost(options.alias);
-  assertConnectable(resolved, options.alias);
+  const { resolved, passwords } = prepareHostAuth(options.alias, options);
 
   const sessionId = computeSessionId(options.alias, options.cwd);
   println(bold(`引导主机 ${cyan(options.alias)}`));
@@ -46,7 +49,9 @@ export async function runProvision(options: ProvisionCommandOptions): Promise<nu
   println();
 
   const progress = new ProgressReporter();
-  const transport = new SshTransport(options.alias, resolved);
+  const transport = new SshTransport(options.alias, resolved, {
+    getPassword: (hostKey, label, attempt) => passwords.get(hostKey, label, attempt),
+  });
   const startedAt = Date.now();
 
   try {
@@ -83,6 +88,8 @@ export async function runProvision(options: ProvisionCommandOptions): Promise<nu
     return 0;
   } finally {
     await transport.dispose();
+    // 短命进程，清空是仪式性 hygiene，但与 session 路径保持一致
+    passwords.clear();
   }
 }
 

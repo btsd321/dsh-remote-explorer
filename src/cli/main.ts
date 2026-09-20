@@ -87,10 +87,15 @@ function printHelp(): void {
   println();
   println(bold('通用参数'));
   println('  --ssh-config <路径>       改用指定的 ssh config 文件（默认 ~/.ssh/config）');
+  println('  --private-key <路径>      私钥路径，优先于 config 中的 IdentityFile');
+  println('  --password <密码>         明文密码认证（有泄露风险，慎用；见下方说明）');
   println();
   println(bold('说明'));
-  println(dim('  主机列表直接来自 ssh config，本工具不维护自己的主机档案。'));
-  println(dim('  认证只支持私钥（IdentityFile），不接受明文密码。'));
+  println(dim('  主机列表直接来自 ssh config，本工具不维护自己的主机档案；'));
+  println(dim('  不在 config 里的主机可用 user@host[:port] 直连（IPv6 需写进 config）。'));
+  println(dim('  认证支持私钥（IdentityFile / --private-key）；未配置私钥且在交互式终端时'));
+  println(dim('  会提示输入密码（不回显，只存内存不落盘）。--password 以明文暴露在命令行、'));
+  println(dim('  进程列表与 shell 历史中，有泄露风险，建议仅作临时手段。'));
   println(dim(`  远端 Node 默认锁定 ${versions.node}：v22 在 aarch64 上起进程崩溃率高，会导致安装失败。`));
 }
 
@@ -109,7 +114,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   }
   if (rawCommand === '--version' || rawCommand === '-V') {
     // 版本号由 package.json 承载，这里避免读文件带来的路径耦合
-    println('dsh-remote 0.4.0');
+    println('dsh-remote 0.5.0');
     return 0;
   }
 
@@ -141,6 +146,8 @@ export async function main(argv: readonly string[]): Promise<number> {
       'keep-remote': { type: 'boolean', default: false },
       all: { type: 'boolean', default: false },
       keep: { type: 'string' },
+      'private-key': { type: 'string' },
+      password: { type: 'string' },
     },
     allowPositionals: true,
     strict: true,
@@ -148,6 +155,23 @@ export async function main(argv: readonly string[]): Promise<number> {
 
   if (values['ssh-config'] !== undefined) {
     setConfigPath(values['ssh-config']);
+  }
+
+  // 认证旗标：空值直接拒绝（空路径/空密码没有合法用例）
+  const privateKey = values['private-key'];
+  const password = values.password;
+  if ((privateKey !== undefined && privateKey.length === 0)
+    || (password !== undefined && password.length === 0)) {
+    printErr(red('--private-key 与 --password 不接受空值'));
+    return 64;
+  }
+  // 明文密码必须警告：命令行对进程列表可见、会进 shell 历史
+  if (password !== undefined) {
+    println(yellow('⚠ 警告：--password 会把密码以明文暴露在命令行、进程列表与 shell 历史中，有泄露风险'));
+    println(dim('  建议改用私钥（IdentityFile / --private-key）或交互式输入'));
+    if (privateKey !== undefined) {
+      println(yellow('已忽略 --password（--private-key 优先）'));
+    }
   }
 
   // 不需要主机别名的命令
@@ -158,13 +182,16 @@ export async function main(argv: readonly string[]): Promise<number> {
     return runStatus();
   }
 
-  // 其余命令都需要主机别名
+  // 其余命令都需要主机别名（或 user@host[:port] 直连语法）
   const alias = positionals[0];
   if (alias === undefined) {
     printErr(red(`${command} 需要主机别名`));
-    printErr(dim(`用法：dsh-remote ${command} <别名>。用 dsh-remote list 查看可用别名`));
+    printErr(dim(`用法：dsh-remote ${command} <别名 | user@host[:port]>。用 dsh-remote list 查看可用别名`));
     return 64;
   }
+
+  // --private-key 与 --password 同给时密钥优先（上面已提示忽略）
+  const effectivePassword = privateKey === undefined ? password : undefined;
 
   const refreshMirrors = values['refresh-mirrors'] === true;
 
@@ -179,11 +206,22 @@ export async function main(argv: readonly string[]): Promise<number> {
   const cwd = normalizeRemoteCwd(rawCwd);
 
   if (command === 'doctor') {
-    return runDoctor({ alias, refreshMirrors });
+    return runDoctor({
+      alias,
+      refreshMirrors,
+      ...(privateKey ? { privateKey } : {}),
+      ...(effectivePassword !== undefined ? { password: effectivePassword } : {}),
+    });
   }
 
   if (command === 'kill') {
-    return runKill({ alias, cwd, all: values.all === true });
+    return runKill({
+      alias,
+      cwd,
+      all: values.all === true,
+      ...(privateKey ? { privateKey } : {}),
+      ...(effectivePassword !== undefined ? { password: effectivePassword } : {}),
+    });
   }
 
   if (command === 'clean') {
@@ -193,7 +231,12 @@ export async function main(argv: readonly string[]): Promise<number> {
       printErr(red(`--keep 需要 0 或正整数，实际为 ${values.keep}`));
       return 64;
     }
-    return runClean({ alias, keep });
+    return runClean({
+      alias,
+      keep,
+      ...(privateKey ? { privateKey } : {}),
+      ...(effectivePassword !== undefined ? { password: effectivePassword } : {}),
+    });
   }
 
   if (command === 'connect') {
@@ -212,6 +255,8 @@ export async function main(argv: readonly string[]): Promise<number> {
       forceRestart: values['force-restart'] === true,
       keepRemote: values['keep-remote'] === true,
       refreshMirrors,
+      ...(privateKey ? { privateKey } : {}),
+      ...(effectivePassword !== undefined ? { password: effectivePassword } : {}),
     });
   }
 
@@ -221,6 +266,8 @@ export async function main(argv: readonly string[]): Promise<number> {
     ...(values['node-version'] ? { nodeVersion: values['node-version'] } : {}),
     ...(values['dsh-version'] ? { dshVersion: values['dsh-version'] } : {}),
     refreshMirrors,
+    ...(privateKey ? { privateKey } : {}),
+    ...(effectivePassword !== undefined ? { password: effectivePassword } : {}),
   });
 }
 

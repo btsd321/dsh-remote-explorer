@@ -10,7 +10,6 @@
  * 它同时是 P1 阶段唯一能端到端验证传输层与探测层的手段。
  */
 
-import { assertConnectable, resolveHost } from '../../hosts/ssh-config-parser.js';
 import { SshTransport } from '../../transport/ssh-transport.js';
 import type { RemoteTransport } from '../../transport/types.js';
 import {
@@ -22,14 +21,19 @@ import { selectMirror, type MirrorProbeResult } from '../../provision/mirror-sel
 import { createRemotePaths, type RemotePaths } from '../../provision/remote-paths.js';
 import { toErrorMessage } from '../../util/errors.js';
 import { quote } from '../../util/shell-quote.js';
+import { prepareHostAuth } from '../host-auth.js';
 import { bold, cyan, dim, green, println, printTable, red, yellow, ProgressReporter } from '../output.js';
 
 /** doctor 命令选项 */
 export interface DoctorOptions {
-  /** 主机别名 */
+  /** 主机别名或 user@host[:port] 直连语法 */
   alias: string;
   /** 强制重测镜像，忽略缓存 */
   refreshMirrors: boolean;
+  /** 私钥文件路径覆盖（--private-key） */
+  privateKey?: string;
+  /** 固定密码（--password）：显式走密码认证 */
+  password?: string;
 }
 
 /** 单项检查的结论 */
@@ -55,9 +59,8 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
   const progress = new ProgressReporter();
   const findings: Finding[] = [];
 
-  // 1. 解析 ssh config（纯本地，失败直接退出）
-  const resolved = resolveHost(options.alias);
-  assertConnectable(resolved, options.alias);
+  // 1. 解析 ssh config 并应用认证覆盖（纯本地，失败直接退出）
+  const { resolved, passwords } = prepareHostAuth(options.alias, options);
   findings.push({
     item: 'ssh config',
     verdict: 'ok',
@@ -68,7 +71,9 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
   println(bold(`诊断主机 ${cyan(options.alias)}`));
   println();
 
-  const transport = new SshTransport(options.alias, resolved);
+  const transport = new SshTransport(options.alias, resolved, {
+    getPassword: (hostKey, label, attempt) => passwords.get(hostKey, label, attempt),
+  });
   try {
     // 2. 建立连接
     progress.start('建立 SSH 连接');
@@ -233,6 +238,8 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
     return findings.some(f => f.verdict === 'fail') ? 1 : 0;
   } finally {
     await transport.dispose();
+    // 短命进程，清空是仪式性 hygiene，但与 session 路径保持一致
+    passwords.clear();
   }
 }
 

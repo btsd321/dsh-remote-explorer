@@ -14,11 +14,11 @@
  * 默认各保留最新 1 个版本；`--keep <N>` 调整。
  */
 
-import { assertConnectable, resolveHost } from '../../hosts/ssh-config-parser.js';
 import { SshTransport } from '../../transport/ssh-transport.js';
 import { probeRemote } from '../../provision/probe.js';
 import { createRemotePaths, BASE_DIR_NAME } from '../../provision/remote-paths.js';
 import { quote } from '../../util/shell-quote.js';
+import { prepareHostAuth } from '../host-auth.js';
 import { bold, cyan, dim, green, println, ProgressReporter, yellow } from '../output.js';
 
 /** 默认每个类别保留的版本数 */
@@ -26,10 +26,14 @@ const DEFAULT_KEEP = 1;
 
 /** clean 命令选项 */
 export interface CleanCommandOptions {
-  /** 主机别名 */
+  /** 主机别名或 user@host[:port] 直连语法 */
   alias: string;
   /** 每个类别保留的最新版本数 */
   keep: number;
+  /** 私钥文件路径覆盖（--private-key） */
+  privateKey?: string;
+  /** 固定密码（--password）：显式走密码认证 */
+  password?: string;
 }
 
 /** 清理结果 */
@@ -53,15 +57,16 @@ interface CleanReport {
  * @returns 进程退出码
  */
 export async function runClean(options: CleanCommandOptions): Promise<number> {
-  const resolved = resolveHost(options.alias);
-  assertConnectable(resolved, options.alias);
+  const { resolved, passwords } = prepareHostAuth(options.alias, options);
 
   println(bold(`清理主机 ${cyan(options.alias)} 的远端资源`));
   println(dim(`保留最新 ${options.keep} 个版本；运行中会话使用的版本受保护`));
   println();
 
   const progress = new ProgressReporter();
-  const transport = new SshTransport(options.alias, resolved);
+  const transport = new SshTransport(options.alias, resolved, {
+    getPassword: (hostKey, label, attempt) => passwords.get(hostKey, label, attempt),
+  });
 
   try {
     progress.start('建立 SSH 连接');
@@ -98,6 +103,8 @@ export async function runClean(options: CleanCommandOptions): Promise<number> {
     return 0;
   } finally {
     await transport.dispose();
+    // 短命进程，清空是仪式性 hygiene，但与 session 路径保持一致
+    passwords.clear();
   }
 }
 

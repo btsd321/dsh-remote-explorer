@@ -30,8 +30,8 @@
  * 分层：本文件属编排层，可用能力层与传输层。
  */
 
-import { assertConnectable, resolveHost } from '../hosts/ssh-config-parser.js';
-import { SshTransport } from '../transport/ssh-transport.js';
+import { assertConnectable, resolveHostWithAuth, type AuthOverrides } from '../hosts/ssh-config-parser.js';
+import { SshTransport, isAuthFailure } from '../transport/ssh-transport.js';
 import { provision, type ProvisionResult } from '../provision/provisioner.js';
 import { probeRemote } from '../provision/probe.js';
 import { createRemotePaths, type RemotePaths } from '../provision/remote-paths.js';
@@ -50,6 +50,7 @@ import {
 import { removeSession, upsertSession } from './session-registry.js';
 import { generateProxyToken } from '../credential/token.js';
 import { TunnelProxyCredential } from '../credential/tunnel-proxy.js';
+import { PasswordProvider } from '../util/password-prompt.js';
 import {
   deepseekRoute, extractProviderRoutes, mirrorSettingsForTunnel, readLocalSettings,
 } from '../credential/provider-routes.js';
@@ -83,12 +84,40 @@ export interface OpenSessionOptions {
   onStageSkip?: (reason: string) => void;
   /** 状态变化回调 */
   onStateChange?: (state: SessionState, description: string) => void;
+  /**
+   * 私钥文件路径覆盖（--private-key）：优先于 config 的 IdentityFile，
+   * 只作用于目标主机；跨重连持续生效
+   */
+  privateKey?: string;
+  /**
+   * 固定密码（--password）：显式走密码认证，优先于 config 的 IdentityFile。
+   * 只存本进程内存，不落盘、不进日志
+   */
+  password?: string;
 }
 
 /** 会话关闭选项 */
 export interface CloseSessionOptions {
   /** 是否同时停止远端 dsh 进程；默认 false（保留以便下次复用） */
   stopRemote?: boolean;
+}
+
+/**
+ * 从会话选项计算认证覆盖。
+ *
+ * --private-key 与 --password 同给时密钥优先（密码不再生效）——与
+ * resolveHostWithAuth 的内部优先级保持一致，open 与重连共用同一份规则。
+ *
+ * @param options - 会话选项
+ * @returns 认证覆盖
+ */
+function authOverridesOf(options: OpenSessionOptions): AuthOverrides {
+  return {
+    ...(options.privateKey ? { privateKey: options.privateKey } : {}),
+    ...(options.password !== undefined && options.privateKey === undefined
+      ? { password: options.password }
+      : {}),
+  };
 }
 
 /** 随会话固定的凭据材料（远端 `.runtime/` 落盘的那组值） */
@@ -124,6 +153,8 @@ export class RemoteSession {
    * @param reverseHandle - 初始的反向转发句柄；挂在 transport 上，重连时重挂
    * @param reconnectConfig - 重连配置
    * @param lifecycleConfig - 生命周期参数
+   * @param passwords - 会话级密码提供器：首次连接交互提示（或 --password 固定值），
+   *                    重连静默复用缓存；close 时清空
    */
   private constructor(
     readonly sessionId: string,
@@ -137,6 +168,7 @@ export class RemoteSession {
     private reverseHandle: ReverseHandle | undefined,
     private readonly reconnectConfig: ReconnectConfig,
     private readonly lifecycleConfig: LifecycleConfig,
+    private readonly passwords: PasswordProvider,
   ) {}
 
   /** 浏览器访问地址（含令牌） */
@@ -195,15 +227,25 @@ export class RemoteSession {
    * @returns 已就绪的会话
    */
   static async open(options: OpenSessionOptions): Promise<RemoteSession> {
-    const resolved = resolveHost(options.hostAlias);
-    assertConnectable(resolved, options.hostAlias);
+    const auth = authOverridesOf(options);
+    const resolved = resolveHostWithAuth(options.hostAlias, auth);
+    assertConnectable(resolved, options.hostAlias, {
+      passwordAuth: auth.password !== undefined,
+    });
     const sessionId = computeSessionId(options.hostAlias, options.remoteCwd);
 
     const reconnectConfig = { ...DEFAULT_RECONNECT_CONFIG, ...options.reconnect };
     const lifecycleConfig = { ...DEFAULT_LIFECYCLE_CONFIG, ...options.lifecycle };
 
+    // 密码提供器：--password 走固定值，否则首次连接交互提示并缓存；
+    // 重连（reconnectOnce）走静默 peek，不弹提示
+    const passwords = new PasswordProvider(
+      auth.password !== undefined ? { fixed: auth.password } : undefined,
+    );
     options.onStageStart?.('建立 SSH 连接');
-    const transport = new SshTransport(options.hostAlias, resolved);
+    const transport = new SshTransport(options.hostAlias, resolved, {
+      getPassword: (hostKey, label, attempt) => passwords.get(hostKey, label, attempt),
+    });
     await transport.connect();
     options.onStageDone?.(`${transport.platform.rawOs} ${transport.platform.rawArch}`);
 
@@ -328,7 +370,7 @@ export class RemoteSession {
       session = new RemoteSession(
         sessionId, options, transport, provisioned, processInfo,
         forward, secret, credential, reverseHandle,
-        reconnectConfig, lifecycleConfig,
+        reconnectConfig, lifecycleConfig, passwords,
       );
       session.apply({ type: 'connect-ready' });
       session.register();
@@ -354,6 +396,8 @@ export class RemoteSession {
     await this.forward.close();
     await this.detachReverseForward();
     await this.credential?.stop();
+    // 会话结束即丢弃缓存密码的引用（字符串不可清零，只能靠 GC 回收）
+    this.passwords.clear();
     removeSession(this.sessionId, process.pid);
 
     if (options.stopRemote === true) {
@@ -506,6 +550,11 @@ export class RemoteSession {
         return;
       } catch (error) {
         this.apply({ type: 'reconnect-fail', error: toErrorMessage(error) });
+        // 密码/密钥被服务端拒绝：等退避再试也不会好，直接终结重连
+        if (isAuthFailure(error)) {
+          this.apply({ type: 'fail', error: '认证失败：密码或密钥已失效，请重新 connect' });
+          break;
+        }
         if (isTerminal(this.state)) break;
       }
     }
@@ -522,8 +571,13 @@ export class RemoteSession {
    * 只有确认它已退出才重新启动。
    */
   private async reconnectOnce(): Promise<void> {
-    const resolved = resolveHost(this.options.hostAlias);
-    const next = new SshTransport(this.options.hostAlias, resolved);
+    // 认证覆盖与首次连接一致（--private-key 跨重连生效）
+    const resolved = resolveHostWithAuth(this.options.hostAlias, authOverridesOf(this.options));
+    // 无人值守：只复用已缓存的密码（peek），绝不弹交互提示——没有人会回应
+    const next = new SshTransport(this.options.hostAlias, resolved, {
+      getPassword: (hostKey, label, attempt) =>
+        Promise.resolve(this.passwords.peek(hostKey, label, attempt)),
+    });
 
     try {
       await next.connect();
