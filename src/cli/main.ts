@@ -11,13 +11,15 @@
  */
 
 import { parseArgs } from 'node:util';
+import { setConfigPath } from '../hosts/ssh-config-parser.js';
 import { runList } from './commands/list.js';
 import { runDoctor } from './commands/doctor.js';
+import { defaultVersions, runProvision } from './commands/provision.js';
 import { RemoteError, toErrorMessage } from '../util/errors.js';
 import { bold, cyan, dim, printErr, println, red, yellow } from './output.js';
 
 /** 支持的子命令 */
-const COMMANDS = ['list', 'doctor', 'help'] as const;
+const COMMANDS = ['list', 'doctor', 'provision', 'help'] as const;
 
 /** 子命令名 */
 type CommandName = (typeof COMMANDS)[number];
@@ -44,17 +46,30 @@ function printHelp(): void {
   println(bold('用法'));
   println('  dsh-remote <命令> [参数]');
   println();
+  const versions = defaultVersions();
+
   println(bold('命令'));
   println(`  ${cyan('list')}                      列出 ~/.ssh/config 中的主机`);
   println(`  ${cyan('doctor')} <别名>             诊断某台主机的引导条件`);
+  println(`  ${cyan('provision')} <别名>          把远端环境装到可用状态（幂等，可重复执行）`);
   println(`  ${cyan('help')}                      显示本帮助`);
   println();
   println(bold('doctor 参数'));
   println('  --refresh-mirrors         强制重测镜像延迟，忽略缓存');
   println();
+  println(bold('provision 参数'));
+  println('  --cwd <远端路径>          远端工作目录，参与会话标识计算');
+  println(`  --node-version <版本>     Node 版本（默认 ${versions.node}）`);
+  println(`  --dsh-version <版本>      dsh 版本或 dist-tag（默认 ${versions.dsh}）`);
+  println('  --refresh-mirrors         强制重测镜像延迟，忽略缓存');
+  println();
+  println(bold('通用参数'));
+  println('  --ssh-config <路径>       改用指定的 ssh config 文件（默认 ~/.ssh/config）');
+  println();
   println(bold('说明'));
   println(dim('  主机列表直接来自 ssh config，本工具不维护自己的主机档案。'));
   println(dim('  认证只支持私钥（IdentityFile），不接受明文密码。'));
+  println(dim(`  远端 Node 默认锁定 ${versions.node}：v22 在 aarch64 上起进程崩溃率高，会导致安装失败。`));
 }
 
 /**
@@ -87,30 +102,52 @@ export async function main(argv: readonly string[]): Promise<number> {
     printHelp();
     return 0;
   }
-  if (command === 'list') {
-    return runList();
-  }
 
-  // doctor：需要主机别名
+  // 参数解析放在 list 分派之前：--ssh-config 对所有命令都有效，
+  // 而它必须在任何主机解析发生前生效（解析结果带模块级缓存）
   const { positionals, values } = parseArgs({
     args: [...rest],
     options: {
+      'ssh-config': { type: 'string' },
       'refresh-mirrors': { type: 'boolean', default: false },
+      cwd: { type: 'string' },
+      'node-version': { type: 'string' },
+      'dsh-version': { type: 'string' },
     },
     allowPositionals: true,
     strict: true,
   });
 
+  if (values['ssh-config'] !== undefined) {
+    setConfigPath(values['ssh-config']);
+  }
+
+  if (command === 'list') {
+    return runList();
+  }
+
+  // 其余命令都需要主机别名
   const alias = positionals[0];
   if (alias === undefined) {
-    printErr(red('doctor 需要主机别名'));
-    printErr(dim('用法：dsh-remote doctor <别名>。用 dsh-remote list 查看可用别名'));
+    printErr(red(`${command} 需要主机别名`));
+    printErr(dim(`用法：dsh-remote ${command} <别名>。用 dsh-remote list 查看可用别名`));
     return 64;
   }
 
-  return runDoctor({
+  const refreshMirrors = values['refresh-mirrors'] === true;
+
+  if (command === 'doctor') {
+    return runDoctor({ alias, refreshMirrors });
+  }
+
+  return runProvision({
     alias,
-    refreshMirrors: values['refresh-mirrors'] === true,
+    // 未指定工作目录时用空串：它同样参与会话 id 计算，
+    // 保证"不带 --cwd"这一情形有稳定且唯一的会话标识
+    cwd: values.cwd ?? '',
+    ...(values['node-version'] ? { nodeVersion: values['node-version'] } : {}),
+    ...(values['dsh-version'] ? { dshVersion: values['dsh-version'] } : {}),
+    refreshMirrors,
   });
 }
 

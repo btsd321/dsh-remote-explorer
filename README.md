@@ -22,7 +22,7 @@
 |---|---|---|
 | P0 | 可行性验证（手动全流程） | ✅ 五步通过 |
 | P1 | 连接闭环：传输层、主机解析、探测、镜像测速 | ✅ `list` / `doctor` 可用 |
-| P2 | 引导闭环：装 Node 与 dsh、生成会话 profile | 未开始 |
+| P2 | 引导闭环：装 Node 与 dsh、生成会话 profile | ✅ `provision` 可用 |
 | P3 | 会话闭环：隧道、心跳重连、多主机并行 | 未开始 |
 | P4 | 凭据闭环：反向隧道代理 | 未开始 |
 | P5 | `dsh-remote-guard` 远端插件与打磨 | 未开始 |
@@ -40,6 +40,12 @@ npx tsx src/cli/bin.ts list
 # 诊断某台主机的引导条件
 npx tsx src/cli/bin.ts doctor OrangePI
 npx tsx src/cli/bin.ts doctor OrangePI --refresh-mirrors   # 强制重测镜像
+
+# 把远端环境装到可用状态（幂等，重复执行会复用已装版本）
+npx tsx src/cli/bin.ts provision OrangePI --cwd /home/xlli67
+
+# 通用参数：改用其他 ssh config 文件
+npx tsx src/cli/bin.ts list --ssh-config /path/to/config
 ```
 
 `doctor` 会检查连接、平台、基础命令、磁盘余量、已装运行时、**Node 运行时稳定性**
@@ -87,6 +93,11 @@ npx tsx src/cli/bin.ts doctor OrangePI --refresh-mirrors   # 强制重测镜像
 | [src/provision/probe.ts](src/provision/probe.ts) | 远端探测 + **Node 稳定性自检** |
 | [src/provision/mirror-selector.ts](src/provision/mirror-selector.ts) | 在远端实测镜像延迟并自适应选取 |
 | [src/provision/remote-paths.ts](src/provision/remote-paths.ts) | 远端路径规则的唯一真源 |
+| [src/provision/node-installer.ts](src/provision/node-installer.ts) | 装 Node，版本隔离，装完自检 |
+| [src/provision/dsh-installer.ts](src/provision/dsh-installer.ts) | 装 dsh，版本显式指定不依赖 dist-tag |
+| [src/provision/profile-writer.ts](src/provision/profile-writer.ts) | 每会话独立 `DSH_HOME` 与 profile、patch 生成 |
+| [src/provision/provisioner.ts](src/provision/provisioner.ts) | 引导流程编排，各步均幂等 |
+| [src/util/session-id.ts](src/util/session-id.ts) | 由主机别名 + 远端目录算确定性会话 id |
 | [src/cli/](src/cli/) | 命令分派与终端输出 |
 
 ## 几件容易踩的事
@@ -101,6 +112,12 @@ npx tsx src/cli/bin.ts doctor OrangePI --refresh-mirrors   # 强制重测镜像
 - **远端命令统一经 `sh -c` 包裹。** ssh exec 用的是用户登录 shell；zsh 遇到
   未匹配的 glob 会直接报错中止，bash 则保留字面量。不锁定 POSIX 语义，
   同一段脚本在不同用户机器上行为不同。
+- **要在 PATH 前面加目录，用 `exec` 的 `pathPrefix` 选项，不要走 `env`。**
+  `env: { PATH: '<新>:$PATH' }` 里的 `$PATH` 会被 `quote()` 转成字面量，
+  远端 PATH 只剩一个目录，连 `rm`、`mkdir` 都找不到。
+- **拼远端脚本时多行用 `\n` 连接，不能用空格。**
+  `head=$(...) if [ ... ]` 是语法错误，整段在解析期就失败，
+  表现为所有探测"无输出"——很容易误判成网络问题。
 - **停远端进程不能用 `pkill -f <模式>`。** 承载命令的 shell 其命令行也含该模式，
   会把自己的 SSH 会话一起杀掉。用 pid 文件或按监听端口定位。
 - **构造远端路径一律用 `/` 拼字符串**，不要用 `node:path` 的 `join`——

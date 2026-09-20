@@ -554,9 +554,22 @@ dsh-remote clean <别名> [--keep-latest] 清理旧版本目录与陈旧会话�
 
 `transport/` + `hosts/` + `provision/probe.ts` + `mirror-selector.ts`，同时按 4.6 表格铺好 guard 的接口预留位。交付：`dsh-remote list` 与 `doctor` 能跑，能打印远端 os/arch/node 版本与各镜像实测延迟。
 
-### P2 — 引导闭环
+### P2 — 引导闭环 ✅ 已完成
 
-`provision/` 全部 + `remote-paths.ts` + `profile-writer.ts`。交付：`connect` 能把远端环境装到"`dsh --version` 输出正确版本"，重复执行命中已装版本不重装。
+`provision/` 全部（`node-installer` / `dsh-installer` / `profile-writer` / `provisioner`）+ `util/session-id.ts`，交付 `dsh-remote provision` 命令。
+
+实测（OrangePI）：
+
+| 路径 | 耗时 | 说明 |
+|---|---|---|
+| 全新装 Node v24.20.0 | 10.5s | 下载 + 解包 + 稳定性自检 20/20 |
+| 全新装 dsh 0.1.5-rc.2 | 57.2s | 490 个包，与 P0 实测 60s 一致 |
+| 全部复用（幂等重跑） | 2.5s | 命中已装版本，跳过测速与安装 |
+| dist-tag 解析 | 0.8s | `latest → 0.1.5-rc.2`，印证 latest 比 alpha 旧 |
+
+实现中修掉一个会全面破坏远端命令的 bug：`env: { PATH: '<新>:$PATH' }` 经 `quote()` 转义后 `$PATH` 成了字面量，远端 PATH 只剩一个目录，连 `rm`、`mkdir` 都找不到。改为传输层专设 `pathPrefix` 选项，把 `"$PATH"` 留在引号外由 shell 展开，目录本身仍转义防注入。
+
+另外把 `--ssh-config` 接成真实参数（对标 VS Code 的 `remote.SSH.configFile`），它必须在任何主机解析前生效，因为解析结果带模块级缓存。
 
 ### P3 — 会话闭环
 

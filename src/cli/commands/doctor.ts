@@ -17,9 +17,9 @@ import {
   probeRemote,
   type ProbeResult,
 } from '../../provision/probe.js';
-import { getCandidates, selectMirror, type MirrorProbeResult } from '../../provision/mirror-selector.js';
+import { selectMirror, type MirrorProbeResult } from '../../provision/mirror-selector.js';
 import { createRemotePaths } from '../../provision/remote-paths.js';
-import { RemoteError, toErrorMessage } from '../../util/errors.js';
+import { toErrorMessage } from '../../util/errors.js';
 import { bold, cyan, dim, green, println, printTable, red, yellow, ProgressReporter } from '../output.js';
 
 /** doctor 命令选项 */
@@ -278,17 +278,4 @@ function markOf(verdict: Verdict): string {
   if (verdict === 'ok') return green('✓');
   if (verdict === 'warn') return yellow('!');
   return red('✗');
-}
-
-/**
- * 校验候选镜像清单非空（防止误删后静默失效）。
- *
- * @throws RemoteError('MIRROR_ALL_UNREACHABLE') 清单为空
- */
-export function assertMirrorCandidates(): void {
-  for (const kind of ['node', 'npm'] as const) {
-    if (getCandidates(kind).length === 0) {
-      throw new RemoteError('MIRROR_ALL_UNREACHABLE', `${kind} 的候选镜像清单为空`);
-    }
-  }
 }

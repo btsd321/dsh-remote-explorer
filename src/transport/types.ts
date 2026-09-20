@@ -48,8 +48,25 @@ export interface ExecOptions {
   timeoutMs?: number;
   /** 取消信号；触发时关闭通道并抛 RemoteError('ABORTED') */
   signal?: AbortSignal;
-  /** 追加的环境变量，以 `env K=V` 前缀形式注入（值会被 shell 转义） */
+  /**
+   * 追加的环境变量，以 `env K=V` 前缀形式注入。
+   *
+   * 值会被 shell 转义，所以**不能**在值里写 `$VAR` 期待展开——
+   * 单引号会让它变成字面量。需要在已有变量前追加内容时用 {@link pathPrefix}。
+   */
   env?: Record<string, string>;
+
+  /**
+   * 前置到 `PATH` 的目录。
+   *
+   * 单独设一个选项而不是走 {@link env}，因为 `PATH=<新>:$PATH` 这种写法
+   * 经转义后 `$PATH` 不会展开，远端 PATH 会变成字面量，
+   * 连 `rm`、`mkdir` 这些基础命令都找不到。
+   *
+   * 典型用途：dsh 与 npm 的 shebang 是 `#!/usr/bin/env node`，
+   * 必须让 node 的 bin 目录在 PATH 里。
+   */
+  pathPrefix?: string;
   /** 允许非零退出码而不抛错，由调用方自行判断 */
   allowNonZeroExit?: boolean;
 }

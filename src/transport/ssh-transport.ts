@@ -187,7 +187,7 @@ export class SshTransport implements RemoteTransport {
 
     // 环境变量用 `env K=V` 前缀注入：ssh2 的 env 选项要求服务端
     // AcceptEnv 放行，而绝大多数 sshd 默认只允许 LANG/LC_*，不可依赖
-    const full = this.withEnv(posix, options.env);
+    const full = this.withEnv(posix, options.env, options.pathPrefix);
 
     const lease = await this.pool.acquire('admin', options.signal);
     try {
@@ -610,15 +610,29 @@ export class SshTransport implements RemoteTransport {
    * 而多数 sshd 默认只允许 `LANG`/`LC_*`，静默丢弃其余变量。
    *
    * @param command - 原始命令
-   * @param env - 环境变量
+   * @param env - 环境变量；值会被完整转义，不做变量展开
+   * @param pathPrefix - 前置到 PATH 的目录
    * @returns 带前缀的命令
    */
-  private withEnv(command: string, env?: Record<string, string>): string {
-    if (!env || Object.keys(env).length === 0) return command;
-    const assignments = Object.entries(env)
-      .map(([key, value]) => `${key}=${quote(value)}`)
-      .join(' ');
-    return `env ${assignments} ${command}`;
+  private withEnv(
+    command: string,
+    env?: Record<string, string>,
+    pathPrefix?: string,
+  ): string {
+    const assignments: string[] = [];
+
+    if (pathPrefix !== undefined && pathPrefix.length > 0) {
+      // `"$PATH"` 必须留在引号外由外层 shell 展开——把它塞进 quote() 会
+      // 变成字面量，远端 PATH 就只剩这一个目录，连 rm/mkdir 都找不到。
+      // 目录本身仍然转义，防注入。
+      assignments.push(`PATH=${quote(pathPrefix)}:"$PATH"`);
+    }
+    for (const [key, value] of Object.entries(env ?? {})) {
+      assignments.push(`${key}=${quote(value)}`);
+    }
+
+    if (assignments.length === 0) return command;
+    return `env ${assignments.join(' ')} ${command}`;
   }
 
   /**

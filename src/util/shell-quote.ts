@@ -24,12 +24,3 @@ export function quote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
-/**
- * 转义并用空格连接多个参数。
- *
- * @param parts - 参数列表，第一项通常是命令名
- * @returns 拼接好的命令字符串
- */
-export function quoteAll(parts: readonly string[]): string {
-  return parts.map(quote).join(' ');
-}

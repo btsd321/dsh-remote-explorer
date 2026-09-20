@@ -29,9 +29,14 @@ npx -y -p typescript@5.7.3 tsc --noEmit
 # 列出 ~/.ssh/config 中的主机（纯本地，不连接）
 npx tsx src/cli/bin.ts list
 
-# 诊断某台主机的引导条件（P1 唯一的端到端验证手段）
+# 诊断某台主机的引导条件（排查远端问题的首选手段）
 npx tsx src/cli/bin.ts doctor OrangePI
 npx tsx src/cli/bin.ts doctor OrangePI --refresh-mirrors
+
+# 引导远端环境（幂等；改动 provision/ 后用它验证）
+npx tsx src/cli/bin.ts provision OrangePI --cwd /home/xlli67
+# 验证全新安装路径（复用路径会跳过下载与 npm install，测不到真正易错的代码）
+npx tsx src/cli/bin.ts provision OrangePI --node-version v24.20.0
 ```
 
 **改动传输层或引导逻辑后，必须跑一次真实 `doctor`**。类型检查通过不等于连得上——远端 shell 差异、脚本拼接错误这类问题只有实跑才暴露。
@@ -67,7 +72,14 @@ npx tsx src/cli/bin.ts doctor OrangePI --refresh-mirrors
 
 **5. 远端命令统一经 `sh -c` 包裹。** `SshTransport.exec()` 已做这件事。ssh exec 用的是用户登录 shell，而各 shell 行为有实质差异：zsh 遇到未匹配的 glob 会直接报 `no matches found` 并中止，bash 则保留字面量。写远端脚本时还要注意**多行命令用 `\n` 连接，不能用空格**——`head=$(...) if [ ... ]` 是语法错误，整段脚本在解析期就失败，表现为所有探测"无输出"。
 
-**6. 拼进远端命令的任何动态值必须过 [src/util/shell-quote.ts](src/util/shell-quote.ts) 的 `quote()`。** 不要用模板字符串直接插值，那等于命令注入。注意 `quote('$HOME/x')` 会阻止 shell 展开 `$HOME`——需要展开时写 `"$HOME"/${quote(名字)}`。
+**6. 拼进远端命令的任何动态值必须过 [src/util/shell-quote.ts](src/util/shell-quote.ts) 的 `quote()`。** 不要用模板字符串直接插值，那等于命令注入。
+
+转义会阻止 shell 展开变量，这一点有两个必须记住的后果：
+
+- `quote('$HOME/x')` 里的 `$HOME` 不会展开。需要展开时写 `"$HOME"/${quote(名字)}`。
+- **要在 PATH 前面加目录，用 `exec()` 的 `pathPrefix` 选项，不要走 `env`。** 写 `env: { PATH: '<新>:$PATH' }` 会让 `$PATH` 变成字面量，远端 PATH 只剩这一个目录，连 `rm`、`mkdir` 都找不到——表现为所有远端命令莫名失败。
+
+**6b. 远端安装与 dsh 版本必须显式指定，不要依赖 dist-tag。** registry 上 `@deepseek-ai/dsh` 的 `latest` 指向 0.1.5-rc.2，比 `alpha` 的 0.1.6-alpha.2 旧。[src/provision/provisioner.ts](src/provision/provisioner.ts) 会先把标签解析成具体版本，安装命令里绝不出现标签。
 
 **7. 远端 dsh 已内置令牌认证。** 启动输出形如 `dsh web: http://127.0.0.1:<端口>/?token=<43 字符>`，无令牌访问返回 401，令牌换 `HttpOnly` + `SameSite=Strict` cookie。**令牌不落盘**，只在启动输出首行——所以启动日志文件既是诊断来源也是令牌唯一来源，不能丢。
 
