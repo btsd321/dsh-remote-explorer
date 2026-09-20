@@ -175,4 +175,4 @@ npx -y -p typescript@5.7.3 tsc --noEmit
 
 ## 许可
 
-内部使用——详见 [PLAN.md](PLAN.md)。
+Apache License 2.0，详见 [LICENSE](LICENSE)。

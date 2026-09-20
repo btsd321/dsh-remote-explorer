@@ -175,4 +175,4 @@ Code style guide is in [docs/type_script_style.md](docs/type_script_style.md) �
 
 ## License
 
-Internal use — see [PLAN.md](PLAN.md) for details.
+Apache License 2.0 — see [LICENSE](LICENSE).
