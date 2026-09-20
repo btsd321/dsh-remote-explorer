@@ -21,6 +21,40 @@ import SSHConfig from 'ssh-config';
 import { RemoteError } from '../util/errors.js';
 import { isInteractiveTerminal } from '../util/password-prompt.js';
 
+/** ssh-config 指令值的对象形态：多 token 指令（如 `Host a b`）的每个 token */
+interface DirectiveValue {
+  /** 值本体 */
+  val: string;
+  /** token 间的分隔符 */
+  separator: string;
+  /** 是否带引号 */
+  quoted: boolean;
+}
+
+/** 指令值的运行时形态：字符串、字符串数组、DirectiveValue 或其数组 */
+type DirectiveValueLike = string | string[] | DirectiveValue | DirectiveValue[];
+
+/**
+ * 把指令值归一成字符串数组。
+ *
+ * ssh-config 对单 token 指令给字符串，多 token（`Host a b`）给 DirectiveValue
+ * 数组——同一语义有多种运行时形态，消费方统一从这里取规范化结果，不做
+ * `value.split()` 这类只认字符串的调用（实测在多模式 Host 行上会炸）。
+ *
+ * @param value - ssh-config 解析出的指令值
+ * @returns 去空后的字符串列表
+ */
+function directiveValues(value: DirectiveValueLike | undefined): string[] {
+  if (value === undefined) return [];
+  const list = Array.isArray(value) ? value : [value];
+  const strings: string[] = [];
+  for (const item of list) {
+    const text = typeof item === 'string' ? item : item.val;
+    if (typeof text === 'string' && text.length > 0) strings.push(text);
+  }
+  return strings;
+}
+
 /**
  * compute() 返回的合并结果。
  *
@@ -36,12 +70,12 @@ interface ComputedHostOptions {
   user?: string;
   /** Port（config 里是字符串） */
   port?: string;
-  /** IdentityFile，可能是单值或多值 */
-  identityfile?: string | string[];
+  /** IdentityFile，可能是单值、多值或 DirectiveValue 形态 */
+  identityfile?: DirectiveValueLike;
   /** ProxyJump，逗号分隔的别名列表 */
-  proxyjump?: string;
+  proxyjump?: DirectiveValueLike;
   /** 其余选项一律不解释，仅透传供诊断 */
-  [key: string]: string | string[] | undefined;
+  [key: string]: DirectiveValueLike | undefined;
 }
 
 /** SSH config 条目（解析后的段） */
@@ -50,8 +84,8 @@ interface ConfigSection {
   type?: number;
   /** 指令名，如 'Host' */
   param?: string;
-  /** 指令值；多模式行（`Host a b`）解析为数组，单值为字符串 */
-  value?: string | string[];
+  /** 指令值；单 token 是字符串，多模式行（`Host a b`）是 DirectiveValue 数组 */
+  value?: DirectiveValueLike;
 }
 
 /** 解析后的 config 文档，附带 compute 方法 */
@@ -162,14 +196,15 @@ function expandTilde(path: string): string {
  * @returns 解析后的主机配置
  */
 function toResolvedHost(computed: ComputedHostOptions): ResolvedHost {
-  const identityFile = computed.identityfile;
-  const firstIdentity = Array.isArray(identityFile) ? identityFile[0] : identityFile;
+  const firstIdentity = directiveValues(computed.identityfile)[0];
+  // ProxyJump 用逗号分隔多级跳板；DirectiveValue 形态还原成逗号串
+  const proxyJump = directiveValues(computed.proxyjump).join(',');
   return {
     host: computed.hostname ?? '',
     port: computed.port ? Number.parseInt(computed.port, 10) : DEFAULT_SSH_PORT,
     username: computed.user ?? '',
     ...(firstIdentity ? { identityFile: expandTilde(firstIdentity) } : {}),
-    ...(computed.proxyjump ? { proxyJump: computed.proxyjump } : {}),
+    ...(proxyJump ? { proxyJump } : {}),
   };
 }
 
@@ -183,20 +218,18 @@ export function listHosts(): SshHostSummary[] {
   const result: SshHostSummary[] = [];
   for (const section of config) {
     if (section.type !== SECTION_TYPE_DIRECTIVE || section.param !== 'Host') continue;
-    const value = section.value;
-    if (!value) continue;
-    // 多模式行（`Host a b`）解析成数组，每个模式都是独立条目
-    const patterns = Array.isArray(value) ? value : [value];
-    for (const alias of patterns) {
+    // 多模式行（`Host a b`）的每个模式都是独立条目
+    for (const alias of directiveValues(section.value)) {
       if (alias === '*') continue;
       const computed = config.compute(alias, { ignoreCase: true });
+      const proxyJump = directiveValues(computed.proxyjump).join(',');
       result.push({
         alias,
         hostName: computed.hostname ?? alias,
         user: computed.user ?? '',
         port: computed.port ? Number.parseInt(computed.port, 10) : DEFAULT_SSH_PORT,
-        hasProxyJump: computed.proxyjump !== undefined,
-        ...(computed.proxyjump ? { proxyJump: computed.proxyjump } : {}),
+        hasProxyJump: proxyJump.length > 0,
+        ...(proxyJump ? { proxyJump } : {}),
       });
     }
   }
@@ -393,12 +426,8 @@ export function assertConnectable(
 function hasMatchingHostEntry(config: ParsedConfig, alias: string): boolean {
   for (const section of config) {
     if (section.type !== SECTION_TYPE_DIRECTIVE || section.param !== 'Host') continue;
-    const value = section.value;
-    if (!value) continue;
-    // 一个 Host 行可以列多个模式：`Host a b` 解析成数组，单值是字符串
-    //（也可能带空格分隔的多模式字符串，两种形态都归一成数组处理）
-    const patterns = (Array.isArray(value) ? value : value.split(/\s+/)).filter(Boolean);
-    for (const single of patterns) {
+    // 一个 Host 行可以列多个模式，归一后逐个比对
+    for (const single of directiveValues(section.value)) {
       // `*` 是通配默认值块，对任意别名都匹配，不能作为"别名存在"的依据
       if (single === '*') continue;
       if (matchesHostPattern(single, alias)) return true;
