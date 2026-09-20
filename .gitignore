@@ -3,6 +3,9 @@ node_modules/
 lib/
 *.tgz
 
+# 分发打包产物（scripts/package.ts 产出，不进仓库）
+/dist/
+
 # 系统文件
 .DS_Store
 Thumbs.db

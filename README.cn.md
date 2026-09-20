@@ -151,6 +151,10 @@ npx tsx src/cli/bin.ts list --ssh-config /path/to/config
 ```bash
 # 类型检查（本地 tsc 不可用，原因见 CLAUDE.md）
 npx -y -p typescript@5.7.3 tsc --noEmit
+
+# 打分发包：单文件 CLI + 目标平台 Node 二进制，目标机解压即用（产物在 dist/）
+npx tsx scripts/package.ts --all          # 五平台矩阵
+npx tsx scripts/package.ts --os linux --arch arm64
 ```
 
 代码规范见 [docs/type_script_style.md](docs/type_script_style.md)，写任何代码前先读。

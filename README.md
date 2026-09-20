@@ -151,6 +151,11 @@ Foundation   hosts/   util/
 ```bash
 # Type check (local tsc has issues, see CLAUDE.md)
 npx -y -p typescript@5.7.3 tsc --noEmit
+
+# Build distributable packages: single-file CLI + target-platform Node binary,
+# unpack-and-run on the target (output lands in dist/, gitignored)
+npx tsx scripts/package.ts --all          # full platform matrix
+npx tsx scripts/package.ts --os linux --arch arm64
 ```
 
 Code style guide is in [docs/type_script_style.md](docs/type_script_style.md) — read it before writing any code.

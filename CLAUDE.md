@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 参照 VS Code Remote-SSH / Zed / JetBrains Gateway 的做法——代码与会话都在远端，本机只做呈现。完整架构依据、调研来源、实测数据见 [PLAN.md](PLAN.md)。
 
-**没有构建步骤。** `tsconfig.json` 是 `noEmit: true` + `allowImportingTsExtensions: true`，源码以 `.ts` 形式经 tsx 直接运行。不要添加打包产物或 `outDir` 流程。
+**没有构建步骤。** `tsconfig.json` 是 `noEmit: true` + `allowImportingTsExtensions: true`，源码以 `.ts` 形式经 tsx 直接运行。不要在开发流程里加打包产物或 `outDir`。**分发打包是独立动作**：`scripts/package.ts` 用 esbuild 出单文件 .mjs 并打入目标平台 Node 二进制，产物在 `dist/`（gitignored）——它不改变源码的 tsx 运行方式，也不提交任何产物。
 
 ### 重要：0.4.0 是架构重写
 
@@ -48,6 +48,10 @@ npx tsx src/cli/bin.ts kill myhost --all
 
 # 清理远端陈旧资源（改动 clean.ts 后用它验证）
 npx tsx src/cli/bin.ts clean myhost
+
+# 分发包打包（esbuild 单文件 + 目标平台 Node 二进制，产物在 dist/，gitignored）
+# 开发流程仍无构建——本命令只服务分发。--all 打五平台矩阵；默认打当前平台
+npx tsx scripts/package.ts --all
 ```
 
 **在 Git Bash 里传远端路径必须用双斜杠**（`--cwd //home/xxx`）或先设

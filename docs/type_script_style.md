@@ -362,7 +362,7 @@ const infoSchema = z.object({}).passthrough();
 
 ## 七、工程化约束
 
-1. **无构建步骤。** 插件以 `.ts` 源码被 tsx 直接加载。不要添加 `outDir` 产物、打包流程或产物提交。
+1. **无构建步骤。** 插件以 `.ts` 源码被 tsx 直接加载。开发流程不添加 `outDir` 产物。分发打包走 `scripts/package.ts`（esbuild 单文件 + 目标平台 Node 二进制），产物落 `dist/` 且已 gitignore——不改变源码运行方式，不提交产物。
 2. **改代码后跑类型检查**：`npx -y -p typescript@5.7.3 tsc --noEmit`（本地 `tsc` 目前不可用，原因见 [CLAUDE.md](../CLAUDE.md)）。不要让类型错误总数变多。
 3. **新增运行时依赖必须写进 `package.json`**，版本锁定或用窄范围。`node_modules` 里有不等于已声明——`ssh-config` 就是现存的反例。
 4. **协议相关常量不可单方面修改**：`SSH_PROTOCOL_VERSION`、帧格式、TLS-PSK 密码套件必须与 dsh-ssh 同步，改动要在注释里标明兼容性影响。
