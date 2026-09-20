@@ -7,6 +7,7 @@ This document provides a detailed walkthrough of every `dsh-remote` command, its
 ## Table of contents
 
 - [Prerequisites](#prerequisites)
+- [Authentication and host targeting](#authentication-and-host-targeting)
 - [Command overview](#command-overview)
 - [list — List SSH hosts](#list--list-ssh-hosts)
 - [doctor — Diagnose a host](#doctor--diagnose-a-host)
@@ -28,6 +29,36 @@ This document provides a detailed walkthrough of every `dsh-remote` command, its
 - A reachable remote host: either a `Host` entry in `~/.ssh/config`, or an ad-hoc `user@host[:port]` target (IPv6 must go through the config). Authentication supports private keys (`IdentityFile`, overridable with `--private-key`); with no key configured and an interactive terminal, you will be prompted for a password (no echo; kept in memory only, never written to disk). You can also pass `--password <password>` — **this leaks**: the plaintext is visible in the process list and shell history. The CLI prints a warning; treat it as a stopgap.
 - The remote host must be **Linux or macOS** (POSIX). The local client supports Windows, Linux, and macOS.
 - **API keys** for whichever LLM providers you use (e.g. `DEEPSEEK_API_KEY`, `ASTUDIO_API_KEY`), set as environment variables in the shell where you run `dsh-remote connect`.
+
+## Authentication and host targeting
+
+Every command that connects to a remote (`doctor` / `provision` / `connect` / `kill` / `clean`) shares the same authentication rules.
+
+### Host argument
+
+The `<alias>` argument accepts two forms:
+
+- **ssh config alias**: a `Host` entry in `~/.ssh/config` (`Host *` defaults are merged, `ProxyJump` chains resolved recursively). A matching config entry always wins.
+- **Ad-hoc syntax** `user@host[:port]`: connect without touching the config. Port defaults to 22. IPv6 literals are not supported inline (colons conflict with the port suffix) — put them in the config. Ad-hoc hosts have no jump host.
+
+### Auth methods and precedence
+
+```
+--private-key  >  --password  >  config IdentityFile  >  interactive password prompt
+```
+
+- **`--private-key <path>`**: path to a private key, takes precedence over the config's `IdentityFile`. `~/` prefix supported.
+- **`--password <password>`**: plaintext password, forces password auth (wins over a configured key). **This leaks** — the password shows up in the command line, process list, and shell history; the CLI prints a warning. No retry after rejection. Treat it as a stopgap; prefer a key or interactive input.
+- **Both given**: `--private-key` wins and `--password` is ignored (with a notice).
+- **Interactive password prompt**: when the host (or a jump host) has no `IdentityFile` and the terminal is interactive, you are prompted during connection — **no echo**, re-prompted on rejection (up to 3 attempts). The password lives only in local process memory — never written to disk or logs. In a non-interactive terminal (pipes/CI), no prompt appears; the command fails with a missing-`IdentityFile` error instead of hanging.
+
+### Jump hosts
+
+`--private-key` / `--password` apply to the **target host only**; jump hosts authenticate from the config (or an interactive prompt per hop if they have no key).
+
+### Passwords across reconnection
+
+Automatic reconnection is unattended: it **never prompts** and silently reuses the password from the initial connect. If the password changes on the remote, reconnection terminates immediately with a clear message telling you to `connect` again — it does not retry forever or hang waiting for input.
 
 ## Command overview
 
@@ -86,6 +117,8 @@ npx tsx src/cli/bin.ts doctor <alias>
 |---|---|
 | `--refresh-mirrors` | Force re-benchmark mirror latency, ignore cached results |
 | `--ssh-config <path>` | Use a custom ssh config file |
+| `--private-key <path>` | Private key path, wins over the config's IdentityFile (see [Authentication](#authentication-and-host-targeting)) |
+| `--password <password>` | Plaintext password auth (leaks; see [Authentication](#authentication-and-host-targeting)) |
 
 **What it checks:**
 
@@ -120,6 +153,8 @@ npx tsx src/cli/bin.ts provision <alias> --cwd //home/user
 | `--dsh-version <ver>` | Target dsh version or dist-tag |
 | `--refresh-mirrors` | Force re-benchmark mirror latency |
 | `--ssh-config <path>` | Use a custom ssh config file |
+| `--private-key <path>` | Private key path, wins over the config's IdentityFile (see [Authentication](#authentication-and-host-targeting)) |
+| `--password <password>` | Plaintext password auth (leaks; see [Authentication](#authentication-and-host-targeting)) |
 
 **Why provision separately:** Provisioning is the slowest and most failure-prone step (~75 seconds for a fresh install). Separating it allows independent retry and diagnosis.
 
@@ -151,6 +186,8 @@ DEEPSEEK_API_KEY=sk-xxx ASTUDIO_API_KEY=sk-xxx \
 | `--dsh-version <ver>` | Target dsh version or dist-tag |
 | `--refresh-mirrors` | Force re-benchmark mirror latency |
 | `--ssh-config <path>` | Use a custom ssh config file |
+| `--private-key <path>` | Private key path, wins over the config's IdentityFile (see [Authentication](#authentication-and-host-targeting)) |
+| `--password <password>` | Plaintext password auth (leaks; see [Authentication](#authentication-and-host-targeting)) |
 
 **What happens during connect:**
 
@@ -208,6 +245,8 @@ npx tsx src/cli/bin.ts kill <alias> --all
 | `--cwd <path>` | Specify which session to stop (mutually exclusive with `--all`) |
 | `--all` | Stop all sessions on this host (including orphans) |
 | `--ssh-config <path>` | Use a custom ssh config file |
+| `--private-key <path>` | Private key path, wins over the config's IdentityFile (see [Authentication](#authentication-and-host-targeting)) |
+| `--password <password>` | Plaintext password auth (leaks; see [Authentication](#authentication-and-host-targeting)) |
 
 **Safety:** Process targeting uses pid files or listen-port-based lookup — **never `pkill -f`**, which would kill the SSH session running the command itself.
 
@@ -233,6 +272,8 @@ npx tsx src/cli/bin.ts clean <alias> --keep 2
 |---|---|
 | `--keep <N>` | Number of latest versions to keep per category (default: 1) |
 | `--ssh-config <path>` | Use a custom ssh config file |
+| `--private-key <path>` | Private key path, wins over the config's IdentityFile (see [Authentication](#authentication-and-host-targeting)) |
+| `--password <password>` | Plaintext password auth (leaks; see [Authentication](#authentication-and-host-targeting)) |
 
 **Protection mechanism:** Active sessions' runner scripts (`.runtime/start.sh`) record which dsh and Node paths they use. Before deletion, the tool collects all active session references; versions referenced by running sessions are protected even if they are older than the keep threshold.
 
@@ -285,6 +326,23 @@ npx tsx src/cli/bin.ts provision my-server --cwd //home/user
 
 # 5. Connect
 DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect my-server --cwd //home/user
+```
+
+### Password login (host with no key configured)
+
+```bash
+# Ad-hoc syntax + interactive password (no echo; re-prompts on rejection, up to 3 attempts)
+npx tsx src/cli/bin.ts doctor user@192.168.0.10
+
+# Same for connect; the password stays in local process memory and is
+# silently reused across reconnections
+DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect user@192.168.0.10 --cwd //home/user
+
+# For throwaway scripts you can pass it in the clear (leaks; CLI warns)
+DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect user@192.168.0.10 --cwd //home/user --password 'xxx'
+
+# Explicit key path (wins over the config's IdentityFile)
+npx tsx src/cli/bin.ts connect my-server --cwd //home/user --private-key ~/.ssh/id_ed25519
 ```
 
 ### Reconnect to an existing session

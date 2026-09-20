@@ -7,6 +7,7 @@
 ## 目录
 
 - [前置条件](#前置条件)
+- [认证与主机指定](#认证与主机指定)
 - [命令总览](#命令总览)
 - [list — 列出 SSH 主机](#list--列出-ssh-主机)
 - [doctor — 诊断主机](#doctor--诊断主机)
@@ -28,6 +29,36 @@
 - 一台可 SSH 登录的远端主机：写进 `~/.ssh/config` 的 `Host` 条目，或用 `user@host[:port]` 直连（IPv6 需写进 config）。认证支持私钥（`IdentityFile`，可用 `--private-key` 覆盖）；未配置私钥且在交互式终端时，会提示输入密码（不回显，只存内存不落盘）；也可用 `--password <密码>` 明文传入——**有泄露风险**（命令行、进程列表与 shell 历史都能看到），CLI 会打印警告，建议仅作临时手段。
 - 远端主机必须是 **Linux 或 macOS**（POSIX）。本机客户端支持 Windows、Linux 和 macOS。
 - 使用哪个 LLM 供应商，就将其 **API key** 作为环境变量导出（如 `DEEPSEEK_API_KEY`、`ASTUDIO_API_KEY`），在运行 `dsh-remote connect` 的 shell 中设置。
+
+## 认证与主机指定
+
+所有需要连接远端的命令（`doctor` / `provision` / `connect` / `kill` / `clean`）共用同一套认证规则。
+
+### 主机参数
+
+命令中的 `<别名>` 有两种写法：
+
+- **ssh config 别名**：`~/.ssh/config` 中的 `Host` 条目（自动合并 `Host *` 默认值、递归解析 `ProxyJump` 跳板机链）。config 里有同名条目时始终优先。
+- **直连语法** `user@host[:port]`：不写 config 也能连。端口省略时为 22；IPv6 字面量因与端口后缀冲突不支持内联，需写进 config。直连主机没有跳板机。
+
+### 认证方式与优先级
+
+```
+--private-key  >  --password  >  config IdentityFile  >  交互式密码提示
+```
+
+- **`--private-key <路径>`**：私钥文件路径，优先于 config 里的 `IdentityFile`。支持 `~/` 前缀。
+- **`--password <密码>`**：明文密码，显式走密码认证（config 里有私钥也优先用密码）。**有泄露风险**——密码会出现在命令行、进程列表与 shell 历史中，CLI 会打印警告。被拒后不重试。仅作临时手段，推荐私钥或交互输入。
+- **`--private-key` 与 `--password` 同给**：密钥优先，`--password` 被忽略（有提示）。
+- **交互式密码提示**：主机（含跳板机）没有配置 `IdentityFile` 且终端可交互时，连接过程中提示输入密码——**不回显**，输错会重新提示，最多 3 次。密码只存本进程内存，不落盘、不进日志。非交互终端（管道/CI）下不提示，直接报「缺少 IdentityFile」。
+
+### 跳板机规则
+
+`--private-key` / `--password` **只作用于目标主机**；跳板机的认证仍来自 config（无私钥且终端可交互时，逐级提示输密码）。
+
+### 重连时的密码
+
+会话自动重连是无人值守的：**不会弹密码提示**，只复用本次连接输入/传入的密码。密码在远端被改后，重连会立即终止并提示重新 `connect`，而不是反复失败或挂住等输入。
 
 ## 命令总览
 
@@ -86,6 +117,8 @@ npx tsx src/cli/bin.ts doctor <别名>
 |---|---|
 | `--refresh-mirrors` | 强制重测镜像延迟，忽略缓存 |
 | `--ssh-config <路径>` | 使用指定的 ssh config 文件 |
+| `--private-key <路径>` | 私钥路径，优先于 config 的 IdentityFile（见[认证与主机指定](#认证与主机指定)） |
+| `--password <密码>` | 明文密码认证（有泄露风险，见[认证与主机指定](#认证与主机指定)） |
 
 **检查内容：**
 
@@ -120,6 +153,8 @@ npx tsx src/cli/bin.ts provision <别名> --cwd //home/user
 | `--dsh-version <版本>` | 目标 dsh 版本或 dist-tag |
 | `--refresh-mirrors` | 强制重测镜像延迟 |
 | `--ssh-config <路径>` | 使用指定的 ssh config 文件 |
+| `--private-key <路径>` | 私钥路径，优先于 config 的 IdentityFile（见[认证与主机指定](#认证与主机指定)） |
+| `--password <密码>` | 明文密码认证（有泄露风险，见[认证与主机指定](#认证与主机指定)） |
 
 **为什么单独成命令：** 引导是最慢也最容易失败的一步（全新安装约 75 秒）。独立出来便于单独重试与诊断。
 
@@ -151,6 +186,8 @@ DEEPSEEK_API_KEY=sk-xxx ASTUDIO_API_KEY=sk-xxx \
 | `--dsh-version <版本>` | 目标 dsh 版本或 dist-tag |
 | `--refresh-mirrors` | 强制重测镜像延迟 |
 | `--ssh-config <路径>` | 使用指定的 ssh config 文件 |
+| `--private-key <路径>` | 私钥路径，优先于 config 的 IdentityFile（见[认证与主机指定](#认证与主机指定)） |
+| `--password <密码>` | 明文密码认证（有泄露风险，见[认证与主机指定](#认证与主机指定)） |
 
 **connect 过程：**
 
@@ -208,6 +245,8 @@ npx tsx src/cli/bin.ts kill <别名> --all
 | `--cwd <路径>` | 指定要停止的会话（与 `--all` 互斥） |
 | `--all` | 停止该主机上的全部会话（含孤儿） |
 | `--ssh-config <路径>` | 使用指定的 ssh config 文件 |
+| `--private-key <路径>` | 私钥路径，优先于 config 的 IdentityFile（见[认证与主机指定](#认证与主机指定)） |
+| `--password <密码>` | 明文密码认证（有泄露风险，见[认证与主机指定](#认证与主机指定)） |
 
 **安全机制：** 进程定位用 pid 文件或监听端口——**绝不用 `pkill -f`**，那会杀掉执行命令自身的 SSH 会话。
 
@@ -233,6 +272,8 @@ npx tsx src/cli/bin.ts clean <别名> --keep 2
 |---|---|
 | `--keep <数量>` | 每个类别保留的最新版本数（默认 1） |
 | `--ssh-config <路径>` | 使用指定的 ssh config 文件 |
+| `--private-key <路径>` | 私钥路径，优先于 config 的 IdentityFile（见[认证与主机指定](#认证与主机指定)） |
+| `--password <密码>` | 明文密码认证（有泄露风险，见[认证与主机指定](#认证与主机指定)） |
 
 **保护机制：** 活会话的 runner 脚本（`.runtime/start.sh`）记录着正在使用的 dsh 与 Node 路径。删除前先收集所有活会话引用的路径；被引用的版本即使旧于保留线也不删——删掉正在运行的安装，进程下次重启就找不到了。
 
@@ -285,6 +326,22 @@ npx tsx src/cli/bin.ts provision my-server --cwd //home/user
 
 # 5. 连接
 DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect my-server --cwd //home/user
+```
+
+### 密码登录（未配置私钥的主机）
+
+```bash
+# 直连语法 + 交互式输密码（不回显，输错可重试，最多 3 次）
+npx tsx src/cli/bin.ts doctor user@192.168.0.10
+
+# connect 时同理；密码只存本进程内存，重连时静默复用
+DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect user@192.168.0.10 --cwd //home/user
+
+# 临时脚本场景可用明文（有泄露风险，CLI 会警告）
+DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect user@192.168.0.10 --cwd //home/user --password 'xxx'
+
+# 显式指定私钥（优先于 config 的 IdentityFile）
+npx tsx src/cli/bin.ts connect my-server --cwd //home/user --private-key ~/.ssh/id_ed25519
 ```
 
 ### 重连到已有会话
