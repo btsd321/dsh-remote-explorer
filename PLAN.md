@@ -622,6 +622,16 @@ dsh-remote clean <别名> [--keep-latest] 清理旧版本目录与陈旧会话�
 
 另一个实现细节：反向通道（ssh2 ClientChannel）**不能**直接喂给 `http.Server`（缺 `setTimeout` 等 Socket 接口），代理在本机回环起真实 http.Server 监听临时端口，通道与一条本机 TCP 连接对接——多一跳本地回环换来完全标准的 socket 语义。
 
+**多供应商扩展（用户实际需求驱动）**：用户的默认模型配置在 `llm-pi-ai` 通道（settings.yaml 的 `llm-pi-ai.providers` 段，如 AStudio），P4 的单上游 DeepSeek 代理覆盖不到。泛化方案：
+
+- 代理改为**路由表**：DeepSeek 原生通道保留 `/anthropic` 前缀（patch 重定向）；pi-ai 供应商统一 `/r/<供应商名>` 前缀，路由自动从本机 `~/.dsh/settings.yaml` 提取（要求供应商同时具备 `apiKeyEnv` 与 `baseURL`）。
+- 路径换算：请求前缀替换成上游自身路径（`/r/astudio/...` → maas 上游的 `/v1/...`），剩余子路径与查询串原样。
+- 每条路由的 `keyEnv` 各自检查——缺哪个供应商的 key 只影响该供应商（502 带明确指引），其余照常。
+- **远端 settings 镜像**：本机 settings.yaml 整体复制到会话 `DSH_HOME/settings.yaml`（热重载，同值重写无副作用），仅 provider 的 `baseURL` 重定向进隧道。`agent-default-model` 等键随之镜像，远端的默认模型与本机一致。**只镜像 settings**（凭据引用，无密钥），绝不镜像 `.credentials.yaml`（可能含真实密钥）。
+- pi-ai 的 `apiKeyEnv` 每次请求经 `ctx.credentials` 从继承环境解析，占位令牌进远端进程环境即生效——与 DeepSeek 同一机制。
+
+实测：4 条路由（DeepSeek + astudio + qwen + iflytek）自动识别；假 ASTUDIO key 经代理打到讯飞 maas 上游，拿到上游真实 401（`HMAC signature cannot be verified: apikey not found`，链路全通且 key 已注入）；缺 key 的 DeepSeek 路由得到明确的 502 指引。
+
 ### P5 — guard 与打磨 ✅ 已完成（`--upload-fallback` 除外，见下）
 
 **guard 的最终处置：不需要独立插件，其剩余职责由更轻的机制承担。**

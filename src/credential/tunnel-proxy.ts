@@ -1,17 +1,19 @@
 /**
- * @file 反向隧道 LLM 代理
+ * @file 反向隧道 LLM 代理（多供应商）
  * @description 持有真实 API key 的本机 HTTP 代理：远端 dsh 的模型请求经
- *              SSH 反向隧道回到这里，校验代理令牌、换成真实 key、转发到
- *              DeepSeek 上游，响应流式回传。
+ *              SSH 反向隧道回到这里，校验代理令牌、按路径前缀匹配供应商路由、
+ *              换成该供应商的真实 key、转发到上游，响应流式回传。
  *
- * 凭据路径（与 PLAN 第三章的架构图一致）：
+ * 凭据路径（与 PLAN 第三章的架构图一致，多供应商泛化）：
  *
  * ```
- * 远端 dsh → 远端 127.0.0.1:<反向端口> → SSH 反向通道 → 本代理 → api.deepseek.com
- *            （占位令牌随请求头）          （此处换成真实 key）
+ * 远端 dsh → 远端 127.0.0.1:<反向端口>/r/<供应商> → SSH 反向通道 → 本代理
+ *            （占位令牌随请求头）                      ├─ 前缀 /anthropic → api.deepseek.com
+ *                                                   └─ 前缀 /r/astudio → maas-api.cn-huabei-1.xf-yun.com
+ *                                                      （按路由换成对应真实 key）
  * ```
  *
- * 两个实现要点：
+ * 三个实现要点：
  *
  * 1. **不能把 ssh2 通道直接喂给 http.Server。** `emit('connection', stream)`
  *    这类技巧依赖通道实现完整的 Socket 接口（`setTimeout` 等），ssh2 的
@@ -20,10 +22,15 @@
  *    换来完全标准的 socket 语义（keep-alive、chunked、流式都由 Node 自己处理）。
  *    临时端口只绑 127.0.0.1，且无有效令牌的请求一律 401。
  *
- * 2. **认证头按原样替换而非统一改写。** dsh 的 `messages` 协议（默认）用
- *    `x-api-key` 头，其余协议用 `authorization: Bearer`。请求头里带来的是
- *    代理令牌，转发时在**原来出现的头**里替换成真实 key——两种协议都能走通，
- *    不需要远端告知自己用的哪种。
+ * 2. **认证头按原样替换而非统一改写。** dsh 的 `messages` 协议用
+ *    `x-api-key` 头，openai 系协议用 `authorization: Bearer`。请求头里带来的
+ *    是代理令牌，转发时在**原来出现的头**里替换成匹配路由的真实 key——
+ *    各种协议都能走通，不需要远端告知自己用的哪种。
+ *
+ * 3. **路由按路径前缀匹配，前缀换上游路径。** 远端 baseURL 的路径部分
+ *    标识供应商（`/anthropic` 或 `/r/<名>`），转发时把前缀替换成上游
+ *    自己的路径（如 `/r/astudio/...` → maas 上游的 `/v1/...`），
+ *    剩余子路径原样保留。
  */
 
 import { createConnection, type Socket } from 'node:net';
@@ -31,10 +38,12 @@ import http from 'node:http';
 import { Readable } from 'node:stream';
 import type { Duplex } from 'node:stream';
 import { tokenEquals } from './token.js';
+import type { ProxyRoute } from './provider-routes.js';
 import type { CredentialPatchEntry, CredentialStrategy } from './types.js';
 
-/** DeepSeek 公网 API 根地址 */
-const UPSTREAM_BASE = 'https://api.deepseek.com';
+/** DeepSeek 原生通道的 patch 条目 id 与路由前缀（与 provider-routes 的约定一致） */
+const DEEPSEEK_PATCH_ID = 'llm-deepseek';
+const DEEPSEEK_PREFIX = '/anthropic';
 
 /** 转发请求时不应透传的请求头（按小写比较） */
 const HOP_REQUEST_HEADERS = new Set([
@@ -68,16 +77,15 @@ export class TunnelProxyCredential implements CredentialStrategy {
   private stopped = false;
 
   /**
-   * @param proxyToken - 代理令牌（远端占位凭据）
+   * @param proxyToken - 代理令牌（远端占位凭据，所有供应商共用）
    * @param reversePort - 反向隧道在远端占用的端口
-   * @param apiKey - 真实 API key；本机没有 DEEPSEEK_API_KEY 时为 undefined，
-   *                 代理仍会启动但每个请求都返回明确错误
+   * @param routes - 供应商路由表（含 DeepSeek 原生通道与 pi-ai 供应商）
    * @param hostAlias - 主机别名（诊断与日志用）
    */
   constructor(
     private readonly proxyToken: string,
     readonly reversePort: number,
-    private readonly apiKey: string | undefined,
+    private readonly routes: readonly ProxyRoute[],
     private readonly hostAlias: string,
   ) {
     this.server = http.createServer((req, res) => { void this.handle(req, res); });
@@ -85,22 +93,42 @@ export class TunnelProxyCredential implements CredentialStrategy {
     this.server.on('clientError', (_error, socket) => { socket.destroy(); });
   }
 
-  /** 真实 key 是否就位 */
-  get hasApiKey(): boolean {
-    return this.apiKey !== undefined && this.apiKey.length > 0;
+  /** 路由总数（诊断展示用） */
+  get routeCount(): number {
+    return this.routes.length;
   }
 
-  /** 注入远端进程的环境变量：占位凭据就是代理令牌 */
+  /**
+   * 本机缺失真实 key 的路由的环境变量名列表。
+   *
+   * 对应供应商的请求会得到明确的 502，其余供应商不受影响。
+   */
+  get missingKeyEnvs(): string[] {
+    return this.routes
+      .map(route => route.keyEnv)
+      .filter(keyEnv => (process.env[keyEnv] ?? '').length === 0);
+  }
+
+  /** 注入远端进程的环境变量：每条路由的 keyEnv 都放占位令牌 */
   remoteEnv(): Record<string, string> {
-    return { DEEPSEEK_API_KEY: this.proxyToken };
+    const env: Record<string, string> = {};
+    for (const route of this.routes) {
+      env[route.keyEnv] = this.proxyToken;
+    }
+    return env;
   }
 
-  /** 会话 patch：baseURL 指向反向端口，路径后缀与 messages 协议的上游一致 */
+  /**
+   * 会话 patch：DeepSeek 原生通道的 baseURL 指向反向端口。
+   *
+   * pi-ai 供应商不走 patch——它们的 baseURL 由远端镜像的 settings.yaml
+   * 重定向（见 provider-routes 的 mirrorSettingsForTunnel）。
+   */
   remotePatches(): CredentialPatchEntry[] {
     return [
       {
-        id: 'llm-deepseek',
-        config: { baseURL: `http://127.0.0.1:${this.reversePort}/anthropic` },
+        id: DEEPSEEK_PATCH_ID,
+        config: { baseURL: `http://127.0.0.1:${this.reversePort}${DEEPSEEK_PREFIX}` },
       },
     ];
   }
@@ -192,15 +220,29 @@ export class TunnelProxyCredential implements CredentialStrategy {
         return;
       }
 
-      // 2. 真实 key 必须就位——缺 key 时给出能定位到本机的明确错误
-      if (!this.hasApiKey) {
-        res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
-        res.end('dsh-remote proxy: 本机未设置 DEEPSEEK_API_KEY，无法代理模型调用。'
-          + '请在启动 dsh-remote 的环境中导出该变量后重连');
+      // 2. 按路径前缀匹配供应商路由（最长前缀优先，防止 /r/a 误吞 /r/ab）
+      const requestUrl = req.url ?? '/';
+      const queryIndex = requestUrl.indexOf('?');
+      const path = queryIndex >= 0 ? requestUrl.slice(0, queryIndex) : requestUrl;
+      const query = queryIndex >= 0 ? requestUrl.slice(queryIndex) : '';
+      const route = matchRoute(this.routes, path);
+      if (!route) {
+        res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+        res.end(`dsh-remote proxy: 无匹配的供应商路由（${path}）。`
+          + `可用前缀：${this.routes.map(r => r.prefix).join('、')}`);
         return;
       }
 
-      // 3. 构造上游请求：逐头透传，跳过逐跳头；认证头换成真实 key
+      // 3. 该路由的真实 key 必须就位——缺 key 时给出能定位到本机的明确错误
+      const apiKey = process.env[route.keyEnv];
+      if (apiKey === undefined || apiKey.length === 0) {
+        res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
+        res.end(`dsh-remote proxy: 本机未设置 ${route.keyEnv}（供应商 ${route.label}），`
+          + '无法代理该供应商的调用。请在启动 dsh-remote 的环境中导出该变量后重连');
+        return;
+      }
+
+      // 4. 构造上游请求：逐头透传，跳过逐跳头；认证头换成真实 key
       const headers = new Headers();
       for (const [name, value] of Object.entries(req.headers)) {
         if (HOP_REQUEST_HEADERS.has(name)) continue;
@@ -211,10 +253,10 @@ export class TunnelProxyCredential implements CredentialStrategy {
         }
       }
       // 请求里出现过的认证头才替换——messages 协议带 x-api-key，
-      // 其余协议带 authorization；两者都出现时都替换
-      if (req.headers['x-api-key'] !== undefined) headers.set('x-api-key', this.apiKey!);
+      // openai 系协议带 authorization；两者都出现时都替换
+      if (req.headers['x-api-key'] !== undefined) headers.set('x-api-key', apiKey);
       if (req.headers.authorization !== undefined) {
-        headers.set('authorization', `Bearer ${this.apiKey}`);
+        headers.set('authorization', `Bearer ${apiKey}`);
       }
 
       const init: RequestInit = {
@@ -234,8 +276,10 @@ export class TunnelProxyCredential implements CredentialStrategy {
         init.body = Buffer.concat(chunks);
       }
 
-      // 4. 转发并流式回传
-      const upstream = await fetch(`${UPSTREAM_BASE}${req.url ?? '/'}`, init);
+      // 5. 转发并流式回传。路径换算：请求前缀 → 上游自身路径，剩余子路径原样
+      const subPath = path.slice(route.prefix.length);
+      const upstreamUrl = `${route.upstreamOrigin}${route.upstreamPath}${subPath}${query}`;
+      const upstream = await fetch(upstreamUrl, init);
       res.writeHead(upstream.status, this.filteredResponseHeaders(upstream));
       if (upstream.body !== null) {
         const body = Readable.fromWeb(upstream.body as unknown as import('node:stream/web').ReadableStream);
@@ -272,6 +316,22 @@ export class TunnelProxyCredential implements CredentialStrategy {
     }
     return result;
   }
+}
+
+/**
+ * 按最长前缀匹配路由。
+ *
+ * @param routes - 路由表
+ * @param path - 请求路径（不含查询串）
+ * @returns 匹配的路由；无匹配时 undefined
+ */
+function matchRoute(routes: readonly ProxyRoute[], path: string): ProxyRoute | undefined {
+  let best: ProxyRoute | undefined;
+  for (const route of routes) {
+    if (path !== route.prefix && !path.startsWith(`${route.prefix}/`)) continue;
+    if (best === undefined || route.prefix.length > best.prefix.length) best = route;
+  }
+  return best;
 }
 
 /**

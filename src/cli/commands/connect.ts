@@ -95,16 +95,16 @@ export async function runConnect(options: ConnectCommandOptions): Promise<number
       ['dsh', result.dsh.version],
       ['会话 id', session.sessionId],
       ...(session.reversePort !== undefined
-        ? [['密钥代理', session.credentialReady
-          ? `反向端口 ${session.reversePort} → 本机（key 不出本机）`
-          : `反向端口 ${session.reversePort} → 本机${red('（本机未设 DEEPSEEK_API_KEY）')}`]]
+        ? [['密钥代理', session.missingKeyEnvs.length === 0
+          ? `反向端口 ${session.reversePort} → 本机（${session.routeCount} 条路由，key 不出本机）`
+          : `反向端口 ${session.reversePort} → 本机（${session.routeCount} 条路由${red(`，缺 key：${session.missingKeyEnvs.join('、')}`)}）`]]
         : []),
     ],
   );
   println();
 
-  if (session.reversePort !== undefined && !session.credentialReady) {
-    println(red('! 本机未设置 DEEPSEEK_API_KEY——远端模型调用会失败'));
+  if (session.reversePort !== undefined && session.missingKeyEnvs.length > 0) {
+    println(red(`! 本机未设置 ${session.missingKeyEnvs.join('、')}——对应供应商的模型调用会失败`));
     println(dim('  在启动 dsh-remote 的环境中导出该变量后重新 connect 即可'));
   }
 

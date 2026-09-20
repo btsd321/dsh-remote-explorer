@@ -50,6 +50,9 @@ import {
 import { removeSession, upsertSession } from './session-registry.js';
 import { generateProxyToken } from '../credential/token.js';
 import { TunnelProxyCredential } from '../credential/tunnel-proxy.js';
+import {
+  deepseekRoute, extractProviderRoutes, mirrorSettingsForTunnel, readLocalSettings,
+} from '../credential/provider-routes.js';
 import type { ReverseHandle, RemoteTransport } from '../transport/types.js';
 
 /** 会话打开选项 */
@@ -161,9 +164,18 @@ export class RemoteSession {
     return this.secret?.reversePort;
   }
 
-  /** 凭据代理是否就绪且真实 key 已配置 */
-  get credentialReady(): boolean {
-    return this.credential?.hasApiKey ?? false;
+  /**
+   * 本机缺失真实 key 的环境变量名列表（跨全部路由）。
+   *
+   * 空列表表示所有供应商的 key 都已就位。
+   */
+  get missingKeyEnvs(): string[] {
+    return this.credential?.missingKeyEnvs ?? [];
+  }
+
+  /** 代理路由数（含 DeepSeek 原生通道与 pi-ai 供应商） */
+  get routeCount(): number {
+    return this.credential?.routeCount ?? 0;
   }
 
   /** 当前状态 */
@@ -236,17 +248,22 @@ export class RemoteSession {
       }
 
       // 4. 凭据策略实例。构造便宜（不起监听），放在引导之前——
-      //    环境注入与 patch 条目都从它取，编排层不重复拼这些细节
+      //    环境注入、patch 条目与 settings 镜像都从它取，编排层不重复拼细节。
+      //    路由表 = DeepSeek 原生通道 + 本机 settings.yaml 里的 pi-ai 供应商
+      //    （用户的默认模型可能配置在后者，如 AStudio）
+      const localSettings = readLocalSettings();
+      const providerRoutes = localSettings ? extractProviderRoutes(localSettings) : [];
       const credential = secret
         ? new TunnelProxyCredential(
           secret.token, secret.reversePort,
-          process.env.DEEPSEEK_API_KEY, options.hostAlias,
+          [deepseekRoute(), ...providerRoutes],
+          options.hostAlias,
         )
         : undefined;
 
-      // 5. 引导（幂等）。patch 让 baseURL 指向反向端口——secret 存在就写，
-      //    复用与新建 alike：prepareSessionProfile 每次重写 patch，
-      //    反向端口来自同一份落盘材料，值保持一致
+      // 5. 引导（幂等）。patch 让 DeepSeek 原生通道的 baseURL 指向反向端口——
+      //    secret 存在就写，复用与新建 alike：prepareSessionProfile 每次重写
+      //    patch，反向端口来自同一份落盘材料，值保持一致
       const provisioned = await provision(transport, {
         sessionId,
         patches: credential?.remotePatches() ?? [],
@@ -258,32 +275,51 @@ export class RemoteSession {
         ...(options.onStageSkip ? { onStageSkip: options.onStageSkip } : {}),
       });
 
-      // 6. 新凭据材料落盘（600 权限）。之后无论哪个视图重连都读回同一组值
+      // 6. settings 镜像：本机 settings 整体复制到会话 DSH_HOME（热重载，
+      //    复用会话时同值重写无副作用），仅 pi-ai 供应商的 baseURL 重定向进
+      //    隧道。只镜像 settings——凭据引用不含密钥；绝不镜像 .credentials.yaml
+      if (secret && localSettings) {
+        const mirrored = mirrorSettingsForTunnel(localSettings, secret.reversePort);
+        if (mirrored) {
+          await transport.exec(
+            `printf '%s' ${quote(mirrored)} > ${quote(paths.sessionSettingsFile(sessionId))}`,
+            { allowNonZeroExit: true },
+          );
+        }
+      }
+
+      // 7. 新凭据材料落盘（600 权限）。之后无论哪个视图重连都读回同一组值
       if (secret && secretIsNew) {
         await writeProxySecret(transport, paths, sessionId, secret);
       }
 
-      // 7. 启动远端进程（占位凭据进环境）
+      // 8. 启动远端进程（占位凭据进环境——每条路由的 keyEnv 都是同一个令牌）
       if (!processInfo) {
         processInfo = await RemoteSession.launch(
           transport, provisioned, sessionId, options, webPort!, credential,
         );
       }
 
-      // 8. 起本机 LLM 代理并挂反向转发
+      // 9. 起本机 LLM 代理并挂反向转发
       let reverseHandle: ReverseHandle | undefined;
       if (credential) {
         options.onStageStart?.('启动密钥代理');
         await credential.start();
         reverseHandle = await attachReverseForward(transport, credential, options);
-        if (credential.hasApiKey) {
-          options.onStageDone?.(`反向端口 ${credential.reversePort} → 本机代理`);
+        const missing = credential.missingKeyEnvs;
+        if (missing.length === 0) {
+          options.onStageDone?.(
+            `反向端口 ${credential.reversePort} → 本机代理（${credential.routeCount} 条路由）`,
+          );
         } else {
-          options.onStageDone?.('已启动，但本机未设置 DEEPSEEK_API_KEY，模型调用将失败');
+          options.onStageDone?.(
+            `反向端口 ${credential.reversePort} → 本机代理（${credential.routeCount} 条路由；`
+            + `本机缺 key：${missing.join('、')}）`,
+          );
         }
       }
 
-      // 8. 建正向隧道。监听器跨重连存活，端口从此不再变化
+      // 10. 建正向隧道。监听器跨重连存活，端口从此不再变化
       options.onStageStart?.('建立正向隧道');
       const forward = new LocalForward(transport, '127.0.0.1', processInfo.port);
       const localPort = await forward.listen(options.localPort ?? 0);

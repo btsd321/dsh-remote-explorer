@@ -42,8 +42,8 @@ npx tsx src/cli/bin.ts doctor OrangePI
 npx tsx src/cli/bin.ts doctor OrangePI --refresh-mirrors   # 强制重测镜像
 
 # 主命令：引导 → 起远端 dsh → 建隧道 → 开浏览器（进程常驻）
-# 带凭据路径：在环境里导出 DEEPSEEK_API_KEY，远端模型调用经反向隧道回本机代理
-DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect OrangePI --cwd //home/xlli67
+# 用哪个供应商就把哪个 key 放进本机环境（供应商清单来自 ~/.dsh/settings.yaml）
+DEEPSEEK_API_KEY=sk-xxx ASTUDIO_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect OrangePI --cwd //home/xlli67
 
 # 查看本机维持的所有会话
 npx tsx src/cli/bin.ts status
@@ -67,17 +67,25 @@ npx tsx src/cli/bin.ts list --ssh-config /path/to/config
 
 ## 凭据如何工作
 
-模型调用不经公网直连，而是走反向隧道：
+模型调用不经公网直连，而是走反向隧道。**多供应商**：代理按路径前缀路由——
+DeepSeek 原生通道用 `/anthropic`，`~/.dsh/settings.yaml` 里 `llm-pi-ai.providers`
+段配置的供应商（如 AStudio、qwen、iflytek）各自走 `/r/<供应商名>`，
+路由自动提取，无需手动配置：
 
 ```
-远端 dsh ──(占位令牌)──▶ 远端 127.0.0.1:<反向端口> ──SSH 反向通道──▶ 本机代理
-                                                                    │ 注入真实 key
-                                                                    ▼
-                                                        api.deepseek.com（本机直连出网）
+远端 dsh ──(占位令牌)──▶ 远端 127.0.0.1:<反向端口>/r/<供应商> ──SSH 反向通道──▶ 本机代理
+                                                                    ├─ /anthropic → api.deepseek.com
+                                                                    └─ /r/astudio → maas-api.cn-huabei-1.xf-yun.com
+                                                                       （按路由注入对应真实 key）
 ```
 
-- 真实 `DEEPSEEK_API_KEY` **只存在于本机进程**，不落远端磁盘、不进远端环境。
-  远端进程环境里的 `DEEPSEEK_API_KEY` 是代理令牌（随机值），仅用于回打时通过代理校验。
+- 各供应商的真实 key（`DEEPSEEK_API_KEY`、`ASTUDIO_API_KEY` 等）**只存在于本机
+  进程**，不落远端磁盘、不进远端环境。远端进程环境里放的是代理令牌（随机值）。
+- 本机 `~/.dsh/settings.yaml` 会**整体镜像**到会话的 `DSH_HOME/settings.yaml`
+  （`agent-default-model` 等键随之镜像，远端默认模型与本机一致），仅供应商的
+  `baseURL` 重定向进隧道。**只镜像 settings（凭据引用，无密钥），
+  绝不镜像 `.credentials.yaml`**（可能含真实密钥）。
+- 缺哪个供应商的 key 只影响该供应商（502 带明确指引），其余照常。
 - 代理令牌与反向端口随会话固定，落盘远端 `.runtime/`（令牌 600 权限），
   重连与复用读回同一组值。
 - 同一会话的多个本机 CLI 共享凭据路径（反向端口先到先得，后来的视图自动让位）。
@@ -146,7 +154,8 @@ npx tsx src/cli/bin.ts list --ssh-config /path/to/config
 | [src/session/reconnect.ts](src/session/reconnect.ts) | 有限次指数退避 |
 | [src/session/session-registry.ts](src/session/session-registry.ts) | 本机会话表，锁文件 + 原子替换 |
 | [src/session/session-manager.ts](src/session/session-manager.ts) | 会话编排：打开、凭据接线、重连、关闭 |
-| [src/credential/tunnel-proxy.ts](src/credential/tunnel-proxy.ts) | 反向隧道 LLM 代理，注入真实 key |
+| [src/credential/tunnel-proxy.ts](src/credential/tunnel-proxy.ts) | 反向隧道 LLM 代理（多供应商路由），注入真实 key |
+| [src/credential/provider-routes.ts](src/credential/provider-routes.ts) | 从本机 settings.yaml 提取供应商路由，产出远端镜像 |
 | [src/credential/token.ts](src/credential/token.ts) | 代理令牌：生成与常数时间比较 |
 | [src/cli/](src/cli/) | 命令分派与终端输出 |
 

@@ -121,6 +121,17 @@ export interface RemotePaths {
   sessionPatchFile(sessionId: string): string;
 
   /**
+   * 某会话的 settings.yaml（本机 settings 的远端镜像，provider baseURL 已重定向）。
+   *
+   * dsh 的用户设置文档就放在 `$DSH_HOME/settings.yaml` 且热重载——
+   * 会话的 DSH_HOME 即会话目录，所以这份镜像落在这里会被远端 dsh 直接读取。
+   * 注意**只镜像 settings**（凭据引用，不含密钥），绝不镜像
+   * `$DSH_HOME/.credentials.yaml`（可能含真实密钥）。
+   * @param sessionId - 会话 id
+   */
+  sessionSettingsFile(sessionId: string): string;
+
+  /**
    * 某会话的代理令牌文件（权限 600）。
    *
    * 存的是**占位令牌**（本机代理与远端 dsh 的共享密钥），不是真实 API key。
@@ -180,6 +191,7 @@ export function createRemotePaths(homeDir: string): RemotePaths {
     sessionPidFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/pid`,
     sessionLogFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/dsh.log`,
     sessionPatchFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/patch.yml`,
+    sessionSettingsFile: (sessionId) => `${base}/sessions/${sessionId}/settings.yaml`,
     sessionProxyTokenFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/proxy-token`,
     sessionReversePortFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/reverse-port`,
 
