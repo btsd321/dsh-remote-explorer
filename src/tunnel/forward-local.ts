@@ -64,6 +64,9 @@ export class LocalForward {
     const server = createServer((socket: Socket) => {
       this.sockets.add(socket);
       socket.once('close', () => this.sockets.delete(socket));
+      // error 监听器必须在任何 destroy 之前挂上：pipe() 的失败路径会销毁 socket，
+      // raw TCP socket 没有 http 层兜底，无监听器时未处理 error 事件会直接掀翻进程
+      socket.on('error', () => { /* 错误的处置在 pipe() 的失败路径里 */ });
       void this.pipe(socket);
     });
     this.server = server;
@@ -145,10 +148,15 @@ export class LocalForward {
     try {
       channel = await this.transport.openChannel(this.remoteHost, this.remotePort);
     } catch (error) {
-      // 开通道失败通常意味着 SSH 已断——销毁本机连接让浏览器感知并重试。
+      // 开通道失败通常意味着 SSH 已断或通道配额耗尽——销毁本机连接让浏览器
+      // 感知并重试。**不带 error 参数调用 destroy**：带参数会在 socket 上
+      // 触发 error 事件（listen() 里已挂兜底监听器，但那条路径只是吞掉），
+      // 而这里要的是干净的连接重置。
       // 不在这里触发重连：重连由会话编排层按心跳统一决策，
       // 否则每个失败的连接都会各自发起一次重连。
-      socket.destroy(new Error(`转发失败：${toErrorMessage(error)}`));
+      // 直接写 stderr 而非 cli 层的输出模块：tunnel 层不得向上 import
+      process.stderr.write(`转发失败（连接已断开，浏览器会自行重试）：${toErrorMessage(error)}\n`);
+      socket.destroy();
       return;
     }
 

@@ -103,6 +103,10 @@ npx tsx src/cli/bin.ts clean OrangePI
 
 **8b. 本机监听器必须跨重连存活。** 重连时只换传输引用（`LocalForward.swapTransport`），本机端口不变——端口一变，用户已打开的浏览器标签全部失效。这正是传输接口提供 `openChannel`（只开一条通道）而非 `forwardOut`（本机监听 + 转发一体）的原因：监听器归 [src/tunnel/forward-local.ts](src/tunnel/forward-local.ts) 持有，传输实例可以被替换。
 
+**8b-2. raw TCP socket 的 error 监听器必须在任何 destroy 之前挂上。** [src/tunnel/forward-local.ts](src/tunnel/forward-local.ts) 的连接回调里第一件事就是 `socket.on('error', ...)`：无监听器的 socket 被带 error 参数 destroy 时，未处理 `error` 事件会**直接掀翻整个进程**（用户实测踩过：通道配额耗尽 → pipe 失败路径 destroy(Error) → CLI 崩溃）。失败路径只调用不带参数的 `socket.destroy()`。
+
+**8b-3. forward 通道配额按浏览器稳态并发取，不能拍脑袋取小。** 浏览器对单一 web 主机常规保持 6 条以上 HTTP/1.1 keep-alive 连接（稳态占用，不释放），加 WebSocket 与 SSE，上限 5 在正常使用中就会耗满，之后每条新连接排队 30 秒再失败。direct-tcpip 通道没有等同于 sshd `MaxSessions` 的低值硬上限（`ssh -L` 的常规用法就是几十条并发），[src/transport/channel-pool.ts](src/transport/channel-pool.ts) 的 forward 默认上限取 64；admin 类（受 `MaxSessions` 约束）仍是 3。
+
 **8c. 会话表主键是 `(sessionId, localPid)` 组合，不是 `sessionId` 单独。** 会话 id 是**远端**身份：同别名同目录的多个本机 CLI 会共享同一个远端 dsh（后来者探到既有进程即复用），它们是同一远端会话的多个本机视图，各自维持自己的隧道端口。只按 sessionId 去重会让后启动的 CLI 挤掉先前那条记录，于是 `status` 漏报一个仍在工作的隧道。`removeSession(id, localPid)` 删单个视图，`removeSession(id)` 删该会话全部视图（`kill` 用后者）。
 
 **8d. 凭据路径：占位令牌 + 落盘材料 + 跨重连的代理。** 三件事必须一起成立，改任何一件都要读 [src/session/session-manager.ts](src/session/session-manager.ts) 的 open()：

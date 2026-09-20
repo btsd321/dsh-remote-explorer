@@ -187,6 +187,12 @@ DeepSeek 原生通道用 `/anthropic`，`~/.dsh/settings.yaml` 里 `llm-pi-ai.pr
 - **本机监听器必须跨重连存活。** 重连只换传输引用，本机端口不变——
   端口一变，用户已打开的浏览器标签全部失效。这也是传输接口提供
   `openChannel`（只开通道）而非 `forwardOut`（监听+转发一体）的原因。
+- **raw TCP socket 的 error 监听器要在任何 destroy 之前挂上**，失败路径用
+  不带参数的 `destroy()`——带 error 参数的 destroy 在无监听器的 socket 上
+  会以未处理事件掀翻进程。
+- **forward 通道配额按浏览器稳态并发取**：浏览器对单一主机的 keep-alive
+  连接是稳态占用，上限 5 正常使用就会耗满；取 64（direct-tcpip 无
+  `MaxSessions` 那样的低值硬上限）。
 - **本机 Node v24.14.0 的 fetch 拒绝一切流式请求体**（ReadableStream /
   异步生成器都抛 `expected non-null body source`，字符串与 Buffer 正常）。
   所以 LLM 代理的请求体是整体缓冲后转发的；流式要紧的响应侧（SSE）保持直传。

@@ -7,9 +7,10 @@
  * 换个调用点又会犯同样的错。这里把配额收口成独立模块，exec、SFTP、正向转发、
  * 反向转发全部经它申请，从结构上消除这类故障。
  *
- * 容量口径：OpenSSH 服务端默认 `MaxSessions 10`。正向转发的每个入站连接也占一条通道，
- * 所以浏览器一开多个标签就可能吃掉大半配额——默认值取得保守，并把转发与
- * 管理类操作分池，保证管理操作不会被转发挤死（借 dsh-ssh 给心跳预留容量的思路）。
+ * 容量口径：admin 类通道受 OpenSSH `MaxSessions`（默认 10）约束；forward 类
+ * （direct-tcpip）没有同等的低值硬上限，但浏览器对单一 web 主机的 keep-alive
+ * 连接是**稳态占用**，上限必须按「浏览器常规并发 + 余量」取而不是取小了事。
+ * 两类分池，保证心跳与管理命令不会被转发流量挤死（借 dsh-ssh 给心跳预留容量的思路）。
  *
  * 分层约束：本文件属传输层，不感知连接状态与业务语义。
  */
@@ -36,12 +37,18 @@ export interface ChannelPoolConfig {
 /**
  * 默认配额。
  *
- * OpenSSH 默认 MaxSessions 为 10，这里合计取 8 留出余量：
- * 服务端可能已被其他会话占用，且 ssh2 自身的 keepalive 不占 session 通道但仍有开销。
+ * admin 类（exec 命令、SFTP）确实受 OpenSSH `MaxSessions`（默认 10）约束，
+ * 取 3 留余量即可——本工具的 exec 是串行的（心跳每 5 秒一条命令）。
+ *
+ * forward 类是另一回事，实测取 5 是错的（用户实测踩过）：浏览器对单一 web
+ * 主机常规保持 6 条以上 HTTP/1.1 keep-alive 连接，加上 WebSocket 与 SSE，
+ * 正常使用就会**稳态**耗满 5 条，此后每条新连接都要排队 30 秒再失败。
+ * direct-tcpip 通道没有等同于 MaxSessions 的低值硬上限——`ssh -L` 的常规
+ * 用法就是几十条并发转发连接——取 64 留足余量，仍能兜住异常失控的调用方。
  */
 const DEFAULT_CONFIG: ChannelPoolConfig = {
   adminLimit: 3,
-  forwardLimit: 5,
+  forwardLimit: 64,
   acquireTimeoutMs: 30_000,
 };
 
