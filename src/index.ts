@@ -24,6 +24,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import { RemoteHostController } from './api/remote-host-controller.js';
 import { registerWebGuiRoutes } from './webgui-integration.js';
 import { installRemoteDirectoryPicker } from './remote-directory-picker.js';
+import { installRemoteWorkspaceBridge } from './remote-workspace-bridge.js';
 
 // === 模块导出 ===
 
@@ -42,6 +43,8 @@ export type { ConnectionState, ConnectionEvent, ConnectionHistoryEntry, Reconnec
 
 export { RemoteWorkspaceAdapter } from './remote-workspace.js';
 export type { RemoteFsInfo, RemoteFsTarget, RemoteDirEntry } from './remote-workspace.js';
+
+export { installRemoteWorkspaceBridge } from './remote-workspace-bridge.js';
 
 export { RemoteWorkspaceRegistry } from './remote-workspace-registry.js';
 export type { RemoteWorkspaceRecord, CreateRemoteWorkspaceInput, RemoteWorkspaceValue } from './remote-workspace-registry.js';
@@ -129,7 +132,13 @@ export function apply(ctx: Context, config: Config): void {
     installRemoteDirectoryPicker(pickerCtx, controller);
   });
 
-  // 7. 在 ctx 销毁时断开 SSH 连接
+  // 7. 在 workspaceRegistry 可用时安装远程工作区桥接
+  //    让"添加工作区"能接受远端 POSIX 路径（dsh 原实现按宿主平台校验，会拒绝）
+  ctx.inject(['workspaceRegistry'], (workspaceCtx: Context) => {
+    installRemoteWorkspaceBridge(workspaceCtx, controller);
+  });
+
+  // 8. 在 ctx 销毁时断开 SSH 连接
   ctx.effect(() => () => {
     void controller.connectionOrchestrator.deactivate().catch(() => {});
   });
