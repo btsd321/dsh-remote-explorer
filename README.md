@@ -146,24 +146,6 @@ Foundation   hosts/   util/
 | [src/credential/token.ts](src/credential/token.ts) | Proxy token: generation and constant-time comparison |
 | [src/cli/](src/cli/) | Command dispatch, argument parsing, terminal output, per-command auth wiring |
 
-## Known pitfalls
-
-These were all discovered through real testing. Don't step back into them when modifying code (see [PLAN.md](PLAN.md) chapter 11 for details):
-
-- **Remote Node must be v24.** v22.23.2 on aarch64 has a 35% process crash rate, manifesting as V8 OOM despite sufficient memory. `npm install` spawns dozens of node processes and will inevitably fail, with errors misleadingly pointing to the last failing package. `probe.ts` therefore enforces a stability self-check.
-- **Mirror benchmarking must use `-L` and verify response content.** Alibaba's mirror returns 302 for `index.json`; timing-only would treat the redirect page as success and pick the wrong "fastest" mirror.
-- **Remote commands are uniformly wrapped with `sh -c`.** ssh exec uses the user's login shell; zsh aborts on unmatched globs, while bash keeps them as literals. Without locking POSIX semantics, the same script behaves differently on different users' machines.
-- **To prepend a directory to PATH, use exec's `pathPrefix` option, not `env`.** `env: { PATH: '<new>:$PATH' }` — the `$PATH` is quoted into a literal, leaving the remote PATH with only one directory; even `rm` and `mkdir` become unfindable.
-- **Multi-line remote scripts must be joined with `\n`, not spaces.** `head=$(...) if [ ... ]` is a syntax error; the entire script fails at parse time, manifesting as all probes returning "no output" — easily mistaken for a network issue.
-- **Never stop remote processes with `pkill -f <pattern>`.** The shell carrying the command also matches the pattern and kills its own SSH session. Use pid files or listen-port-based targeting.
-- **Always construct remote paths by string concatenation with `/`**, never `node:path`'s `join` — the local machine may be Windows, which produces backslashes.
-- **The session table primary key is the composite `(sessionId, localPid)`.** Session id is remote identity; multiple local CLIs with the same alias and directory share one remote dsh — they are multiple local views of the same remote session. Deduplicating by sessionId alone would let later CLIs evict earlier records, causing `status` to miss active tunnels.
-- **Local listeners must survive reconnection.** Reconnection only swaps the transport reference; the local port stays the same — a port change invalidates all browser tabs the user has open. This is why the transport interface provides `openChannel` (open a channel only) rather than `forwardOut` (listen + forward integrated).
-- **Raw TCP socket error listeners must be attached before any `destroy`.** Use argumentless `destroy()` on failure paths — `destroy(Error)` on an unmonitored socket raises an unhandled event that crashes the process.
-- **Forward channel quota is sized for browser steady-state concurrency.** A browser maintains 6+ HTTP/1.1 keep-alive connections to a single host in steady state; a limit of 5 is exhausted during normal use. The pool takes 64 (direct-tcpip has no low hard limit like sshd's `MaxSessions`).
-- **Local Node v24.14.0's fetch rejects all streaming request bodies** (ReadableStream / async generators throw `expected non-null body source`; strings and Buffers work). So the LLM proxy buffers the entire request body before forwarding; the streaming-sensitive response side (SSE) is piped directly.
-- **ssh2 channels cannot be fed directly to http.Server** (missing `setTimeout` and other Socket interface methods). The proxy runs a real http.Server on local loopback; channels bridge to a local TCP connection.
-
 ## Development
 
 ```bash

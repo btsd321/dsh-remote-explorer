@@ -146,24 +146,6 @@ npx tsx src/cli/bin.ts list --ssh-config /path/to/config
 | [src/credential/token.ts](src/credential/token.ts) | 代理令牌：生成与常数时间比较 |
 | [src/cli/](src/cli/) | 命令分派、参数解析、终端输出、命令级认证装配 |
 
-## 几件容易踩的事
-
-这些都是实测踩出来的，改代码时别踩回去（详见 [PLAN.md](PLAN.md) 第十一章）：
-
-- **远端 Node 必须用 v24 系。** v22.23.2 在 aarch64 上起进程崩溃率 35%，表现为 V8 报 OOM 但机器内存充足。`npm install` 要起几十次 node，必然失败，且报错会误导到最后一个失败的包。`probe.ts` 因此强制做稳定性自检。
-- **镜像测速必须带 `-L` 并校验响应内容。** 阿里源对 `index.json` 返回 302，只测时间会把重定向页当成成功，并选出错误的"最快"镜像。
-- **远端命令统一经 `sh -c` 包裹。** ssh exec 用的是用户登录 shell；zsh 遇到未匹配的 glob 会直接报错中止，bash 则保留字面量。不锁定 POSIX 语义，同一段脚本在不同用户机器上行为不同。
-- **要在 PATH 前面加目录，用 `exec` 的 `pathPrefix` 选项，不要走 `env`。** `env: { PATH: '<新>:$PATH' }` 里的 `$PATH` 会被 `quote()` 转成字面量，远端 PATH 只剩一个目录，连 `rm`、`mkdir` 都找不到。
-- **拼远端脚本时多行用 `\n` 连接，不能用空格。** `head=$(...) if [ ... ]` 是语法错误，整段在解析期就失败，表现为所有探测"无输出"——很容易误判成网络问题。
-- **停远端进程不能用 `pkill -f <模式>`。** 承载命令的 shell 其命令行也含该模式，会把自己的 SSH 会话一起杀掉。用 pid 文件或按监听端口定位。
-- **构造远端路径一律用 `/` 拼字符串**，不要用 `node:path` 的 `join`——本机可能是 Windows，会产出反斜杠。
-- **会话表主键是 `(sessionId, localPid)` 组合。** 会话 id 是远端身份；同别名同目录的多个本机 CLI 会共享同一个远端 dsh，是同一远端会话的多个本机视图。只按 sessionId 去重会让后启动的 CLI 挤掉先前记录，`status` 漏报仍在工作的隧道。
-- **本机监听器必须跨重连存活。** 重连只换传输引用，本机端口不变——端口一变，用户已打开的浏览器标签全部失效。这也是传输接口提供 `openChannel`（只开通道）而非 `forwardOut`（监听+转发一体）的原因。
-- **raw TCP socket 的 error 监听器要在任何 destroy 之前挂上**，失败路径用不带参数的 `destroy()`——带 error 参数的 destroy 在无监听器的 socket 上会以未处理事件掀翻进程。
-- **forward 通道配额按浏览器稳态并发取**：浏览器对单一主机的 keep-alive 连接是稳态占用，上限 5 正常使用就会耗满；取 64（direct-tcpip 无 `MaxSessions` 那样的低值硬上限）。
-- **本机 Node v24.14.0 的 fetch 拒绝一切流式请求体**（ReadableStream / 异步生成器都抛 `expected non-null body source`，字符串与 Buffer 正常）。所以 LLM 代理的请求体是整体缓冲后转发的；流式要紧的响应侧（SSE）保持直传。
-- **ssh2 的通道不能直接喂给 http.Server**（缺 `setTimeout` 等 Socket 接口）。代理在本机回环起真实 http.Server，通道与一条本机 TCP 连接对接。
-
 ## 开发
 
 ```bash
