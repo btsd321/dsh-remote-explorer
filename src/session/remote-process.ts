@@ -81,6 +81,14 @@ export async function startRemoteDsh(
     port: number;
     /** patch 文件绝对路径（可选） */
     patchFile?: string;
+    /**
+     * 注入 dsh 进程的额外环境变量。
+     *
+     * 凭据闭环用它传占位 `DEEPSEEK_API_KEY`（值是代理令牌，不是真实 key）——
+     * dsh 的凭据解析优先读继承环境，缺这个变量请求会在发出前就失败
+     * （`MISSING_CREDENTIAL`），代理根本收不到。
+     */
+    extraEnv?: Record<string, string>;
     /** 取消信号 */
     signal?: AbortSignal;
   },
@@ -102,10 +110,16 @@ export async function startRemoteDsh(
   // exec 保留原进程号，所以文件里记的就是 dsh 的 pid。
   // 若改成 `cmd & echo $!`，拿到的是包装 shell 的 pid，dsh 退出后
   // 那个 pid 可能已被系统复用给别的进程，据此 kill 极其危险。
+  const envAssignments = [
+    `DSH_HOME=${quote(options.dshHome)}`,
+    ...Object.entries(options.extraEnv ?? {}).map(([key, value]) => `${key}=${quote(value)}`),
+    // PATH 特殊处理："$PATH" 必须留在引号外由 shell 展开，见 shell-quote 的说明
+    `PATH=${quote(options.nodeBinDir)}:"$PATH"`,
+  ];
   const runner = [
     '#!/bin/sh',
     `echo $$ > ${quote(pidFile)}`,
-    `exec env DSH_HOME=${quote(options.dshHome)} PATH=${quote(options.nodeBinDir)}:"$PATH" ${startCommand}`,
+    `exec env ${envAssignments.join(' ')} ${startCommand}`,
     '',
   ].join('\n');
 

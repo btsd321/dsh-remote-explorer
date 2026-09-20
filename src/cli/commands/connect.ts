@@ -94,9 +94,19 @@ export async function runConnect(options: ConnectCommandOptions): Promise<number
       ['Node', result.node.version],
       ['dsh', result.dsh.version],
       ['会话 id', session.sessionId],
+      ...(session.reversePort !== undefined
+        ? [['密钥代理', session.credentialReady
+          ? `反向端口 ${session.reversePort} → 本机（key 不出本机）`
+          : `反向端口 ${session.reversePort} → 本机${red('（本机未设 DEEPSEEK_API_KEY）')}`]]
+        : []),
     ],
   );
   println();
+
+  if (session.reversePort !== undefined && !session.credentialReady) {
+    println(red('! 本机未设置 DEEPSEEK_API_KEY——远端模型调用会失败'));
+    println(dim('  在启动 dsh-remote 的环境中导出该变量后重新 connect 即可'));
+  }
 
   if (!options.noOpen) {
     openBrowser(session.url);

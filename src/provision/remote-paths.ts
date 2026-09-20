@@ -121,6 +121,25 @@ export interface RemotePaths {
   sessionPatchFile(sessionId: string): string;
 
   /**
+   * 某会话的代理令牌文件（权限 600）。
+   *
+   * 存的是**占位令牌**（本机代理与远端 dsh 的共享密钥），不是真实 API key。
+   * 会话重启复用同一远端进程或重新拉起时，编排层从这里读回令牌，
+   * 保证换一个本机 CLI / 重连之后代理校验仍然通过。
+   * @param sessionId - 会话 id
+   */
+  sessionProxyTokenFile(sessionId: string): string;
+
+  /**
+   * 某会话的反向端口文件。
+   *
+   * 反向端口一经启用就随会话固定：patch 里的 baseURL 指向它，
+   * 运行中的远端进程也认它。换端口必须重启远端 dsh，所以复用会话时读回原值。
+   * @param sessionId - 会话 id
+   */
+  sessionReversePortFile(sessionId: string): string;
+
+  /**
    * 一次性临时目录。
    * @param pid - 本机进程 pid，用于并发隔离
    * @param suffix - 区分用途的后缀
@@ -161,6 +180,8 @@ export function createRemotePaths(homeDir: string): RemotePaths {
     sessionPidFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/pid`,
     sessionLogFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/dsh.log`,
     sessionPatchFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/patch.yml`,
+    sessionProxyTokenFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/proxy-token`,
+    sessionReversePortFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/reverse-port`,
 
     tmpDir: (pid, suffix) => `${base}/tmp/${suffix}-${pid}`,
   };

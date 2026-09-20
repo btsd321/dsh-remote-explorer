@@ -24,7 +24,7 @@
 | P1 | 连接闭环：传输层、主机解析、探测、镜像测速 | ✅ `list` / `doctor` 可用 |
 | P2 | 引导闭环：装 Node 与 dsh、生成会话 profile | ✅ `provision` 可用 |
 | P3 | 会话闭环：隧道、心跳重连、多主机并行 | ✅ `connect` / `status` / `kill` 可用 |
-| P4 | 凭据闭环：反向隧道代理 | 未开始 |
+| P4 | 凭据闭环：反向隧道代理 | ✅ key 全程不出本机（已实测链路） |
 | P5 | `dsh-remote-guard` 远端插件与打磨 | 未开始 |
 
 ## 安装与使用
@@ -42,7 +42,8 @@ npx tsx src/cli/bin.ts doctor OrangePI
 npx tsx src/cli/bin.ts doctor OrangePI --refresh-mirrors   # 强制重测镜像
 
 # 主命令：引导 → 起远端 dsh → 建隧道 → 开浏览器（进程常驻）
-npx tsx src/cli/bin.ts connect OrangePI --cwd //home/xlli67
+# 带凭据路径：在环境里导出 DEEPSEEK_API_KEY，远端模型调用经反向隧道回本机代理
+DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect OrangePI --cwd //home/xlli67
 
 # 查看本机维持的所有会话
 npx tsx src/cli/bin.ts status
@@ -57,8 +58,27 @@ npx tsx src/cli/bin.ts provision OrangePI --cwd //home/xlli67
 npx tsx src/cli/bin.ts list --ssh-config /path/to/config
 ```
 
-`connect` 之后本进程必须保持运行——正向隧道的本机监听器活在其中。远端 dsh 是
-detach 的，CLI 退出后仍在跑，下次 `connect` 会探到并复用；要真正停掉用 `kill`。
+`connect` 之后本进程必须保持运行——正向隧道的本机监听器与 LLM 代理都活在其中。
+远端 dsh 是 detach 的，CLI 退出后仍在跑，下次 `connect` 会探到并复用；要真正停掉用 `kill`。
+
+## 凭据如何工作
+
+模型调用不经公网直连，而是走反向隧道：
+
+```
+远端 dsh ──(占位令牌)──▶ 远端 127.0.0.1:<反向端口> ──SSH 反向通道──▶ 本机代理
+                                                                    │ 注入真实 key
+                                                                    ▼
+                                                        api.deepseek.com（本机直连出网）
+```
+
+- 真实 `DEEPSEEK_API_KEY` **只存在于本机进程**，不落远端磁盘、不进远端环境。
+  远端进程环境里的 `DEEPSEEK_API_KEY` 是代理令牌（随机值），仅用于回打时通过代理校验。
+- 代理令牌与反向端口随会话固定，落盘远端 `.runtime/`（令牌 600 权限），
+  重连与复用读回同一组值。
+- 同一会话的多个本机 CLI 共享凭据路径（反向端口先到先得，后来的视图自动让位）。
+- 已知残余风险：远端同权限用户可借你的通道消耗额度（拿不到 key 本身）。多用户
+  远端主机上请知悉，详见 [PLAN.md](PLAN.md) 4.5 节。
 
 **在 Git Bash 里写远端路径要用双斜杠**（`--cwd //home/xxx`）或先设
 `MSYS_NO_PATHCONV=1`。MSYS 会把 `/home/xxx` 改写成 `D:/SoftWare/Git/home/xxx`，
@@ -121,7 +141,9 @@ detach 的，CLI 退出后仍在跑，下次 `connect` 会探到并复用；要�
 | [src/session/heartbeat.ts](src/session/heartbeat.ts) | 心跳探活，一次一条命令 |
 | [src/session/reconnect.ts](src/session/reconnect.ts) | 有限次指数退避 |
 | [src/session/session-registry.ts](src/session/session-registry.ts) | 本机会话表，锁文件 + 原子替换 |
-| [src/session/session-manager.ts](src/session/session-manager.ts) | 会话编排：打开、重连、关闭 |
+| [src/session/session-manager.ts](src/session/session-manager.ts) | 会话编排：打开、凭据接线、重连、关闭 |
+| [src/credential/tunnel-proxy.ts](src/credential/tunnel-proxy.ts) | 反向隧道 LLM 代理，注入真实 key |
+| [src/credential/token.ts](src/credential/token.ts) | 代理令牌：生成与常数时间比较 |
 | [src/cli/](src/cli/) | 命令分派与终端输出 |
 
 ## 几件容易踩的事
@@ -152,6 +174,11 @@ detach 的，CLI 退出后仍在跑，下次 `connect` 会探到并复用；要�
 - **本机监听器必须跨重连存活。** 重连只换传输引用，本机端口不变——
   端口一变，用户已打开的浏览器标签全部失效。这也是传输接口提供
   `openChannel`（只开通道）而非 `forwardOut`（监听+转发一体）的原因。
+- **本机 Node v24.14.0 的 fetch 拒绝一切流式请求体**（ReadableStream /
+  异步生成器都抛 `expected non-null body source`，字符串与 Buffer 正常）。
+  所以 LLM 代理的请求体是整体缓冲后转发的；流式要紧的响应侧（SSE）保持直传。
+- **ssh2 的通道不能直接喂给 http.Server**（缺 `setTimeout` 等 Socket 接口）。
+  代理在本机回环起真实 http.Server，通道与一条本机 TCP 连接对接。
 
 ## 开发
 

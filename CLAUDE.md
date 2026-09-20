@@ -38,8 +38,9 @@ npx tsx src/cli/bin.ts provision OrangePI --cwd //home/xlli67
 # 验证全新安装路径（复用路径会跳过下载与 npm install，测不到真正易错的代码）
 npx tsx src/cli/bin.ts provision OrangePI --node-version v24.20.0
 
-# 完整会话（常驻进程；改动 session/ 或 tunnel/ 后用它验证）
-npx tsx src/cli/bin.ts connect OrangePI --cwd //home/xlli67 --local-port 18950 --no-open
+# 完整会话（常驻进程；改动 session/、tunnel/ 或 credential/ 后用它验证）
+# 凭据路径验证：环境里带 key 启动，从远端经代理打一次上游（见 PLAN.md P4 记录）
+DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect OrangePI --cwd //home/xlli67 --local-port 18950 --no-open
 npx tsx src/cli/bin.ts status
 npx tsx src/cli/bin.ts kill OrangePI --all
 ```
@@ -63,9 +64,9 @@ npx tsx src/cli/bin.ts kill OrangePI --all
 入口层      cli/          命令分派、参数解析、终端输出
 编排层      session/      会话生命周期、心跳、重连、多会话簿记
 能力层      provision/    装 Node 与 dsh、镜像测速、生成会话 profile
-            tunnel/       端口分配、正向转发（反向转发待 P4）
-            credential/   LLM 凭据代理                               [P4]
-传输层      transport/    ssh2 连接、命令执行、SFTP、开通道、通道配额
+            tunnel/       端口分配、正向转发
+            credential/   LLM 凭据代理（反向隧道，key 不出本机）
+传输层      transport/    ssh2 连接、命令执行、SFTP、开通道、反向转发、通道配额
 基础层      hosts/        ssh config 解析（主机配置唯一来源）
             util/         shell 转义、错误类型、会话 id
 ```
@@ -100,6 +101,14 @@ npx tsx src/cli/bin.ts kill OrangePI --all
 **8b. 本机监听器必须跨重连存活。** 重连时只换传输引用（`LocalForward.swapTransport`），本机端口不变——端口一变，用户已打开的浏览器标签全部失效。这正是传输接口提供 `openChannel`（只开一条通道）而非 `forwardOut`（本机监听 + 转发一体）的原因：监听器归 [src/tunnel/forward-local.ts](src/tunnel/forward-local.ts) 持有，传输实例可以被替换。
 
 **8c. 会话表主键是 `(sessionId, localPid)` 组合，不是 `sessionId` 单独。** 会话 id 是**远端**身份：同别名同目录的多个本机 CLI 会共享同一个远端 dsh（后来者探到既有进程即复用），它们是同一远端会话的多个本机视图，各自维持自己的隧道端口。只按 sessionId 去重会让后启动的 CLI 挤掉先前那条记录，于是 `status` 漏报一个仍在工作的隧道。`removeSession(id, localPid)` 删单个视图，`removeSession(id)` 删该会话全部视图（`kill` 用后者）。
+
+**8d. 凭据路径：占位令牌 + 落盘材料 + 跨重连的代理。** 三件事必须一起成立，改任何一件都要读 [src/session/session-manager.ts](src/session/session-manager.ts) 的 open()：
+
+- 远端进程环境里的 `DEEPSEEK_API_KEY` 是**代理令牌**（随机值）不是真实 key——dsh 缺 key 会在请求发出前就报 `MISSING_CREDENTIAL`，代理根本收不到，所以必须有占位值。真实 key 只在本机进程（`process.env.DEEPSEEK_API_KEY` → [src/credential/tunnel-proxy.ts](src/credential/tunnel-proxy.ts) 注入）。
+- **代理令牌与反向端口随会话固定**，落盘远端 `.runtime/proxy-token`（600）与 `.runtime/reverse-port`。反向端口写进了 patch 的 `baseURL`，运行中的远端进程认它——复用、重连、换本机 CLI 必须读回同一组值，别在启动时重新生成。
+- 代理实例（本机回环 http.Server）与正向监听器一样**跨重连存活**，重连只重挂 `forwardIn`。多视图共享会话时反向端口先到先得，挂不上是警告不是错误。
+
+**8e. 本机 Node v24.14.0 的 fetch 拒绝一切流式请求体。** ReadableStream / 异步生成器 / `new Request` 实测全抛 `expected non-null body source`（字符串与 Buffer 正常）。所以代理的请求体整体缓冲后转发；流式要紧的响应侧（SSE）保持 pipe 直传。另：ssh2 的通道**不能**直接 `emit('connection')` 喂给 http.Server（缺 `setTimeout` 等 Socket 接口），代理走本机回环 TCP 对接。
 
 **9. 远端 Node 必须用 v24 系，且装完要做稳定性自检。** v22.23.2 在 aarch64 上起进程崩溃率 35%（V8 初始化 isolate 随机失败，报 OOM 但内存充足）。`npm install` 要起几十次 node，必然失败，且报错会误导到最后一个失败的包。[src/provision/probe.ts](src/provision/probe.ts) 的 `checkNodeStability()` 强制自检，容错次数为 0。
 

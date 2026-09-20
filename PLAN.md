@@ -595,9 +595,32 @@ dsh-remote clean <别名> [--keep-latest] 清理旧版本目录与陈旧会话�
 
 2. **Git Bash（MSYS）会在参数到达程序前改写 POSIX 路径。** 在 Git Bash 里写 `--cwd /home/user`，程序实际收到 `D:/SoftWare/Git/home/user`。这发生在 shell 层，程序无法阻止，只能识别并拒绝——放过它不只是路径错，远端目录参与会话 id 计算，同一逻辑会话会因调用方式不同得到不同 id，复用与 kill 都会失灵。现已校验并提示两种绕过方式（`--cwd //home/xxx` 或 `MSYS_NO_PATHCONV=1`）。
 
-### P4 — 凭据闭环
+### P4 — 凭据闭环 ✅ 已完成
 
-`credential/`。交付：远端 agent 能完成一次真实模型调用，key 全程不出本机；每会话独立代理与令牌。
+`credential/`（`token` / `types` / `tunnel-proxy`）+ 会话编排接线，交付完整的反向隧道代理。
+
+实测（OrangePI，本机带假 key 验证——上游 401 恰好证明请求到达了真实 API 且 key 被注入）：
+
+| 验证项 | 结果 |
+|---|---|
+| 占位凭据进远端进程环境 | ✅ `/proc/<pid>/environ` 有 `DEEPSEEK_API_KEY` |
+| 令牌文件权限 | ✅ 600（umask 077 创建） |
+| 正确令牌 → 代理 → 上游 | ✅ 真实 `api.deepseek.com` 回 401（假 key 被拒），链路全通 |
+| 错误令牌 | ✅ 本机代理回 401（令牌校验生效） |
+| patch 生效 | ✅ `--dump-config` 确认 `baseURL: http://127.0.0.1:<反向端口>/anthropic` |
+| 会话复用读回材料 | ✅ 反向端口与令牌跨重启从 `.runtime/` 读回，代理校验仍通过 |
+| 真实模型调用 | ⏸ 需用户带真实 `DEEPSEEK_API_KEY` 验证；链路已由上游 401 证明 |
+
+关键设计（均已实现）：
+
+- **占位凭据即共享令牌。** dsh 缺 key 时请求在发出前就以 `MISSING_CREDENTIAL` 失败——所以远端进程环境里放的是代理令牌（随机 43 字符），请求带它回打，代理校验后换成真实 key。真实 key 全程不出本机。
+- **令牌与反向端口随会话固定，落盘远端 `.runtime/`**（令牌 600 权限）。反向端口写进 patch 的 baseURL，运行中的远端进程认它；复用、重连、换本机 CLI 读回的都是同一组值。
+- **多视图共享会话时反向端口先到先得**：sshd 拒绝重复绑定，后启动的视图挂不上 `forwardIn` 时降级为警告（凭据路径由先来的视图维持），不阻断会话。
+- **代理实例跨重连存活**：重连只重挂 `forwardIn`，本机回环监听不动。
+
+实现中修掉一个环境级问题：**本机 Node v24.14.0 的 fetch（undici）拒绝一切流式请求体**（ReadableStream / 异步生成器 / `new Request` 四种传法实测全部抛 `expected non-null body source`，字符串与 Buffer 正常）。因此代理的请求体改为整体缓冲后转发——模型调用请求体是 KB 级 JSON，不受影响；流式真正要紧的响应侧（SSE）保持 pipe 直传。已写入 CLAUDE.md 的踩坑清单。
+
+另一个实现细节：反向通道（ssh2 ClientChannel）**不能**直接喂给 `http.Server`（缺 `setTimeout` 等 Socket 接口），代理在本机回环起真实 http.Server 监听临时端口，通道与一条本机 TCP 连接对接——多一跳本地回环换来完全标准的 socket 语义。
 
 ### P5 — guard 与打磨
 
