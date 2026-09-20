@@ -50,8 +50,8 @@ interface ConfigSection {
   type?: number;
   /** 指令名，如 'Host' */
   param?: string;
-  /** 指令值，如别名 */
-  value?: string;
+  /** 指令值；多模式行（`Host a b`）解析为数组，单值为字符串 */
+  value?: string | string[];
 }
 
 /** 解析后的 config 文档，附带 compute 方法 */
@@ -183,17 +183,22 @@ export function listHosts(): SshHostSummary[] {
   const result: SshHostSummary[] = [];
   for (const section of config) {
     if (section.type !== SECTION_TYPE_DIRECTIVE || section.param !== 'Host') continue;
-    const alias = section.value;
-    if (!alias || alias === '*') continue;
-    const computed = config.compute(alias, { ignoreCase: true });
-    result.push({
-      alias,
-      hostName: computed.hostname ?? alias,
-      user: computed.user ?? '',
-      port: computed.port ? Number.parseInt(computed.port, 10) : DEFAULT_SSH_PORT,
-      hasProxyJump: computed.proxyjump !== undefined,
-      ...(computed.proxyjump ? { proxyJump: computed.proxyjump } : {}),
-    });
+    const value = section.value;
+    if (!value) continue;
+    // 多模式行（`Host a b`）解析成数组，每个模式都是独立条目
+    const patterns = Array.isArray(value) ? value : [value];
+    for (const alias of patterns) {
+      if (alias === '*') continue;
+      const computed = config.compute(alias, { ignoreCase: true });
+      result.push({
+        alias,
+        hostName: computed.hostname ?? alias,
+        user: computed.user ?? '',
+        port: computed.port ? Number.parseInt(computed.port, 10) : DEFAULT_SSH_PORT,
+        hasProxyJump: computed.proxyjump !== undefined,
+        ...(computed.proxyjump ? { proxyJump: computed.proxyjump } : {}),
+      });
+    }
   }
   return result;
 }
@@ -388,10 +393,14 @@ export function assertConnectable(
 function hasMatchingHostEntry(config: ParsedConfig, alias: string): boolean {
   for (const section of config) {
     if (section.type !== SECTION_TYPE_DIRECTIVE || section.param !== 'Host') continue;
-    const pattern = section.value;
-    if (!pattern || pattern === '*') continue;
-    // 一个 Host 行可以列多个模式，空格分隔
-    for (const single of pattern.split(/\s+/).filter(Boolean)) {
+    const value = section.value;
+    if (!value) continue;
+    // 一个 Host 行可以列多个模式：`Host a b` 解析成数组，单值是字符串
+    //（也可能带空格分隔的多模式字符串，两种形态都归一成数组处理）
+    const patterns = (Array.isArray(value) ? value : value.split(/\s+/)).filter(Boolean);
+    for (const single of patterns) {
+      // `*` 是通配默认值块，对任意别名都匹配，不能作为"别名存在"的依据
+      if (single === '*') continue;
       if (matchesHostPattern(single, alias)) return true;
     }
   }

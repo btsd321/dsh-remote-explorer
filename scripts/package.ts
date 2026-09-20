@@ -112,15 +112,19 @@ function nodeDistName(version: string, target: Target): string {
 /**
  * 执行 tar（或解压 zip）命令，失败时抛带上下文的错误。
  *
- * Windows 的 Git Bash 里 `tar` 是 GNU tar（不支持 zip），所以 zip 相关操作
- * 优先用系统自带的 bsdtar（Windows 10+ 必有）。
+ * 两个 Windows 特有的坑都在这里处理：
+ * - Git Bash 的 `tar` 是 MSYS 版 GNU tar（不支持 zip）——zip 操作优先用
+ *   系统自带的 bsdtar（Windows 10+ 必有）
+ * - MSYS 程序会把参数里的反斜杠当转义符吃掉（实测 `D:\Project` 变成
+ *   `D:Project`、`\n` 变成换行）——参数一律转成正斜杠，两种 tar 都认
  *
  * @param args - tar 参数（路径一律绝对路径，避免 cwd 差异）
  * @param needsBsdtar - 操作 zip 时为 true
  * @returns 无（失败即抛）
  * @throws Error tar 退出非零或找不到可用工具
  */
-function runTar(args: string[], needsBsdtar: boolean): void {
+function runTar(rawArgs: string[], needsBsdtar: boolean): void {
+  const args = rawArgs.map(arg => arg.replace(/\\/g, '/'));
   const candidates: string[] = [];
   if (needsBsdtar) {
     // 只有 bsdtar 认 zip；Windows 上优先用固定路径，其他平台试 PATH 里的 bsdtar
@@ -141,7 +145,13 @@ function runTar(args: string[], needsBsdtar: boolean): void {
         lastError = `${candidate} 是 GNU tar，不支持 zip`;
         continue;
       }
-      execFileSync(candidate, args, { stdio: 'ignore' });
+      // GNU tar 会把带盘符的路径（D:/x）当成远程主机规格（host:file 语法，
+      // 报「Cannot connect to D」）；--force-local 关掉该解释。bsdtar 无此问题
+      // 且不认识该选项，只在 GNU tar 上加
+      const finalArgs = !isBsdtar && args.some(a => /^[A-Za-z]:/.test(a))
+        ? ['--force-local', ...args]
+        : args;
+      execFileSync(candidate, finalArgs, { stdio: 'ignore' });
       return;
     } catch (error) {
       // --version 失败说明该候选不可用；执行失败则记录 stderr 继续尝试下一候选
