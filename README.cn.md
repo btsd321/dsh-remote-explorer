@@ -120,10 +120,10 @@ npx tsx src/cli/bin.ts list --ssh-config /path/to/config
 
 | 模块 | 职责 |
 |---|---|
-| [src/util/](src/util/) | shell 转义、错误类型 |
-| [src/hosts/ssh-config-parser.ts](src/hosts/ssh-config-parser.ts) | 主机配置的**唯一**来源：解析 ssh config，递归解析 ProxyJump |
+| [src/util/](src/util/) | shell 转义、错误类型、交互式密码提示（不回显） |
+| [src/hosts/ssh-config-parser.ts](src/hosts/ssh-config-parser.ts) | 主机配置的**唯一**来源：解析 ssh config（含 `user@host[:port]` 直连），递归解析 ProxyJump，应用认证覆盖 |
 | [src/transport/types.ts](src/transport/types.ts) | 传输抽象接口（按多传输设计，日后可加 Docker / WSL） |
-| [src/transport/ssh-transport.ts](src/transport/ssh-transport.ts) | ssh2 实现：跳板机链、命令执行、SFTP、正反向转发 |
+| [src/transport/ssh-transport.ts](src/transport/ssh-transport.ts) | ssh2 实现：跳板机链、命令执行、SFTP、正反向转发、密码认证（被拒重试，最多 3 次） |
 | [src/transport/channel-pool.ts](src/transport/channel-pool.ts) | SSH 通道配额，避免超 `MaxSessions` |
 | [src/provision/probe.ts](src/provision/probe.ts) | 远端探测 + **Node 稳定性自检** |
 | [src/provision/mirror-selector.ts](src/provision/mirror-selector.ts) | 在远端实测镜像延迟并自适应选取 |
@@ -144,7 +144,7 @@ npx tsx src/cli/bin.ts list --ssh-config /path/to/config
 | [src/credential/tunnel-proxy.ts](src/credential/tunnel-proxy.ts) | 反向隧道 LLM 代理（多供应商路由），注入真实 key |
 | [src/credential/provider-routes.ts](src/credential/provider-routes.ts) | 从本机 settings.yaml 提取供应商路由，产出远端镜像 |
 | [src/credential/token.ts](src/credential/token.ts) | 代理令牌：生成与常数时间比较 |
-| [src/cli/](src/cli/) | 命令分派与终端输出 |
+| [src/cli/](src/cli/) | 命令分派、参数解析、终端输出、命令级认证装配 |
 
 ## 几件容易踩的事
 

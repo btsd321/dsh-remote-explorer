@@ -120,10 +120,10 @@ Foundation   hosts/   util/
 
 | Module | Responsibility |
 |---|---|
-| [src/util/](src/util/) | Shell escaping, error types |
-| [src/hosts/ssh-config-parser.ts](src/hosts/ssh-config-parser.ts) | **Sole** source of host config: parses ssh config, recursively resolves ProxyJump |
+| [src/util/](src/util/) | Shell escaping, error types, interactive password prompt (no echo) |
+| [src/hosts/ssh-config-parser.ts](src/hosts/ssh-config-parser.ts) | **Sole** source of host config: parses ssh config (plus ad-hoc `user@host[:port]`), recursively resolves ProxyJump, applies auth overrides |
 | [src/transport/types.ts](src/transport/types.ts) | Transport abstraction (designed for multiple transports; Docker/WSL possible later) |
-| [src/transport/ssh-transport.ts](src/transport/ssh-transport.ts) | ssh2 implementation: jump host chains, command execution, SFTP, forward/reverse forwarding |
+| [src/transport/ssh-transport.ts](src/transport/ssh-transport.ts) | ssh2 implementation: jump host chains, command execution, SFTP, forward/reverse forwarding, password auth (retries on rejection, up to 3) |
 | [src/transport/channel-pool.ts](src/transport/channel-pool.ts) | SSH channel quota, avoids exceeding MaxSessions |
 | [src/provision/probe.ts](src/provision/probe.ts) | Remote probe + **Node stability self-check** |
 | [src/provision/mirror-selector.ts](src/provision/mirror-selector.ts) | Live mirror latency measurement and adaptive selection |
@@ -144,7 +144,7 @@ Foundation   hosts/   util/
 | [src/credential/tunnel-proxy.ts](src/credential/tunnel-proxy.ts) | Reverse tunnel LLM proxy (multi-provider routing), injects real keys |
 | [src/credential/provider-routes.ts](src/credential/provider-routes.ts) | Extract provider routes from local settings.yaml, produce remote mirror |
 | [src/credential/token.ts](src/credential/token.ts) | Proxy token: generation and constant-time comparison |
-| [src/cli/](src/cli/) | Command dispatch and terminal output |
+| [src/cli/](src/cli/) | Command dispatch, argument parsing, terminal output, per-command auth wiring |
 
 ## Known pitfalls
 
