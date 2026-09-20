@@ -6,24 +6,12 @@
 
 参照 VS Code Remote-SSH、Zed、JetBrains Gateway 的做法——**代码与会话都在远端，本机只做呈现**。完整架构依据、调研来源与实测数据见 [PLAN.md](PLAN.md)。
 
-## 与旧版的区别
+## 支持的环境
 
-0.3.x 是 Cordis 插件：dsh 跑在本机，用 helper RPC 把文件系统操作逐个转到远端。这条路线要为 dsh 每个碰文件系统的功能补一个 shim，且远端原生模块只能用 no-op 桩替换（landlock 沙箱与 flock 因此失效）。
-
-0.4.0 起改为独立 CLI：远端装完整 dsh，本机不跑 dsh。约 2000 行 shim 随之删除，远端拿到真实的预编译原生模块。
-
-## 当前状态
-
-按 [PLAN.md](PLAN.md) 的里程碑推进，全部完成。
-
-| 阶段 | 内容 | 状态 |
-|---|---|---|
-| P0 | 可行性验证（手动全流程） | ✅ 五步通过 |
-| P1 | 连接闭环：传输层、主机解析、探测、镜像测速 | ✅ `list` / `doctor` 可用 |
-| P2 | 引导闭环：装 Node 与 dsh、生成会话 profile | ✅ `provision` 可用 |
-| P3 | 会话闭环：隧道、心跳重连、多主机并行 | ✅ `connect` / `status` / `kill` 可用 |
-| P4 | 凭据闭环：反向隧道代理 | ✅ key 全程不出本机（已实测链路） |
-| P5 | 打磨：三层心跳探活、`clean` 命令 | ✅ 完成 |
+- **本机（客户端）**：Windows / Linux / macOS，Node.js v20.19+ 或 v22+（运行 tsx）。
+- **远端主机**：Linux 或 macOS（POSIX）；aarch64（arm64）与 x86_64 均可。远端无需预装 Node——工具会自动安装并自检。
+- **SSH 认证**：私钥（`IdentityFile`，推荐）；无私钥时在交互式终端提示输入密码（不回显）；也可 `--password` 明文传入（有泄露风险，CLI 会警告）。
+- 主机来自 `~/.ssh/config` 的 `Host` 条目，或 `user@host[:port]` 直连（IPv6 需写进 config）。
 
 ## 安装
 
@@ -184,14 +172,6 @@ npx -y -p typescript@5.7.3 tsc --noEmit
 ```
 
 代码规范见 [docs/type_script_style.md](docs/type_script_style.md)，写任何代码前先读。
-
-## 验证环境
-
-验证用主机为 aarch64 Linux（Ubuntu glibc 2.35，内核 5.10.0+），客户端 Windows 11。
-
-P0 实测：装 Node v24.11.1 + dsh 0.1.6-alpha.2 约 75 秒 / 700M；`ssh -L` 隧道取到完整 GUI 页面；`ssh -R` 凭据回打通，远端环境无任何 API key。
-
-一个已知的环境限制：该主机内核未启用 landlock（LSM 列表为 `capability,yama,kbox_capability`），所以 `node-addon-system` 的 `probe()` 返回 `unusable`。这取决于远端内核配置，与架构无关；`flock` 在同一台机器上可用。
 
 ## 许可
 

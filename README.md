@@ -6,24 +6,12 @@ Remote development launcher: install [dsh](https://www.npmjs.com/package/@deepse
 
 Inspired by VS Code Remote-SSH, Zed, and JetBrains Gateway — **code and sessions live on the remote, the local machine only renders the UI**. Full architecture rationale, research sources, and benchmark data are in [PLAN.md](PLAN.md).
 
-## What changed from 0.3.x
+## Supported environments
 
-0.3.x was a Cordis plugin: dsh ran locally and used helper RPC to forward individual filesystem operations to the remote. That approach required a shim for every dsh feature that touches the filesystem, and native modules on the remote could only be replaced with no-op stubs (landlock sandbox and flock were lost).
-
-Starting with 0.4.0, dsh-remote is a standalone CLI: a complete dsh is installed on the remote, and nothing dsh-related runs locally. ~2,000 lines of shim code were removed, and the remote gets real prebuilt native modules.
-
-## Current status
-
-All milestones from [PLAN.md](PLAN.md) are complete.
-
-| Phase | Scope | Status |
-|---|---|---|
-| P0 | Feasibility (manual end-to-end) | ✅ Five-step pass |
-| P1 | Connection: transport, host resolution, probe, mirror benchmark | ✅ `list` / `doctor` |
-| P2 | Provisioning: install Node & dsh, generate session profile | ✅ `provision` |
-| P3 | Session: tunneling, heartbeat reconnection, multi-host parallel | ✅ `connect` / `status` / `kill` |
-| P4 | Credentials: reverse tunnel proxy | ✅ Key never leaves local (verified) |
-| P5 | Polish: three-tier heartbeat, `clean` command | ✅ Done |
+- **Local (client)**: Windows / Linux / macOS, Node.js v20.19+ or v22+ (for running tsx).
+- **Remote host**: Linux or macOS (POSIX); aarch64 (arm64) and x86_64 both work. No Node preinstalled required — the tool installs and self-checks it.
+- **SSH authentication**: private key (`IdentityFile`, recommended); with no key configured, an interactive terminal prompts for a password (no echo); `--password` also works (leaks via process list / shell history — the CLI warns).
+- Hosts come from `Host` entries in `~/.ssh/config`, or ad-hoc `user@host[:port]` (IPv6 must go through the config).
 
 ## Installation
 
@@ -184,14 +172,6 @@ npx -y -p typescript@5.7.3 tsc --noEmit
 ```
 
 Code style guide is in [docs/type_script_style.md](docs/type_script_style.md) — read it before writing any code.
-
-## Verification environment
-
-Verified on an aarch64 Linux host (Ubuntu glibc 2.35, kernel 5.10.0+), client Windows 11.
-
-P0 benchmark: installing Node v24.11.1 + dsh 0.1.6-alpha.2 took ~75 seconds / 700M; `ssh -L` tunnel delivered the full GUI page; `ssh -R` credential round-trip worked, with no API keys in the remote environment.
-
-One known environment limitation: the host's kernel does not enable landlock (LSM list is `capability,yama,kbox_capability`), so `node-addon-system`'s `probe()` returns `unusable`. This depends on the remote kernel configuration, not the architecture; `flock` works on the same machine.
 
 ## License
 
