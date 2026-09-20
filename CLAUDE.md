@@ -34,10 +34,22 @@ npx tsx src/cli/bin.ts doctor OrangePI
 npx tsx src/cli/bin.ts doctor OrangePI --refresh-mirrors
 
 # 引导远端环境（幂等；改动 provision/ 后用它验证）
-npx tsx src/cli/bin.ts provision OrangePI --cwd /home/xlli67
+npx tsx src/cli/bin.ts provision OrangePI --cwd //home/xlli67
 # 验证全新安装路径（复用路径会跳过下载与 npm install，测不到真正易错的代码）
 npx tsx src/cli/bin.ts provision OrangePI --node-version v24.20.0
+
+# 完整会话（常驻进程；改动 session/ 或 tunnel/ 后用它验证）
+npx tsx src/cli/bin.ts connect OrangePI --cwd //home/xlli67 --local-port 18950 --no-open
+npx tsx src/cli/bin.ts status
+npx tsx src/cli/bin.ts kill OrangePI --all
 ```
+
+**在 Git Bash 里传远端路径必须用双斜杠**（`--cwd //home/xxx`）或先设
+`MSYS_NO_PATHCONV=1`。MSYS 会把 `/home/xxx` 改写成 `D:/SoftWare/Git/home/xxx`，
+这发生在参数到达程序之前。CLI 已能识别并拒绝，但测试时要记得用正确写法。
+
+清理测试残留：`TaskStop` 只杀包装 shell，Node 子进程会成为孤儿仍占着本机端口，
+需按端口找 pid 再 `taskkill`。远端用 `kill --all`。
 
 **改动传输层或引导逻辑后，必须跑一次真实 `doctor`**。类型检查通过不等于连得上——远端 shell 差异、脚本拼接错误这类问题只有实跑才暴露。
 
@@ -49,13 +61,13 @@ npx tsx src/cli/bin.ts provision OrangePI --node-version v24.20.0
 
 ```
 入口层      cli/          命令分派、参数解析、终端输出
-编排层      session/      会话生命周期、心跳、重连、多会话簿记        [P3]
+编排层      session/      会话生命周期、心跳、重连、多会话簿记
 能力层      provision/    装 Node 与 dsh、镜像测速、生成会话 profile
-            tunnel/       正反向端口转发                             [P3]
+            tunnel/       端口分配、正向转发（反向转发待 P4）
             credential/   LLM 凭据代理                               [P4]
-传输层      transport/    ssh2 连接、命令执行、SFTP、转发、通道配额
+传输层      transport/    ssh2 连接、命令执行、SFTP、开通道、通道配额
 基础层      hosts/        ssh config 解析（主机配置唯一来源）
-            util/         shell 转义、错误类型
+            util/         shell 转义、错误类型、会话 id
 ```
 
 另有第二个交付物 `dsh-remote-guard`——装在**远端**的 Cordis 插件，只负责补一个免认证探活端点（P5）。
@@ -85,6 +97,10 @@ npx tsx src/cli/bin.ts provision OrangePI --node-version v24.20.0
 
 **8. 停远端进程不能用 `pkill -f <模式>`。** 承载命令的 shell 其命令行也含该模式，会把自己的 SSH 会话一起杀掉（实测踩过）。用会话目录下的 pid 文件，或按监听端口定位。
 
+**8b. 本机监听器必须跨重连存活。** 重连时只换传输引用（`LocalForward.swapTransport`），本机端口不变——端口一变，用户已打开的浏览器标签全部失效。这正是传输接口提供 `openChannel`（只开一条通道）而非 `forwardOut`（本机监听 + 转发一体）的原因：监听器归 [src/tunnel/forward-local.ts](src/tunnel/forward-local.ts) 持有，传输实例可以被替换。
+
+**8c. 会话表主键是 `(sessionId, localPid)` 组合，不是 `sessionId` 单独。** 会话 id 是**远端**身份：同别名同目录的多个本机 CLI 会共享同一个远端 dsh（后来者探到既有进程即复用），它们是同一远端会话的多个本机视图，各自维持自己的隧道端口。只按 sessionId 去重会让后启动的 CLI 挤掉先前那条记录，于是 `status` 漏报一个仍在工作的隧道。`removeSession(id, localPid)` 删单个视图，`removeSession(id)` 删该会话全部视图（`kill` 用后者）。
+
 **9. 远端 Node 必须用 v24 系，且装完要做稳定性自检。** v22.23.2 在 aarch64 上起进程崩溃率 35%（V8 初始化 isolate 随机失败，报 OOM 但内存充足）。`npm install` 要起几十次 node，必然失败，且报错会误导到最后一个失败的包。[src/provision/probe.ts](src/provision/probe.ts) 的 `checkNodeStability()` 强制自检，容错次数为 0。
 
 **10. 镜像测速在远端执行，必须带 `-L` 并校验响应内容。** 测的是远端到镜像的连通性，本机测没意义。阿里源对 `index.json` 返回 302，只测时间会把重定向页当成成功并选出错误的"最快"镜像。腾讯与华为镜像已从候选移除（DNS 解析失败）。
@@ -103,3 +119,4 @@ npx tsx src/cli/bin.ts provision OrangePI --node-version v24.20.0
 - 本机 CLI 必须活满整个会话：反向隧道代理持有 LLM key，CLI 退出则远端模型调用全部失败。这是凭据方案的既定代价，不是缺陷。
 - 对远端资源的批量操作默认**串行**；要并发必须确认通道配额能承受。
 - 新增运行时依赖必须写进 `package.json`，版本锁定或用窄范围。
+- **凡是接受远端 POSIX 路径的参数都要校验。** Git Bash（MSYS）会在参数到达程序前把 `/home/x` 改写成 `D:/SoftWare/Git/home/x`。这发生在 shell 层，程序无法阻止，只能识别并拒绝。放过它不只是路径错——远端目录参与会话 id 计算，同一逻辑会话会因调用方式不同得到不同 id，复用与 kill 都会失灵。校验逻辑在 [src/cli/main.ts](src/cli/main.ts) 的 `validateRemoteCwd`。

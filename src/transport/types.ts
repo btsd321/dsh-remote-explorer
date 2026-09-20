@@ -10,7 +10,7 @@
  * 分层约束：本文件属传输层，不得 import 编排层或能力层的任何模块。
  */
 
-import type { Readable } from 'node:stream';
+import type { Duplex } from 'node:stream';
 
 /** 远端操作系统（`uname -s` 的归一化结果） */
 export type RemoteOs = 'linux' | 'darwin';
@@ -78,15 +78,15 @@ export interface ReverseConnection {
   /** 远端侧发起连接的端口 */
   remotePort: number;
   /** 双向流；调用方负责接管与销毁 */
-  stream: Readable & { write(chunk: unknown): boolean; end(): void };
+  stream: Duplex;
 }
 
-/** 正向转发句柄 */
-export interface ForwardHandle {
-  /** 本机实际监听的端口（请求 0 时为 OS 分配值） */
-  localPort: number;
-  /** 关闭转发并释放本机监听 */
-  close(): Promise<void>;
+/** 一条通向远端目标的双向通道 */
+export interface RemoteChannel {
+  /** 双向流；调用方负责 pipe 与销毁 */
+  stream: Duplex;
+  /** 归还该通道占用的配额；流关闭后必须调用 */
+  release(): void;
 }
 
 /** 反向转发句柄 */
@@ -149,14 +149,18 @@ export interface RemoteTransport {
   uploadFile(localPath: string, remotePath: string, signal?: AbortSignal): Promise<void>;
 
   /**
-   * 正向转发：本机监听一个端口，入站连接经 SSH 通道转到远端目标。
+   * 开一条通向远端目标的双向通道。
    *
-   * @param localPort - 本机监听端口；传 0 由 OS 分配
+   * 只负责开通道，不负责本机监听——本机监听器由隧道层持有，必须**跨重连存活**：
+   * 重连后本机端口若发生变化，用户已打开的浏览器标签就失效了。所以传输实例
+   * 可以被换掉，监听器不能。
+   *
    * @param remoteHost - 远端目标地址，安全上应始终为 `127.0.0.1`
    * @param remotePort - 远端目标端口
-   * @returns 转发句柄
+   * @param signal - 取消信号
+   * @returns 通道；使用完毕必须 `release()` 归还配额
    */
-  forwardOut(localPort: number, remoteHost: string, remotePort: number): Promise<ForwardHandle>;
+  openChannel(remoteHost: string, remotePort: number, signal?: AbortSignal): Promise<RemoteChannel>;
 
   /**
    * 反向转发：远端监听一个端口，其入站连接回到本机。

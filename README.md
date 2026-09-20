@@ -23,7 +23,7 @@
 | P0 | 可行性验证（手动全流程） | ✅ 五步通过 |
 | P1 | 连接闭环：传输层、主机解析、探测、镜像测速 | ✅ `list` / `doctor` 可用 |
 | P2 | 引导闭环：装 Node 与 dsh、生成会话 profile | ✅ `provision` 可用 |
-| P3 | 会话闭环：隧道、心跳重连、多主机并行 | 未开始 |
+| P3 | 会话闭环：隧道、心跳重连、多主机并行 | ✅ `connect` / `status` / `kill` 可用 |
 | P4 | 凭据闭环：反向隧道代理 | 未开始 |
 | P5 | `dsh-remote-guard` 远端插件与打磨 | 未开始 |
 
@@ -41,12 +41,28 @@ npx tsx src/cli/bin.ts list
 npx tsx src/cli/bin.ts doctor OrangePI
 npx tsx src/cli/bin.ts doctor OrangePI --refresh-mirrors   # 强制重测镜像
 
-# 把远端环境装到可用状态（幂等，重复执行会复用已装版本）
-npx tsx src/cli/bin.ts provision OrangePI --cwd /home/xlli67
+# 主命令：引导 → 起远端 dsh → 建隧道 → 开浏览器（进程常驻）
+npx tsx src/cli/bin.ts connect OrangePI --cwd //home/xlli67
+
+# 查看本机维持的所有会话
+npx tsx src/cli/bin.ts status
+
+# 停止远端 dsh
+npx tsx src/cli/bin.ts kill OrangePI --all
+
+# 只做引导，不起服务（幂等，重复执行会复用已装版本）
+npx tsx src/cli/bin.ts provision OrangePI --cwd //home/xlli67
 
 # 通用参数：改用其他 ssh config 文件
 npx tsx src/cli/bin.ts list --ssh-config /path/to/config
 ```
+
+`connect` 之后本进程必须保持运行——正向隧道的本机监听器活在其中。远端 dsh 是
+detach 的，CLI 退出后仍在跑，下次 `connect` 会探到并复用；要真正停掉用 `kill`。
+
+**在 Git Bash 里写远端路径要用双斜杠**（`--cwd //home/xxx`）或先设
+`MSYS_NO_PATHCONV=1`。MSYS 会把 `/home/xxx` 改写成 `D:/SoftWare/Git/home/xxx`，
+这发生在参数到达程序之前，程序只能识别并拒绝。
 
 `doctor` 会检查连接、平台、基础命令、磁盘余量、已装运行时、**Node 运行时稳定性**
 与各镜像实测延迟。它是排查远程环境问题的首选手段——远程开发的故障大多出在环境而非代码。
@@ -98,6 +114,14 @@ npx tsx src/cli/bin.ts list --ssh-config /path/to/config
 | [src/provision/profile-writer.ts](src/provision/profile-writer.ts) | 每会话独立 `DSH_HOME` 与 profile、patch 生成 |
 | [src/provision/provisioner.ts](src/provision/provisioner.ts) | 引导流程编排，各步均幂等 |
 | [src/util/session-id.ts](src/util/session-id.ts) | 由主机别名 + 远端目录算确定性会话 id |
+| [src/tunnel/port-allocator.ts](src/tunnel/port-allocator.ts) | 远端端口分配与监听确认 |
+| [src/tunnel/forward-local.ts](src/tunnel/forward-local.ts) | 正向转发，**监听器跨重连存活** |
+| [src/session/remote-process.ts](src/session/remote-process.ts) | 远端 dsh 的 detach 启动、令牌捕获、安全停止 |
+| [src/session/lifecycle-state.ts](src/session/lifecycle-state.ts) | 会话状态机，纯函数 |
+| [src/session/heartbeat.ts](src/session/heartbeat.ts) | 心跳探活，一次一条命令 |
+| [src/session/reconnect.ts](src/session/reconnect.ts) | 有限次指数退避 |
+| [src/session/session-registry.ts](src/session/session-registry.ts) | 本机会话表，锁文件 + 原子替换 |
+| [src/session/session-manager.ts](src/session/session-manager.ts) | 会话编排：打开、重连、关闭 |
 | [src/cli/](src/cli/) | 命令分派与终端输出 |
 
 ## 几件容易踩的事
@@ -122,6 +146,12 @@ npx tsx src/cli/bin.ts list --ssh-config /path/to/config
   会把自己的 SSH 会话一起杀掉。用 pid 文件或按监听端口定位。
 - **构造远端路径一律用 `/` 拼字符串**，不要用 `node:path` 的 `join`——
   本机可能是 Windows，会产出反斜杠。
+- **会话表主键是 `(sessionId, localPid)` 组合。** 会话 id 是远端身份；
+  同别名同目录的多个本机 CLI 会共享同一个远端 dsh，是同一远端会话的多个本机视图。
+  只按 sessionId 去重会让后启动的 CLI 挤掉先前记录，`status` 漏报仍在工作的隧道。
+- **本机监听器必须跨重连存活。** 重连只换传输引用，本机端口不变——
+  端口一变，用户已打开的浏览器标签全部失效。这也是传输接口提供
+  `openChannel`（只开通道）而非 `forwardOut`（监听+转发一体）的原因。
 
 ## 开发
 

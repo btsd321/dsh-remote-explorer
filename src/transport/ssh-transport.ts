@@ -12,7 +12,6 @@
  * 重连由会话编排层负责。
  */
 
-import { createServer, type Server, type Socket } from 'node:net';
 import { readFileSync } from 'node:fs';
 import { Client, type ClientChannel, type SFTPWrapper } from 'ssh2';
 import { RemoteError, toErrorMessage } from '../util/errors.js';
@@ -21,8 +20,8 @@ import { ChannelPool, type ChannelPoolConfig } from './channel-pool.js';
 import type {
   ExecOptions,
   ExecResult,
-  ForwardHandle,
   RemoteArch,
+  RemoteChannel,
   RemoteOs,
   RemotePlatform,
   RemoteTransport,
@@ -85,8 +84,6 @@ export class SshTransport implements RemoteTransport {
   private client: Client | undefined;
   /** 跳板机链上的客户端，按建立顺序；dispose 时反序关闭 */
   private readonly jumpClients: Client[] = [];
-  /** 正向转发建立的本机监听服务器 */
-  private readonly localServers = new Set<Server>();
   /** 已请求的反向监听端口 */
   private readonly reversePorts = new Set<number>();
   private readonly pool: ChannelPool;
@@ -239,55 +236,45 @@ export class SshTransport implements RemoteTransport {
   }
 
   /**
-   * 正向转发：本机监听端口，入站连接经 SSH 通道转到远端目标。
+   * 开一条通向远端目标的双向通道。
    *
-   * @param localPort - 本机监听端口；传 0 由 OS 分配
+   * 本机监听由隧道层负责——监听器必须跨重连存活（本机端口变了用户的浏览器
+   * 标签就失效），而传输实例会随重连被替换。
+   *
    * @param remoteHost - 远端目标地址（安全上应为 127.0.0.1）
    * @param remotePort - 远端目标端口
-   * @returns 转发句柄
+   * @param signal - 取消信号
+   * @returns 通道；使用完毕必须 release()
    */
-  async forwardOut(localPort: number, remoteHost: string, remotePort: number): Promise<ForwardHandle> {
+  async openChannel(
+    remoteHost: string,
+    remotePort: number,
+    signal?: AbortSignal,
+  ): Promise<RemoteChannel> {
     const client = this.requireClient();
+    signal?.throwIfAborted();
 
-    const server = createServer((socket: Socket) => {
-      void this.pipeForward(client, socket, remoteHost, remotePort);
-    });
-    this.localServers.add(server);
-
-    const actualPort = await new Promise<number>((resolve, reject) => {
-      const onError = (error: Error): void => {
-        server.off('listening', onListening);
-        reject(new RemoteError(
-          'CONNECT_FAILED',
-          `本机监听端口 ${localPort} 失败: ${error.message}`,
-          { cause: error, hostAlias: this.hostAlias },
-        ));
-      };
-      const onListening = (): void => {
-        server.off('error', onError);
-        const address = server.address();
-        if (address === null || typeof address === 'string') {
-          reject(new RemoteError('CONNECT_FAILED', '本机监听地址异常，无法确定端口'));
-          return;
-        }
-        resolve(address.port);
-      };
-      server.once('error', onError);
-      server.once('listening', onListening);
-      // 只绑回环：转发入口不对外暴露
-      server.listen(localPort, '127.0.0.1');
-    });
-
-    // 监听期的 error 已消费，补一个长期处理器避免未捕获异常掀翻进程
-    server.on('error', () => { /* 单个连接级错误由 pipeForward 处理，这里只防未捕获 */ });
-
-    return {
-      localPort: actualPort,
-      close: async (): Promise<void> => {
-        this.localServers.delete(server);
-        await new Promise<void>((resolve) => { server.close(() => resolve()); });
-      },
-    };
+    // 每条通道都占 SSH 通道配额
+    const lease = await this.pool.acquire('forward', signal);
+    try {
+      const stream = await new Promise<ClientChannel>((resolve, reject) => {
+        client.forwardOut('127.0.0.1', 0, remoteHost, remotePort, (error, channel) => {
+          if (error) {
+            reject(new RemoteError(
+              'CONNECT_FAILED',
+              `经主机 ${this.hostAlias} 转发到 ${remoteHost}:${remotePort} 失败: ${error.message}`,
+              { cause: error, hostAlias: this.hostAlias },
+            ));
+          } else {
+            resolve(channel);
+          }
+        });
+      });
+      return { stream, release: () => lease.release() };
+    } catch (error) {
+      lease.release();
+      throw error;
+    }
   }
 
   /**
@@ -347,13 +334,7 @@ export class SshTransport implements RemoteTransport {
     this.disposed = true;
     this.pool.close();
 
-    // 1. 关本机监听
-    for (const server of this.localServers) {
-      await new Promise<void>((resolve) => { server.close(() => resolve()); });
-    }
-    this.localServers.clear();
-
-    // 2. 撤反向监听（连接已断时会失败，忽略）
+    // 1. 撤反向监听（连接已断时会失败，忽略）
     if (this.client) {
       for (const port of this.reversePorts) {
         await new Promise<void>((resolve) => {
@@ -365,7 +346,7 @@ export class SshTransport implements RemoteTransport {
     }
     this.reversePorts.clear();
 
-    // 3. 关目标连接，再反序关跳板机
+    // 2. 关目标连接，再反序关跳板机
     this.client?.end();
     this.client = undefined;
     for (const jump of this.jumpClients.reverse()) jump.end();
@@ -633,49 +614,6 @@ export class SshTransport implements RemoteTransport {
 
     if (assignments.length === 0) return command;
     return `env ${assignments.join(' ')} ${command}`;
-  }
-
-  /**
-   * 把本机 socket 与远端通道对接。
-   *
-   * @param client - 已就绪的客户端
-   * @param socket - 本机入站连接
-   * @param remoteHost - 远端目标地址
-   * @param remotePort - 远端目标端口
-   */
-  private async pipeForward(
-    client: Client,
-    socket: Socket,
-    remoteHost: string,
-    remotePort: number,
-  ): Promise<void> {
-    // 转发连接也占 SSH 通道，必须走配额
-    let lease;
-    try {
-      lease = await this.pool.acquire('forward');
-    } catch {
-      socket.destroy();
-      return;
-    }
-
-    try {
-      const channel = await new Promise<ClientChannel>((resolve, reject) => {
-        client.forwardOut('127.0.0.1', 0, remoteHost, remotePort, (error, stream) => {
-          if (error) reject(error);
-          else resolve(stream);
-        });
-      });
-      // 任一端结束即释放配额
-      const release = (): void => lease.release();
-      channel.once('close', release);
-      socket.once('close', release);
-      socket.on('error', () => channel.destroy());
-      channel.on('error', () => socket.destroy());
-      socket.pipe(channel).pipe(socket);
-    } catch {
-      lease.release();
-      socket.destroy();
-    }
   }
 
   /**

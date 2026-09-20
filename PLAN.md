@@ -571,9 +571,29 @@ dsh-remote clean <别名> [--keep-latest] 清理旧版本目录与陈旧会话�
 
 另外把 `--ssh-config` 接成真实参数（对标 VS Code 的 `remote.SSH.configFile`），它必须在任何主机解析前生效，因为解析结果带模块级缓存。
 
-### P3 — 会话闭环
+### P3 — 会话闭环 ✅ 已完成
 
-`tunnel/` + `session/`（含 `session-registry.ts`）。交付：浏览器能打开远端 GUI，心跳与重连可用，`kill` / `status` 可用，**多主机与同主机多会话并行可用**。
+`tunnel/`（`port-allocator` / `forward-local`）+ `session/`（`remote-process` / `lifecycle-state` / `heartbeat` / `reconnect` / `session-registry` / `session-manager`），交付 `connect` / `status` / `kill` 三个命令。
+
+实测（OrangePI）：
+
+| 场景 | 结果 |
+|---|---|
+| `connect` 全流程 | 引导复用 2s + 启动远端 3.7s + 建隧道，端到端就绪 |
+| 经隧道取页面 | 无令牌 401；带令牌 200 / 31252 字节完整页面 |
+| detach 语义 | 本机 CLI 退出后远端 dsh 仍在监听 |
+| 会话复用 | 同 `--cwd` 再连，探到既有 pid 直接复用，不重启 |
+| 同主机多会话 | 不同 `--cwd` → 不同会话 id、独立端口与 pid，并行可用 |
+| `kill --all` | 正确停止运行中的会话，跳过未运行的 |
+| 陈旧记录清理 | 本机 CLI 消失后 `status` 自动清除其记录 |
+
+一处关键设计：**本机监听器跨重连存活。** 为此把传输接口的 `forwardOut`（本机监听 + 转发一体）改为更底层的 `openChannel`（只开通道），监听器交由 `tunnel/forward-local.ts` 持有。重连时只换传输引用，本机端口不变——否则用户已打开的浏览器标签会全部失效。
+
+实测暴露并修掉两个 bug：
+
+1. **会话表主键必须是 `(sessionId, localPid)` 组合，不能只用 `sessionId`。** 会话 id 是远端身份，同别名同目录的多个本机 CLI 会共享同一个远端 dsh（后来者探到即复用），它们是同一远端会话的多个本机视图。只按 sessionId 去重会让后启动的 CLI 挤掉先前记录，`status` 漏报一个仍在工作的隧道。
+
+2. **Git Bash（MSYS）会在参数到达程序前改写 POSIX 路径。** 在 Git Bash 里写 `--cwd /home/user`，程序实际收到 `D:/SoftWare/Git/home/user`。这发生在 shell 层，程序无法阻止，只能识别并拒绝——放过它不只是路径错，远端目录参与会话 id 计算，同一逻辑会话会因调用方式不同得到不同 id，复用与 kill 都会失灵。现已校验并提示两种绕过方式（`--cwd //home/xxx` 或 `MSYS_NO_PATHCONV=1`）。
 
 ### P4 — 凭据闭环
 

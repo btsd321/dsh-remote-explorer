@@ -15,11 +15,14 @@ import { setConfigPath } from '../hosts/ssh-config-parser.js';
 import { runList } from './commands/list.js';
 import { runDoctor } from './commands/doctor.js';
 import { defaultVersions, runProvision } from './commands/provision.js';
+import { runConnect } from './commands/connect.js';
+import { runStatus } from './commands/status.js';
+import { runKill } from './commands/kill.js';
 import { RemoteError, toErrorMessage } from '../util/errors.js';
 import { bold, cyan, dim, printErr, println, red, yellow } from './output.js';
 
 /** 支持的子命令 */
-const COMMANDS = ['list', 'doctor', 'provision', 'help'] as const;
+const COMMANDS = ['list', 'doctor', 'provision', 'connect', 'status', 'kill', 'help'] as const;
 
 /** 子命令名 */
 type CommandName = (typeof COMMANDS)[number];
@@ -49,19 +52,32 @@ function printHelp(): void {
   const versions = defaultVersions();
 
   println(bold('命令'));
+  println(`  ${cyan('connect')} <别名>            主命令：引导 → 起远端 → 建隧道 → 开浏览器（常驻）`);
+  println(`  ${cyan('status')}                    列出本机正在维持的所有会话`);
+  println(`  ${cyan('kill')} <别名>               停止远端 dsh 进程`);
   println(`  ${cyan('list')}                      列出 ~/.ssh/config 中的主机`);
   println(`  ${cyan('doctor')} <别名>             诊断某台主机的引导条件`);
-  println(`  ${cyan('provision')} <别名>          把远端环境装到可用状态（幂等，可重复执行）`);
+  println(`  ${cyan('provision')} <别名>          只做引导，不起服务（幂等）`);
   println(`  ${cyan('help')}                      显示本帮助`);
   println();
-  println(bold('doctor 参数'));
-  println('  --refresh-mirrors         强制重测镜像延迟，忽略缓存');
-  println();
-  println(bold('provision 参数'));
+  println(bold('connect 参数'));
   println('  --cwd <远端路径>          远端工作目录，参与会话标识计算');
+  println('  --local-port <端口>       本机监听端口（默认由系统分配）');
+  println('  --no-open                 不自动打开浏览器');
+  println('  --force-restart           即便远端已有可用会话也重新启动');
   println(`  --node-version <版本>     Node 版本（默认 ${versions.node}）`);
   println(`  --dsh-version <版本>      dsh 版本或 dist-tag（默认 ${versions.dsh}）`);
   println('  --refresh-mirrors         强制重测镜像延迟，忽略缓存');
+  println();
+  println(bold('kill 参数'));
+  println('  --cwd <远端路径>          指定要停止的会话');
+  println('  --all                     停止该主机上的全部会话（含孤儿进程）');
+  println();
+  println(bold('doctor / provision 参数'));
+  println('  --refresh-mirrors         强制重测镜像延迟，忽略缓存');
+  println('  --cwd <远端路径>          （provision）远端工作目录');
+  println(`  --node-version <版本>     （provision）Node 版本（默认 ${versions.node}）`);
+  println(`  --dsh-version <版本>      （provision）dsh 版本或 dist-tag（默认 ${versions.dsh}）`);
   println();
   println(bold('通用参数'));
   println('  --ssh-config <路径>       改用指定的 ssh config 文件（默认 ~/.ssh/config）');
@@ -113,6 +129,10 @@ export async function main(argv: readonly string[]): Promise<number> {
       cwd: { type: 'string' },
       'node-version': { type: 'string' },
       'dsh-version': { type: 'string' },
+      'local-port': { type: 'string' },
+      'no-open': { type: 'boolean', default: false },
+      'force-restart': { type: 'boolean', default: false },
+      all: { type: 'boolean', default: false },
     },
     allowPositionals: true,
     strict: true,
@@ -122,8 +142,12 @@ export async function main(argv: readonly string[]): Promise<number> {
     setConfigPath(values['ssh-config']);
   }
 
+  // 不需要主机别名的命令
   if (command === 'list') {
     return runList();
+  }
+  if (command === 'status') {
+    return runStatus();
   }
 
   // 其余命令都需要主机别名
@@ -136,19 +160,108 @@ export async function main(argv: readonly string[]): Promise<number> {
 
   const refreshMirrors = values['refresh-mirrors'] === true;
 
+  // 未指定工作目录时用空串：它同样参与会话 id 计算，
+  // 保证"不带 --cwd"这一情形有稳定且唯一的会话标识
+  const rawCwd = values.cwd ?? '';
+  const cwdError = validateRemoteCwd(rawCwd);
+  if (cwdError !== undefined) {
+    printErr(red(cwdError));
+    return 64;
+  }
+  const cwd = normalizeRemoteCwd(rawCwd);
+
   if (command === 'doctor') {
     return runDoctor({ alias, refreshMirrors });
   }
 
+  if (command === 'kill') {
+    return runKill({ alias, cwd, all: values.all === true });
+  }
+
+  if (command === 'connect') {
+    const localPort = parsePort(values['local-port']);
+    if (localPort === undefined) {
+      printErr(red(`--local-port 需要 0–65535 之间的整数，实际为 ${values['local-port']}`));
+      return 64;
+    }
+    return runConnect({
+      alias,
+      cwd,
+      localPort,
+      ...(values['node-version'] ? { nodeVersion: values['node-version'] } : {}),
+      ...(values['dsh-version'] ? { dshVersion: values['dsh-version'] } : {}),
+      noOpen: values['no-open'] === true,
+      forceRestart: values['force-restart'] === true,
+      refreshMirrors,
+    });
+  }
+
   return runProvision({
     alias,
-    // 未指定工作目录时用空串：它同样参与会话 id 计算，
-    // 保证"不带 --cwd"这一情形有稳定且唯一的会话标识
-    cwd: values.cwd ?? '',
+    cwd,
     ...(values['node-version'] ? { nodeVersion: values['node-version'] } : {}),
     ...(values['dsh-version'] ? { dshVersion: values['dsh-version'] } : {}),
     refreshMirrors,
   });
+}
+
+/**
+ * 解析端口参数。
+ *
+ * @param raw - 原始字符串；undefined 表示未指定，按 0（由系统分配）处理
+ * @returns 端口号；非法时 undefined
+ */
+function parsePort(raw: string | undefined): number | undefined {
+  if (raw === undefined) return 0;
+  const port = Number.parseInt(raw, 10);
+  if (!Number.isInteger(port) || port < 0 || port > 65_535) return undefined;
+  return port;
+}
+
+/**
+ * 校验 `--cwd` 是合法的远端 POSIX 绝对路径。
+ *
+ * 必须校验而不能放过，是因为 **Git Bash（MSYS）会在参数到达本程序之前就改写它**：
+ * 在 Git Bash 里写 `--cwd /home/user`，程序实际收到的是
+ * `D:/SoftWare/Git/home/user`——MSYS 把看起来像 Unix 路径的参数当成
+ * Windows 路径做了转换。这个改写发生在 shell 层，本程序无法阻止，只能识别并拒绝。
+ *
+ * 放过它的后果不只是路径错：远端工作目录参与会话 id 计算，
+ * 同一个逻辑会话会因调用方式不同得到不同 id，于是复用与 kill 都会失灵。
+ *
+ * @param cwd - 原始参数值；空串表示未指定
+ * @returns 错误消息；合法时 undefined
+ */
+function validateRemoteCwd(cwd: string): string | undefined {
+  if (cwd.length === 0) return undefined;
+
+  if (/^[A-Za-z]:/.test(cwd)) {
+    return `--cwd 看起来被 shell 改写成了 Windows 路径：${cwd}\n`
+      + '这是 Git Bash（MSYS）的路径转换所致，它在参数到达本程序前就已发生。\n'
+      + '两种绕过方式：用双斜杠写 --cwd //home/xxx，'
+      + '或设环境变量 MSYS_NO_PATHCONV=1 后再执行。';
+  }
+  if (cwd.includes('\\')) {
+    return `--cwd 含反斜杠：${cwd}。远端一定是 POSIX，路径请用 / 分隔`;
+  }
+  if (!cwd.startsWith('/')) {
+    return `--cwd 必须是绝对路径，实际为 ${cwd}`;
+  }
+  return undefined;
+}
+
+/**
+ * 归一化远端工作目录。
+ *
+ * MSYS 对以 `//` 开头的参数不做转换，所以推荐写法 `--cwd //home/xxx`
+ * 传进来就是 `//home/xxx`；远端 POSIX 语义下前导双斜杠是实现定义行为，
+ * 这里折叠成单斜杠，保证会话 id 对两种写法一致。
+ *
+ * @param cwd - 已校验的路径
+ * @returns 归一化后的路径
+ */
+function normalizeRemoteCwd(cwd: string): string {
+  return cwd.startsWith('//') ? cwd.slice(1) : cwd;
 }
 
 /**

@@ -1,0 +1,191 @@
+/**
+ * @file connect 命令
+ * @description 主命令：引导 → 起远端 dsh → 建隧道 → 开浏览器 → 常驻守护。
+ *
+ * **本进程必须常驻。** 正向隧道的本机监听器活在本进程里，进程退出隧道即断。
+ * P4 加入凭据代理后这一点会更关键——代理持有 LLM key，CLI 退出则远端
+ * 模型调用全部失败。这是反向隧道代理方案的既定代价，不是缺陷。
+ *
+ * 远端 dsh 本身是 detach 的，CLI 退出后它仍在跑，下次 connect 会探到并复用。
+ * 要真正停掉用 `dsh-remote kill`。
+ */
+
+import { spawn } from 'node:child_process';
+import { openSession, type RemoteSession } from '../../session/session-manager.js';
+import { describeState, type SessionState } from '../../session/lifecycle-state.js';
+import { toErrorMessage } from '../../util/errors.js';
+import {
+  bold, cyan, dim, green, println, printTable, red, yellow, ProgressReporter,
+} from '../output.js';
+
+/** connect 命令选项 */
+export interface ConnectCommandOptions {
+  /** 主机别名 */
+  alias: string;
+  /** 远端工作目录 */
+  cwd: string;
+  /** 本机端口；0 表示 OS 分配 */
+  localPort: number;
+  /** 目标 Node 版本 */
+  nodeVersion?: string;
+  /** 目标 dsh 版本或 dist-tag */
+  dshVersion?: string;
+  /** 不自动打开浏览器 */
+  noOpen: boolean;
+  /** 强制重启远端 dsh */
+  forceRestart: boolean;
+  /** 强制重测镜像 */
+  refreshMirrors: boolean;
+}
+
+/**
+ * 执行 connect 命令。
+ *
+ * @param options - 命令选项
+ * @returns 进程退出码
+ */
+export async function runConnect(options: ConnectCommandOptions): Promise<number> {
+  const progress = new ProgressReporter();
+
+  println(bold(`连接主机 ${cyan(options.alias)}`));
+  println();
+
+  let session: RemoteSession | undefined;
+  const onStateChange = (state: SessionState, description: string): void => {
+    // 就绪态不必播报——它是常态，只报异常与恢复
+    if (state.tag === 'connected') {
+      if (state.reconnectAttempts > 0) println(green(`✓ 已重连：${description}`));
+      return;
+    }
+    if (state.tag === 'heartbeat-missed') println(yellow(`! ${description}`));
+    else if (state.tag === 'reconnecting') println(yellow(`↻ ${description}`));
+    else if (state.tag === 'reconnect-failed') println(yellow(`! ${description}`));
+    else if (state.tag === 'reconnect-exhausted') println(red(`✗ ${description}`));
+  };
+
+  try {
+    session = await openSession({
+      hostAlias: options.alias,
+      remoteCwd: options.cwd,
+      localPort: options.localPort,
+      ...(options.nodeVersion ? { nodeVersion: options.nodeVersion } : {}),
+      ...(options.dshVersion ? { dshVersion: options.dshVersion } : {}),
+      ...(options.forceRestart ? { forceRestart: true } : {}),
+      ...(options.refreshMirrors ? { refreshMirrors: true } : {}),
+      onStageStart: (stage) => progress.start(stage),
+      onStageDone: (detail) => progress.done(detail),
+      onStageSkip: (reason) => progress.skip(reason),
+      onStateChange,
+    });
+  } catch (error) {
+    progress.fail(toErrorMessage(error));
+    throw error;
+  }
+
+  const result = session.provisionResult;
+  println();
+  printTable(
+    ['项目', '值'],
+    [
+      ['访问地址', cyan(session.url)],
+      ['本机端口', String(session.localPort)],
+      ['远端端口', String(session.remotePort)],
+      ['远端 pid', String(session.remotePid)],
+      ['Node', result.node.version],
+      ['dsh', result.dsh.version],
+      ['会话 id', session.sessionId],
+    ],
+  );
+  println();
+
+  if (!options.noOpen) {
+    openBrowser(session.url);
+  }
+
+  println(green('会话已就绪'));
+  println(dim('本进程需保持运行以维持隧道；按 Ctrl-C 断开（远端 dsh 会继续运行）'));
+  println(dim('用 dsh-remote kill <别名> 停止远端 dsh'));
+  println();
+
+  // 常驻直到收到中断信号
+  await waitForInterrupt(session, onStateChange);
+  return 0;
+}
+
+/**
+ * 等待中断信号或会话终结。
+ *
+ * @param session - 会话
+ * @param onStateChange - 状态回调（用于终结态判定）
+ */
+async function waitForInterrupt(
+  session: RemoteSession,
+  onStateChange: (state: SessionState, description: string) => void,
+): Promise<void> {
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      process.off('SIGINT', onSigint);
+      process.off('SIGTERM', onSigint);
+      clearInterval(watchdog);
+      resolve();
+    };
+
+    const onSigint = (): void => {
+      println();
+      println(dim('正在断开…'));
+      finish();
+    };
+    process.once('SIGINT', onSigint);
+    process.once('SIGTERM', onSigint);
+
+    // 会话进入终结态时自行退出，不必让用户手动 Ctrl-C。
+    // 轮询而非事件：状态变化回调已被 session 占用，这里不改其契约
+    const watchdog = setInterval(() => {
+      const state = session.currentState;
+      if (state.tag === 'reconnect-exhausted') {
+        onStateChange(state, describeState(state));
+        println(red('会话已终止。远端操作的结果无法确认——远端 dsh 可能仍在运行'));
+        println(dim('用 dsh-remote connect 重新连接，或 dsh-remote kill 停止远端'));
+        finish();
+      }
+    }, 1_000);
+    watchdog.unref();
+  });
+
+  await session.close();
+  println(dim('已断开。远端 dsh 仍在运行，下次 connect 会自动复用'));
+}
+
+/**
+ * 在默认浏览器中打开地址。
+ *
+ * 失败不影响会话——地址已打印，用户可自行复制。
+ *
+ * @param url - 访问地址
+ */
+function openBrowser(url: string): void {
+  // 按平台选择打开命令。Windows 用 cmd start，注意首个空参数是
+  // start 的窗口标题占位符，省略会导致含空格的 URL 被当作标题
+  const command = process.platform === 'win32'
+    ? { file: 'cmd', args: ['/c', 'start', '', url] }
+    : process.platform === 'darwin'
+      ? { file: 'open', args: [url] }
+      : { file: 'xdg-open', args: [url] };
+
+  try {
+    const child = spawn(command.file, command.args, {
+      detached: true,
+      stdio: 'ignore',
+    });
+    // 不让子进程把本进程的退出拖住
+    child.unref();
+    child.on('error', () => {
+      println(dim('未能自动打开浏览器，请手动访问上面的地址'));
+    });
+  } catch {
+    println(dim('未能自动打开浏览器，请手动访问上面的地址'));
+  }
+}
