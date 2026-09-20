@@ -66,7 +66,7 @@ interface ParsedConfig extends Array<ConfigSection> {
 
 /** SSH config 中一个 Host 的基本信息（列表展示用） */
 export interface SshHostSummary {
-  /** Host 别名（如 "OrangePI"） */
+  /** Host 别名（如 "myhost"） */
   alias: string;
   /** 主机地址（HostName 值，没有则用别名） */
   hostName: string;

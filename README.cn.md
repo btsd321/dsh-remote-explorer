@@ -39,26 +39,26 @@ npm install
 # 列出 ~/.ssh/config 中的主机
 npx tsx src/cli/bin.ts list
 
-# 诊断某台主机的引导条件
-npx tsx src/cli/bin.ts doctor OrangePI
-npx tsx src/cli/bin.ts doctor OrangePI --refresh-mirrors   # 强制重测镜像
+# 诊断某台主机的引导条件（myhost 换成你的主机别名或 user@host[:port]）
+npx tsx src/cli/bin.ts doctor myhost
+npx tsx src/cli/bin.ts doctor myhost --refresh-mirrors   # 强制重测镜像
 
 # 主命令：引导 → 起远端 dsh → 建隧道 → 开浏览器（进程常驻）
 # 用哪个供应商就把哪个 key 放进本机环境（供应商清单来自 ~/.dsh/settings.yaml）
-DEEPSEEK_API_KEY=sk-xxx ASTUDIO_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect OrangePI --cwd //home/xlli67
+DEEPSEEK_API_KEY=sk-xxx ASTUDIO_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect myhost --cwd //home/youruser
 
 # 查看本机维持的所有会话
 npx tsx src/cli/bin.ts status
 
 # 停止远端 dsh
-npx tsx src/cli/bin.ts kill OrangePI --all
+npx tsx src/cli/bin.ts kill myhost --all
 
 # 清理远端陈旧资源（旧版本、死会话目录；运行中会话使用的版本受保护）
-npx tsx src/cli/bin.ts clean OrangePI
-npx tsx src/cli/bin.ts clean OrangePI --keep 2   # 每个类别保留 2 个版本
+npx tsx src/cli/bin.ts clean myhost
+npx tsx src/cli/bin.ts clean myhost --keep 2   # 每个类别保留 2 个版本
 
 # 只做引导，不起服务（幂等，重复执行会复用已装版本）
-npx tsx src/cli/bin.ts provision OrangePI --cwd //home/xlli67
+npx tsx src/cli/bin.ts provision myhost --cwd //home/youruser
 
 # 通用参数：改用其他 ssh config 文件
 npx tsx src/cli/bin.ts list --ssh-config /path/to/config
@@ -187,7 +187,7 @@ npx -y -p typescript@5.7.3 tsc --noEmit
 
 ## 验证环境
 
-OrangePI（aarch64 Linux, 192.168.1.82, Ubuntu glibc 2.35, 内核 5.10.0+），客户端 Windows 11。
+验证用主机为 aarch64 Linux（Ubuntu glibc 2.35，内核 5.10.0+），客户端 Windows 11。
 
 P0 实测：装 Node v24.11.1 + dsh 0.1.6-alpha.2 约 75 秒 / 700M；`ssh -L` 隧道取到完整 GUI 页面；`ssh -R` 凭据回打通，远端环境无任何 API key。
 

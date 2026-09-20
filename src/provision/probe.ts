@@ -3,7 +3,7 @@
  * @description 在引导前查清远端状况：平台、基础命令、已装 Node 与 dsh、磁盘余量，
  *              并对候选 Node 运行时做**稳定性自检**。
  *
- * 为什么需要稳定性自检（P0 实测得出）：OrangePI（aarch64）上 Node v22.23.2 起进程
+ * 为什么需要稳定性自检（P0 实测得出）：实测的 aarch64 验证机上 Node v22.23.2 起进程
  * 的崩溃率高达 35%（7/20），表现为 V8 初始化 isolate 时 `MemoryChunk allocation failed`
  * + SIGTRAP，但机器有 13G 空闲内存、cgroup 无限制——不是真 OOM，而是 VA 空间与
  * ASLR 交互导致的随机失败。`npm install` 要起几十次 node 子进程，35% 的单次崩溃率

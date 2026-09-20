@@ -33,7 +33,7 @@ dsh 已发布到 npm（`@deepseek-ai/dsh`，`publishConfig.access: public`），
 
 - 原生模块变真的——远端 `npm i` 会拉到 `@deepseek-ai/node-addon-system-linux-arm64` 的**真实预编译 `.node` 二进制**，不再是 no-op 桩
   （**P0 修正**：真实加载已验证，`flock` 可用；但 landlock 能否生效取决于**远端内核**是否启用该 LSM，与架构无关。
-  OrangePI 的 5.10.0+ 内核 LSM 列表为 `capability,yama,kbox_capability`，`probe()` 返回 `unusable`。
+  验证机的 5.10.0+ 内核（aarch64）LSM 列表为 `capability,yama,kbox_capability`，`probe()` 返回 `unusable`。
   所以准确说法是"桩被消除、flock 可用、landlock 取决于内核"，而非"沙箱一定在工作"。详见第十二章）
 - 每次 `stat` 不再是一次 SSH 往返，而是本地 syscall
 - Windows 客户端不再是难题——本机只剩浏览器
@@ -232,7 +232,7 @@ env PATH=<node bin>:$PATH npm install --registry=<测速选出的镜像> \
     --no-audit --no-fund @deepseek-ai/dsh@<版本>
 ```
 
-**P0 实测数据**（OrangePI，aarch64，3 核，15G 内存）：
+**P0 实测数据**（验证机：aarch64，3 核，15G 内存）：
 
 | 阶段 | 耗时 | 产物 |
 |---|---|---|
@@ -568,7 +568,7 @@ dsh-remote clean <别名> [--keep-latest] 清理旧版本目录与陈旧会话�
 
 ## 九、里程碑
 
-### P0 — 可行性验证 ✅ 已完成（2026-09-20，OrangePI）
+### P0 — 可行性验证 ✅ 已完成（2026-09-20，aarch64 验证机）
 
 五步全部通过，门禁放行。详细实测数据与结论见第十二章。
 
@@ -588,7 +588,7 @@ dsh-remote clean <别名> [--keep-latest] 清理旧版本目录与陈旧会话�
 
 `provision/` 全部（`node-installer` / `dsh-installer` / `profile-writer` / `provisioner`）+ `util/session-id.ts`，交付 `dsh-remote provision` 命令。
 
-实测（OrangePI）：
+实测（验证机）：
 
 | 路径 | 耗时 | 说明 |
 |---|---|---|
@@ -605,7 +605,7 @@ dsh-remote clean <别名> [--keep-latest] 清理旧版本目录与陈旧会话�
 
 `tunnel/`（`port-allocator` / `forward-local`）+ `session/`（`remote-process` / `lifecycle-state` / `heartbeat` / `reconnect` / `session-registry` / `session-manager`），交付 `connect` / `status` / `kill` 三个命令。
 
-实测（OrangePI）：
+实测（验证机）：
 
 | 场景 | 结果 |
 |---|---|
@@ -629,7 +629,7 @@ dsh-remote clean <别名> [--keep-latest] 清理旧版本目录与陈旧会话�
 
 `credential/`（`token` / `types` / `tunnel-proxy`）+ 会话编排接线，交付完整的反向隧道代理。
 
-实测（OrangePI，本机带假 key 验证——上游 401 恰好证明请求到达了真实 API 且 key 被注入）：
+实测（验证机，本机带假 key 验证——上游 401 恰好证明请求到达了真实 API 且 key 被注入）：
 
 | 验证项 | 结果 |
 |---|---|
@@ -741,7 +741,7 @@ koffi 这类跨平台包会构建出错误产物或直接失败）；`npm pack` 
 
 ## 十二、P0 实测记录（2026-09-20）
 
-环境：客户端 Windows 11；远端 OrangePI（`192.168.1.82`，aarch64，3 核，15G 内存，Ubuntu glibc 2.35，内核 5.10.0+）。
+环境：客户端 Windows 11；远端验证机（aarch64，3 核，15G 内存，Ubuntu glibc 2.35，内核 5.10.0+）。
 
 ### 11.1 结论概览
 
@@ -804,7 +804,7 @@ node_modules/@deepseek-ai/node-addon-system-linux-arm64/bin/musl/system.node
 
 `probe()` 返回 `unusable` 的原因在远端内核：`/sys/kernel/security/lsm` 为 `capability,yama,kbox_capability`，**没有 landlock**。该包的类型声明明确说明 `unusable` 涵盖"内核无 landlock、LSM 被禁用、二进制缺失"三种情况且故意不可区分。
 
-所以准确表述是：**转向消除了 `native-stub.ts` 这个架构性空洞（本机方案下二进制根本无法跨平台，只能用桩），flock 确实可用；landlock 则取决于具体远端主机的内核配置，与架构选择无关。** 这台 OrangePI 恰好没开。`doctor` 应当报告 `probe()` 结果，让用户知道该主机的沙箱能力边界。
+所以准确表述是：**转向消除了 `native-stub.ts` 这个架构性空洞（本机方案下二进制根本无法跨平台，只能用桩），flock 确实可用；landlock 则取决于具体远端主机的内核配置，与架构选择无关。** 验证机恰好没开。`doctor` 应当报告 `probe()` 结果，让用户知道该主机的沙箱能力边界。
 
 ### 11.4 dsh 已内置认证（guard 职责缩小）
 

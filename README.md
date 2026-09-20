@@ -39,26 +39,26 @@ npm install
 # List hosts from ~/.ssh/config
 npx tsx src/cli/bin.ts list
 
-# Diagnose a host's provisioning conditions
-npx tsx src/cli/bin.ts doctor OrangePI
-npx tsx src/cli/bin.ts doctor OrangePI --refresh-mirrors   # force re-benchmark mirrors
+# Diagnose a host's provisioning conditions (replace myhost with your alias or user@host[:port])
+npx tsx src/cli/bin.ts doctor myhost
+npx tsx src/cli/bin.ts doctor myhost --refresh-mirrors   # force re-benchmark mirrors
 
 # Main command: provision → start remote dsh → build tunnel → open browser (long-running)
 # Export the API key for whichever provider you use (provider list comes from ~/.dsh/settings.yaml)
-DEEPSEEK_API_KEY=sk-xxx ASTUDIO_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect OrangePI --cwd //home/xlli67
+DEEPSEEK_API_KEY=sk-xxx ASTUDIO_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect myhost --cwd //home/youruser
 
 # Show all sessions maintained on this machine
 npx tsx src/cli/bin.ts status
 
 # Stop remote dsh
-npx tsx src/cli/bin.ts kill OrangePI --all
+npx tsx src/cli/bin.ts kill myhost --all
 
 # Clean up stale remote resources (old versions, dead session dirs; running sessions are protected)
-npx tsx src/cli/bin.ts clean OrangePI
-npx tsx src/cli/bin.ts clean OrangePI --keep 2   # keep 2 versions per category
+npx tsx src/cli/bin.ts clean myhost
+npx tsx src/cli/bin.ts clean myhost --keep 2   # keep 2 versions per category
 
 # Provision only, don't start services (idempotent; reuses installed versions)
-npx tsx src/cli/bin.ts provision OrangePI --cwd //home/xlli67
+npx tsx src/cli/bin.ts provision myhost --cwd //home/youruser
 
 # Use a different ssh config file
 npx tsx src/cli/bin.ts list --ssh-config /path/to/config
@@ -187,7 +187,7 @@ Code style guide is in [docs/type_script_style.md](docs/type_script_style.md) �
 
 ## Verification environment
 
-OrangePI (aarch64 Linux, 192.168.1.82, Ubuntu glibc 2.35, kernel 5.10.0+), client Windows 11.
+Verified on an aarch64 Linux host (Ubuntu glibc 2.35, kernel 5.10.0+), client Windows 11.
 
 P0 benchmark: installing Node v24.11.1 + dsh 0.1.6-alpha.2 took ~75 seconds / 700M; `ssh -L` tunnel delivered the full GUI page; `ssh -R` credential round-trip worked, with no API keys in the remote environment.
 

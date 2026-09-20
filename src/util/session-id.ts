@@ -20,7 +20,7 @@ const DIGEST_LENGTH = 12;
 /**
  * 计算会话 id。
  *
- * 结果形如 `orangepi-a1b2c3d4e5f6`——前缀取主机别名便于人工辨识远端目录，
+ * 结果形如 `myhost-a1b2c3d4e5f6`——前缀取主机别名便于人工辨识远端目录，
  * 后缀是摘要保证唯一。
  *
  * @param hostAlias - SSH config 中的主机别名

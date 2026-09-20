@@ -10,7 +10,11 @@
 
 import { openSession } from '../src/session/session-manager.js';
 
-const alias = process.argv[2] ?? 'OrangePI';
+const alias = process.argv[2];
+if (alias === undefined) {
+  console.error('用法：npx tsx tests/stop-remote-on-close.ts <主机别名>');
+  process.exit(64);
+}
 
 const session = await openSession({
   hostAlias: alias,

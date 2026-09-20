@@ -30,24 +30,24 @@ npx -y -p typescript@5.7.3 tsc --noEmit
 npx tsx src/cli/bin.ts list
 
 # 诊断某台主机的引导条件（排查远端问题的首选手段）
-npx tsx src/cli/bin.ts doctor OrangePI
-npx tsx src/cli/bin.ts doctor OrangePI --refresh-mirrors
+npx tsx src/cli/bin.ts doctor myhost
+npx tsx src/cli/bin.ts doctor myhost --refresh-mirrors
 
 # 引导远端环境（幂等；改动 provision/ 后用它验证）
-npx tsx src/cli/bin.ts provision OrangePI --cwd //home/xlli67
+npx tsx src/cli/bin.ts provision myhost --cwd //home/youruser
 # 验证全新安装路径（复用路径会跳过下载与 npm install，测不到真正易错的代码）
-npx tsx src/cli/bin.ts provision OrangePI --node-version v24.20.0
+npx tsx src/cli/bin.ts provision myhost --node-version v24.20.0
 
 # 完整会话（常驻进程；改动 session/、tunnel/ 或 credential/ 后用它验证）
 # Ctrl-C 默认连远端 dsh 一起停；--keep-remote 保留远端进程。行为验证脚本：
-# npx tsx tests/stop-remote-on-close.ts OrangePI（Windows 收不到合成 SIGINT，
+# npx tsx tests/stop-remote-on-close.ts myhost（Windows 收不到合成 SIGINT，
 # 脚本直接走 Ctrl-C 处理器的同一条 close 路径）
-DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect OrangePI --cwd //home/xlli67 --local-port 18950 --no-open
+DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect myhost --cwd //home/youruser --local-port 18950 --no-open
 npx tsx src/cli/bin.ts status
-npx tsx src/cli/bin.ts kill OrangePI --all
+npx tsx src/cli/bin.ts kill myhost --all
 
 # 清理远端陈旧资源（改动 clean.ts 后用它验证）
-npx tsx src/cli/bin.ts clean OrangePI
+npx tsx src/cli/bin.ts clean myhost
 ```
 
 **在 Git Bash 里传远端路径必须用双斜杠**（`--cwd //home/xxx`）或先设
@@ -59,7 +59,7 @@ npx tsx src/cli/bin.ts clean OrangePI
 
 **改动传输层或引导逻辑后，必须跑一次真实 `doctor`**。类型检查通过不等于连得上——远端 shell 差异、脚本拼接错误这类问题只有实跑才暴露。
 
-测试主机：别名 `OrangePI`（aarch64 Linux, 192.168.1.82），从 `~/.ssh/config` 解析。
+文档与示例中的主机别名一律写 `myhost`、远端用户名写 `youruser`——都是占位名，实际使用时替换成你自己的。验证需要一台真实主机：任意能以私钥 SSH 登录的 POSIX（Linux/macOS）机器都行，从 `~/.ssh/config` 解析，或用 `user@host[:port]` 直连。
 
 ## 架构
 
@@ -138,8 +138,7 @@ npx tsx src/cli/bin.ts clean OrangePI
 ## 已知问题
 
 - **`npm run typecheck` 跑不起来。** `node_modules` 里的 typescript 版本缺 win32 平台包。用 `npx -y -p typescript@5.7.3 tsc --noEmit` 替代。
-- **远端主机 OrangePI 的内核未启用 landlock**（LSM 列表 `capability,yama,kbox_capability`），`node-addon-system` 的 `probe()` 返回 `unusable`。这是该主机的内核配置问题，与本项目架构无关；`flock` 在同一台机器上可用。
-- 远端遗留一个陈旧的 18903 反向端口监听（P0 测试残留，已不可连接，随 sshd 回收）。
+- **部分远端主机的内核未启用 landlock**（实测某台 aarch64 测试机的 LSM 列表不含 landlock），`node-addon-system` 的 `probe()` 会返回 `unusable`。这是主机内核配置问题，与本项目架构无关；`flock` 在同一台机器上可用。
 
 ## 约束
 
