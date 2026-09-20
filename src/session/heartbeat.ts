@@ -33,6 +33,16 @@ export interface HeartbeatResult {
 /**
  * 执行一次心跳检查。
  *
+ * 三层判据，一条命令拿全（每 5 秒一次，三次往返在高延迟链路上会占配额）：
+ *
+ * 1. 进程存活（`kill -0`）
+ * 2. 端口监听（`ss`/`netstat`）
+ * 3. **HTTP 应用级存活**：带会话令牌 curl 一次 webserver 根路径。
+ *    这层是 P5 对 guard `/healthz` 职责的替代实现——dsh 没有免认证探活端点
+ *    （`/healthz` 等全部 404），但 P0 实测带令牌访问 `/` 会得到 303，
+ *    于是「拿到任何 HTTP 状态码」即证明 webserver 在真正服务请求，
+ *    不止是端口被绑住。curl 不存在时跳过这层（回到 pid+端口语义）。
+ *
  * 不抛错——链路故障与远端进程退出都是预期情形，统一以返回值表达，
  * 让调用方（状态机）决定如何处置。
  *
@@ -47,14 +57,15 @@ export async function beat(
     pid: number;
     /** 远端监听端口 */
     port: number;
+    /** 会话访问令牌（HTTP 层探活用） */
+    token?: string;
     /** 取消信号 */
     signal?: AbortSignal;
   },
 ): Promise<HeartbeatResult> {
-  const { pid, port, signal } = options;
+  const { pid, port, token, signal } = options;
 
-  // 三项检查一条命令：kill -0 查进程，ss/netstat 查监听
-  const script = [
+  const lines = [
     `kill -0 ${pid} 2>/dev/null && printf 'PID=ok\\n' || printf 'PID=dead\\n'`,
     'if command -v ss >/dev/null 2>&1; then',
     `  ss -ltnH 2>/dev/null | grep -q ":${port} " && printf 'PORT=ok\\n' || printf 'PORT=down\\n'`,
@@ -64,20 +75,41 @@ export async function beat(
     // 两个工具都没有时不能据此判死，否则会在精简镜像上无限误判重连
     "  printf 'PORT=unknown\\n'",
     'fi',
-  ].join('\n');
+  ];
+
+  // 令牌在命令行里短暂出现（经 SSH 加密传输）——但绝不打进日志：
+  // 输出只写 HTTP 状态码。curl 不存在时这层直接 unknown
+  if (token !== undefined) {
+    lines.push(
+      'if command -v curl >/dev/null 2>&1; then',
+      // -m 3: 探活自身的超时，短于整体心跳超时，避免拖垮整次检查。
+      // 任何非 000 的状态码（303/401/200…）都证明 HTTP 服务在响应
+      `  printf 'HTTP=%s\\n' "$(curl -s -o /dev/null -w '%{http_code}' -m 3 'http://127.0.0.1:${port}/?token=${token}' 2>/dev/null || echo 000)"`,
+      'else',
+      "  printf 'HTTP=unknown\\n'",
+      'fi',
+    );
+  }
 
   try {
-    const result = await transport.exec(script, {
+    const result = await transport.exec(lines.join('\n'), {
       allowNonZeroExit: true,
       timeoutMs: HEARTBEAT_TIMEOUT_MS,
       ...(signal ? { signal } : {}),
     });
+
+    const httpCode = /^HTTP=(\d+|unknown)$/m.exec(result.stdout)?.[1];
 
     if (result.stdout.includes('PID=dead')) {
       return { isHealthy: false, reason: `远端 dsh 进程（pid ${pid}）已退出` };
     }
     if (result.stdout.includes('PORT=down')) {
       return { isHealthy: false, reason: `远端端口 ${port} 已停止监听` };
+    }
+    // HTTP=000：连接建立不了——进程在、端口在，但 webserver 不应答。
+    // 这正是 pid+端口判据探测不到的故障层（进程僵死、事件循环卡住）
+    if (httpCode === '000') {
+      return { isHealthy: false, reason: `远端 dsh 无 HTTP 响应（127.0.0.1:${port} 连不上 webserver）` };
     }
     return { isHealthy: true };
   } catch (error) {
@@ -101,12 +133,12 @@ export class Heartbeat {
 
   /**
    * @param transport - 传输实例的取值函数；重连后传输会被替换，所以取实时值
-   * @param target - 检查目标的取值函数
+   * @param target - 检查目标的取值函数（含 HTTP 探活用的会话令牌）
    * @param onResult - 每次心跳的结果回调
    */
   constructor(
     private readonly transport: () => RemoteTransport,
-    private readonly target: () => { pid: number; port: number },
+    private readonly target: () => { pid: number; port: number; token?: string },
     private readonly onResult: (result: HeartbeatResult) => void,
   ) {}
 

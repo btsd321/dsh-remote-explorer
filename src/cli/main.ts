@@ -18,11 +18,12 @@ import { defaultVersions, runProvision } from './commands/provision.js';
 import { runConnect } from './commands/connect.js';
 import { runStatus } from './commands/status.js';
 import { runKill } from './commands/kill.js';
+import { runClean } from './commands/clean.js';
 import { RemoteError, toErrorMessage } from '../util/errors.js';
 import { bold, cyan, dim, printErr, println, red, yellow } from './output.js';
 
 /** 支持的子命令 */
-const COMMANDS = ['list', 'doctor', 'provision', 'connect', 'status', 'kill', 'help'] as const;
+const COMMANDS = ['list', 'doctor', 'provision', 'connect', 'status', 'kill', 'clean', 'help'] as const;
 
 /** 子命令名 */
 type CommandName = (typeof COMMANDS)[number];
@@ -55,6 +56,7 @@ function printHelp(): void {
   println(`  ${cyan('connect')} <别名>            主命令：引导 → 起远端 → 建隧道 → 开浏览器（常驻）`);
   println(`  ${cyan('status')}                    列出本机正在维持的所有会话`);
   println(`  ${cyan('kill')} <别名>               停止远端 dsh 进程`);
+  println(`  ${cyan('clean')} <别名>              清理远端陈旧资源（旧版本、死会话目录）`);
   println(`  ${cyan('list')}                      列出 ~/.ssh/config 中的主机`);
   println(`  ${cyan('doctor')} <别名>             诊断某台主机的引导条件`);
   println(`  ${cyan('provision')} <别名>          只做引导，不起服务（幂等）`);
@@ -72,6 +74,9 @@ function printHelp(): void {
   println(bold('kill 参数'));
   println('  --cwd <远端路径>          指定要停止的会话');
   println('  --all                     停止该主机上的全部会话（含孤儿进程）');
+  println();
+  println(bold('clean 参数'));
+  println('  --keep <数量>             每个类别保留的最新版本数（默认 1）');
   println();
   println(bold('doctor / provision 参数'));
   println('  --refresh-mirrors         强制重测镜像延迟，忽略缓存');
@@ -133,6 +138,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       'no-open': { type: 'boolean', default: false },
       'force-restart': { type: 'boolean', default: false },
       all: { type: 'boolean', default: false },
+      keep: { type: 'string' },
     },
     allowPositionals: true,
     strict: true,
@@ -176,6 +182,16 @@ export async function main(argv: readonly string[]): Promise<number> {
 
   if (command === 'kill') {
     return runKill({ alias, cwd, all: values.all === true });
+  }
+
+  if (command === 'clean') {
+    // 未指定 --keep 时用默认值 1
+    const keep = values.keep === undefined ? 1 : Number.parseInt(values.keep, 10);
+    if (!Number.isInteger(keep) || keep < 0) {
+      printErr(red(`--keep 需要 0 或正整数，实际为 ${values.keep}`));
+      return 64;
+    }
+    return runClean({ alias, keep });
   }
 
   if (command === 'connect') {

@@ -412,7 +412,8 @@ export class RemoteSession {
   private startHeartbeat(): void {
     this.heartbeat = new Heartbeat(
       () => this.transport,
-      () => ({ pid: this.process.pid, port: this.process.port }),
+      // 令牌随取随用：重连可能换进程（新令牌），取实时值
+      () => ({ pid: this.process.pid, port: this.process.port, token: this.process.token }),
       (result) => this.onHeartbeat(result),
     );
     this.heartbeat.start();

@@ -43,6 +43,9 @@ npx tsx src/cli/bin.ts provision OrangePI --node-version v24.20.0
 DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect OrangePI --cwd //home/xlli67 --local-port 18950 --no-open
 npx tsx src/cli/bin.ts status
 npx tsx src/cli/bin.ts kill OrangePI --all
+
+# 清理远端陈旧资源（改动 clean.ts 后用它验证）
+npx tsx src/cli/bin.ts clean OrangePI
 ```
 
 **在 Git Bash 里传远端路径必须用双斜杠**（`--cwd //home/xxx`）或先设
@@ -71,7 +74,7 @@ npx tsx src/cli/bin.ts kill OrangePI --all
             util/         shell 转义、错误类型、会话 id
 ```
 
-另有第二个交付物 `dsh-remote-guard`——装在**远端**的 Cordis 插件，只负责补一个免认证探活端点（P5）。
+原计划的第二个交付物 `dsh-remote-guard`（远端插件）**最终不需要**：认证 dsh 已内置（P0 发现），`baseURL` 由 profile patch 解决（P4），免认证探活由心跳的 HTTP 层解决（P5，带会话令牌 curl 根路径，任何 HTTP 状态码即证明 webserver 在服务）。详见 PLAN.md 的 P5 节。
 
 ## 必须知道的几件事
 
@@ -109,6 +112,8 @@ npx tsx src/cli/bin.ts kill OrangePI --all
 - 代理实例（本机回环 http.Server）与正向监听器一样**跨重连存活**，重连只重挂 `forwardIn`。多视图共享会话时反向端口先到先得，挂不上是警告不是错误。
 
 **8e. 本机 Node v24.14.0 的 fetch 拒绝一切流式请求体。** ReadableStream / 异步生成器 / `new Request` 实测全抛 `expected non-null body source`（字符串与 Buffer 正常）。所以代理的请求体整体缓冲后转发；流式要紧的响应侧（SSE）保持 pipe 直传。另：ssh2 的通道**不能**直接 `emit('connection')` 喂给 http.Server（缺 `setTimeout` 等 Socket 接口），代理走本机回环 TCP 对接。
+
+**8f. 心跳是三层判据，一条命令拿全。** 进程存活（`kill -0`）+ 端口监听（`ss`/`netstat`）+ **HTTP 应用级**（带会话令牌 curl 根路径，任何非 000 状态码即健康）——第三层能发现"进程在、端口在、但 webserver 僵死"的故障，前两层探测不到。改 [src/session/heartbeat.ts](src/session/heartbeat.ts) 时保持单命令形态：每 5 秒一次心跳，拆成三次 exec 会在高延迟链路上占配额。
 
 **9. 远端 Node 必须用 v24 系，且装完要做稳定性自检。** v22.23.2 在 aarch64 上起进程崩溃率 35%（V8 初始化 isolate 随机失败，报 OOM 但内存充足）。`npm install` 要起几十次 node，必然失败，且报错会误导到最后一个失败的包。[src/provision/probe.ts](src/provision/probe.ts) 的 `checkNodeStability()` 强制自检，容错次数为 0。
 

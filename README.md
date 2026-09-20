@@ -25,7 +25,7 @@
 | P2 | 引导闭环：装 Node 与 dsh、生成会话 profile | ✅ `provision` 可用 |
 | P3 | 会话闭环：隧道、心跳重连、多主机并行 | ✅ `connect` / `status` / `kill` 可用 |
 | P4 | 凭据闭环：反向隧道代理 | ✅ key 全程不出本机（已实测链路） |
-| P5 | `dsh-remote-guard` 远端插件与打磨 | 未开始 |
+| P5 | 打磨：三层心跳探活、`clean` 命令 | ✅ 完成（guard 由更轻机制替代，见 PLAN P5） |
 
 ## 安装与使用
 
@@ -50,6 +50,10 @@ npx tsx src/cli/bin.ts status
 
 # 停止远端 dsh
 npx tsx src/cli/bin.ts kill OrangePI --all
+
+# 清理远端陈旧资源（旧版本、死会话目录；运行中会话使用的版本受保护）
+npx tsx src/cli/bin.ts clean OrangePI
+npx tsx src/cli/bin.ts clean OrangePI --keep 2   # 每个类别保留 2 个版本
 
 # 只做引导，不起服务（幂等，重复执行会复用已装版本）
 npx tsx src/cli/bin.ts provision OrangePI --cwd //home/xlli67
@@ -138,7 +142,7 @@ npx tsx src/cli/bin.ts list --ssh-config /path/to/config
 | [src/tunnel/forward-local.ts](src/tunnel/forward-local.ts) | 正向转发，**监听器跨重连存活** |
 | [src/session/remote-process.ts](src/session/remote-process.ts) | 远端 dsh 的 detach 启动、令牌捕获、安全停止 |
 | [src/session/lifecycle-state.ts](src/session/lifecycle-state.ts) | 会话状态机，纯函数 |
-| [src/session/heartbeat.ts](src/session/heartbeat.ts) | 心跳探活，一次一条命令 |
+| [src/session/heartbeat.ts](src/session/heartbeat.ts) | 心跳探活：进程 + 端口 + HTTP 应用级，一条命令 |
 | [src/session/reconnect.ts](src/session/reconnect.ts) | 有限次指数退避 |
 | [src/session/session-registry.ts](src/session/session-registry.ts) | 本机会话表，锁文件 + 原子替换 |
 | [src/session/session-manager.ts](src/session/session-manager.ts) | 会话编排：打开、凭据接线、重连、关闭 |
