@@ -125,6 +125,14 @@ npx tsx src/cli/bin.ts clean OrangePI
 
 **10. 镜像测速在远端执行，必须带 `-L` 并校验响应内容。** 测的是远端到镜像的连通性，本机测没意义。阿里源对 `index.json` 返回 302，只测时间会把重定向页当成成功并选出错误的"最快"镜像。腾讯与华为镜像已从候选移除（DNS 解析失败）。
 
+**11. 远端落盘隔离契约（对标 VS Code 的 `~/.vscode-server` 单根自治模型）。** 本工具在远端的一切落盘都在 `~/.dsh-remote/` 内；远端 `~/.dsh`（官方 dsh 的家）、`~/.npm`（远端 npm 使用者共享的缓存）**从不被本工具写入**。完全卸载 = `rm -rf ~/.dsh-remote`。为此做的三件事，改相关代码时别破坏：
+
+- 装机的 npm 命令带 `npm_config_cache=~/.dsh-remote/npm-cache`（[src/provision/dsh-installer.ts](src/provision/dsh-installer.ts) 的 `npmEnv`）——npm 的缓存与 `_logs` 一并收进我们的根
+- runner 脚本给远端 dsh 设 `DSH_AGENTS_HOME=<会话目录>/agents`——dsh 的 skill-filesystem 默认会读机器全局 `~/.agents`，不设就加载了别人的 skills
+- 每会话 `DSH_HOME` 本身就是最强的隔离：dsh 契约是「所有用户数据在一个根」，settings/凭据/附件/profiles 全随之走（源码逐一核实过；唯一例外是 `~/.agents`，已用 env 堵上）
+
+已知低风险共享：远端 pnpm store（`~/.local/share/pnpm`）——仅当有人主动在远端跑 `dsh plugin` 才触及，内容寻址并发安全，文档说明即可，不做隔离。`doctor` 的「隔离检查」段会报告占用与官方 `~/.dsh` 的存在性。
+
 ## 已知问题
 
 - **`npm run typecheck` 跑不起来。** `node_modules` 里的 typescript 版本缺 win32 平台包。用 `npx -y -p typescript@5.7.3 tsc --noEmit` 替代。

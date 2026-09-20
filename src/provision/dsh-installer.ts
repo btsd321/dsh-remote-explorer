@@ -7,13 +7,18 @@
  * （`--upload-fallback`，默认关闭），因为完全离线的远端是真实存在的场景——
  * Zed 与 VS Code 都保留了这条回退路径。
  *
- * 两个必须显式处理的点（P0 实测）：
+ * 三个必须显式处理的点（1、2 为 P0 实测，3 为隔离要求）：
  *
  * 1. **版本号必须显式指定。** `@deepseek-ai/dsh` 的 dist-tags 是
  *    `latest: 0.1.5-rc.2`、`alpha: 0.1.6-alpha.2`——装 `latest` 会拿到比
  *    预期更旧的版本，不能依赖默认标签。
  * 2. **PATH 必须含 node 的 bin 目录。** npm 自身的 shebang 是
  *    `#!/usr/bin/env node`，不加 PATH 直接报 `env: 'node': No such file or directory`。
+ * 3. **npm 缓存必须收进本工具的根目录。** 不设 `npm_config_cache` 时 npm
+ *    写远端用户级 `~/.npm`（缓存与 `_logs` 都在里面）——那是远端其他
+ *    npm 使用者的共享目录。隔离契约是「本工具在远端的一切落盘都在
+ *    `~/.dsh-remote/` 内、完全不触碰远端 `~/.dsh` 与 `~/.npm`」，
+ *    对标 VS Code 的 `~/.vscode-server` 单根自治模型。
  */
 
 import { RemoteError } from '../util/errors.js';
@@ -98,6 +103,7 @@ export async function ensureDsh(
   try {
     await transport.exec(install, {
       pathPrefix: nodeBinDir,
+      env: npmEnv(paths),
       timeoutMs: INSTALL_TIMEOUT_MS,
       ...(signal ? { signal } : {}),
     });
@@ -142,6 +148,7 @@ export async function ensureDsh(
  */
 export async function resolveDshVersion(
   transport: RemoteTransport,
+  paths: RemotePaths,
   options: {
     /** dist-tag，如 `latest` 或 `alpha` */
     tag: string;
@@ -158,7 +165,12 @@ export async function resolveDshVersion(
     transport,
     `npm view ${quote(`@deepseek-ai/dsh@${tag}`)} version --registry=${quote(registryUrl)} 2>/dev/null || true`,
     nodeBinDir,
-    { allowNonZeroExit: true, timeoutMs: 120_000, ...(signal ? { signal } : {}) },
+    {
+      allowNonZeroExit: true,
+      timeoutMs: 120_000,
+      env: npmEnv(paths),
+      ...(signal ? { signal } : {}),
+    },
   );
 
   // npm view 可能输出多行（同一 tag 命中多个版本时），取最后一行非空值
@@ -192,6 +204,20 @@ async function runWithPath(
   options: Parameters<RemoteTransport['exec']>[1],
 ): ReturnType<RemoteTransport['exec']> {
   return transport.exec(command, { ...options, pathPrefix: nodeBinDir });
+}
+
+/**
+ * npm 的隔离环境变量：缓存收进本工具的根目录。
+ *
+ * 不设置时 npm 写远端用户级 `~/.npm`（缓存与 `_logs` 都在其中），
+ * 那是与远端其他 npm 使用者共享的目录——隔离契约要求装机不碰它。
+ * `npm_config_cache` 对 install 与 view 一视同仁。
+ *
+ * @param paths - 远端路径集合
+ * @returns 环境变量
+ */
+function npmEnv(paths: RemotePaths): Record<string, string> {
+  return { npm_config_cache: paths.npmCache };
 }
 
 /**

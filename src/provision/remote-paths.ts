@@ -41,6 +41,13 @@ export interface RemotePaths {
   readonly base: string;
   /** 镜像测速缓存文件 */
   readonly mirrorCache: string;
+  /**
+   * npm 缓存目录。
+   *
+   * 隔离要求：装机的 npm 缓存与 `_logs` 收在此处，不落远端共享的 `~/.npm`
+   * （那是远端其他 npm 使用者的目录）。
+   */
+  readonly npmCache: string;
   /** 临时目录根 */
   readonly tmpRoot: string;
 
@@ -176,6 +183,7 @@ export function createRemotePaths(homeDir: string): RemotePaths {
   return {
     base,
     mirrorCache: `${base}/mirror-cache.json`,
+    npmCache: `${base}/npm-cache`,
     tmpRoot: `${base}/tmp`,
 
     nodeDir: (version) => `${base}/node/${version}`,

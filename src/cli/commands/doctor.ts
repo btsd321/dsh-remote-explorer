@@ -1,7 +1,7 @@
 /**
  * @file doctor 命令
  * @description 诊断某台主机的引导条件：连接、平台、基础命令、镜像延迟、
- *              已装运行时、磁盘余量、Node 稳定性、通道配额。
+ *              已装运行时、磁盘余量、Node 稳定性、通道配额、落盘隔离。
  *
  * 这个命令不是锦上添花——远程开发的故障大多出在环境而非代码，
  * VS Code 的故障排查文档也把"先确认环境"列为首要步骤。把诊断做成一等命令，
@@ -12,14 +12,16 @@
 
 import { assertConnectable, resolveHost } from '../../hosts/ssh-config-parser.js';
 import { SshTransport } from '../../transport/ssh-transport.js';
+import type { RemoteTransport } from '../../transport/types.js';
 import {
   checkNodeStability,
   probeRemote,
   type ProbeResult,
 } from '../../provision/probe.js';
 import { selectMirror, type MirrorProbeResult } from '../../provision/mirror-selector.js';
-import { createRemotePaths } from '../../provision/remote-paths.js';
+import { createRemotePaths, type RemotePaths } from '../../provision/remote-paths.js';
 import { toErrorMessage } from '../../util/errors.js';
+import { quote } from '../../util/shell-quote.js';
 import { bold, cyan, dim, green, println, printTable, red, yellow, ProgressReporter } from '../output.js';
 
 /** doctor 命令选项 */
@@ -220,6 +222,9 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
       detail: `管理类已用 ${usage.admin}，转发类已用 ${usage.forward}，无等待`,
     });
 
+    // 7. 隔离检查：本工具在远端的占用清单 + 确认不触碰官方 dsh 的家
+    findings.push(await checkIsolation(transport, paths));
+
     println();
     report(findings);
     println();
@@ -229,6 +234,40 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
   } finally {
     await transport.dispose();
   }
+}
+
+/**
+ * 隔离检查：本工具在远端的落盘清单，以及对官方 dsh 家目录的确认。
+ *
+ * 隔离契约（对标 VS Code 的 ~/.vscode-server 单根自治模型）：
+ * 本工具在远端的一切落盘都在 `~/.dsh-remote/` 内；远端 `~/.dsh`（官方 dsh
+ * 的家）与 `~/.npm` 从不被本工具写入。检测 `~/.dsh` 是否存在只是给用户
+ * 提示「这台机器上有别人在用官方 dsh」——存在与否都不改变本工具的行为。
+ *
+ * @param transport - 已连接的传输
+ * @param paths - 远端路径集合
+ * @returns 诊断条目
+ */
+async function checkIsolation(
+  transport: RemoteTransport,
+  paths: RemotePaths,
+): Promise<Finding> {
+  // 一条命令拿齐：本工具占用 + 官方 dsh 家的存在性
+  const script = [
+    `printf 'FOOTPRINT=%s\\n' "$(du -sh ${quote(paths.base)} 2>/dev/null | cut -f1)"`,
+    `[ -d "\$HOME/.dsh" ] && printf 'OFFICIAL=present\\n' || printf 'OFFICIAL=absent\\n'`,
+  ].join('\n');
+  const result = await transport.exec(script, { allowNonZeroExit: true });
+  const footprint = /^FOOTPRINT=(.+)$/m.exec(result.stdout)?.[1]?.trim() ?? '未知';
+  const official = result.stdout.includes('OFFICIAL=present') ? 'present' : 'absent';
+
+  const detail = `占用 ${footprint}（全部在 ${paths.base} 内）；`
+    + (official === 'present'
+      ? '远端 ~/.dsh 存在（他人/官方在用，本工具从不写入它）'
+      : '远端 ~/.dsh 不存在（本工具也从不写入它）')
+    + `；完全卸载 = rm -rf ${paths.base}`;
+
+  return { item: '隔离检查', verdict: 'ok', detail };
 }
 
 /**

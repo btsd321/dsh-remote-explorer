@@ -92,6 +92,19 @@ DeepSeek 原生通道用 `/anthropic`，`~/.dsh/settings.yaml` 里 `llm-pi-ai.pr
 - 已知残余风险：远端同权限用户可借你的通道消耗额度（拿不到 key 本身）。多用户
   远端主机上请知悉，详见 [PLAN.md](PLAN.md) 4.5 节。
 
+## 远端落盘隔离
+
+对标 VS Code `~/.vscode-server` 的单根自治模型：本工具在远端的一切落盘都在
+`~/.dsh-remote/` 内（安装、每会话状态、npm 缓存、临时文件），**从不写入**
+远端 `~/.dsh`（官方 dsh 的家）与 `~/.npm`（远端 npm 使用者共享的缓存）。
+远端 dsh 的 skill 目录也重定向到会话内（`DSH_AGENTS_HOME`），不读机器全局
+的 `~/.agents`。
+
+- 同机跑官方 dsh 的其他人不受任何影响；`doctor` 的「隔离检查」段会报告占用
+- 完全卸载 = `rm -rf ~/.dsh-remote`，一个命令走干净
+- 已知低风险共享：远端 pnpm store——仅当有人主动在远端跑 `dsh plugin` 才触及，
+  内容寻址并发安全
+
 **在 Git Bash 里写远端路径要用双斜杠**（`--cwd //home/xxx`）或先设
 `MSYS_NO_PATHCONV=1`。MSYS 会把 `/home/xxx` 改写成 `D:/SoftWare/Git/home/xxx`，
 这发生在参数到达程序之前，程序只能识别并拒绝。

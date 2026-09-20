@@ -112,6 +112,11 @@ export async function startRemoteDsh(
   // 那个 pid 可能已被系统复用给别的进程，据此 kill 极其危险。
   const envAssignments = [
     `DSH_HOME=${quote(options.dshHome)}`,
+    // skill 目录随会话隔离：dsh 的 skill-filesystem 默认读机器全局 ~/.agents
+    // （DSH_AGENTS_HOME 可覆盖）。不设的话本会话会加载远端其他使用者的
+    // skills——不破坏别人，但读到了别人的东西，违反隔离契约。
+    // 指向会话内的目录：不存在即空源，bundled skills 照常
+    `DSH_AGENTS_HOME=${quote(`${paths.sessionHome(sessionId)}/agents`)}`,
     ...Object.entries(options.extraEnv ?? {}).map(([key, value]) => `${key}=${quote(value)}`),
     // PATH 特殊处理："$PATH" 必须留在引号外由 shell 展开，见 shell-quote 的说明
     `PATH=${quote(options.nodeBinDir)}:"$PATH"`,

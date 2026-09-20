@@ -138,7 +138,7 @@ export async function provision(
   let dshVersion = requested;
   if (TAG_PATTERN.test(requested)) {
     options.onStageStart?.(`解析 dsh ${requested} 标签`);
-    dshVersion = await resolveDshVersion(transport, {
+    dshVersion = await resolveDshVersion(transport, paths, {
       tag: requested,
       registryUrl: npmSelection.selected.baseUrl,
       nodeBinDir: node.binDir,

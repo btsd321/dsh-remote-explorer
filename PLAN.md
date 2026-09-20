@@ -34,7 +34,7 @@ dsh 已发布到 npm（`@deepseek-ai/dsh`，`publishConfig.access: public`），
 - 原生模块变真的——远端 `npm i` 会拉到 `@deepseek-ai/node-addon-system-linux-arm64` 的**真实预编译 `.node` 二进制**，不再是 no-op 桩
   （**P0 修正**：真实加载已验证，`flock` 可用；但 landlock 能否生效取决于**远端内核**是否启用该 LSM，与架构无关。
   OrangePI 的 5.10.0+ 内核 LSM 列表为 `capability,yama,kbox_capability`，`probe()` 返回 `unusable`。
-  所以准确说法是"桩被消除、flock 可用、landlock 取决于内核"，而非"沙箱一定在工作"。详见第十一章）
+  所以准确说法是"桩被消除、flock 可用、landlock 取决于内核"，而非"沙箱一定在工作"。详见第十二章）
 - 每次 `stat` 不再是一次 SSH 往返，而是本地 syscall
 - Windows 客户端不再是难题——本机只剩浏览器
 
@@ -47,13 +47,14 @@ dsh 已发布到 npm（`@deepseek-ai/dsh`，`publishConfig.access: public`），
 | 1 | 本机形态 | **薄启动器**（JetBrains Gateway 式）。本机不跑 dsh |
 | 2 | LLM 凭据 | **反向隧道代理**。key 只留本机，远端 `baseURL` 指向隧道 |
 | 3 | 远端安装来源 | **远端自装**。装前测软件源连通性，自适应选最快镜像 |
-| 4 | 现有代码 | **绿地重写**，复用清单见第六章 |
+| 4 | 现有代码 | **绿地重写**，复用清单见第八章 |
 | 5 | `dsh-remote-guard` | **要做**。P1 起预留接口边界，实现放 P5。**P0 后已重新界定职责**，见 4.6 |
 | 6 | 远端 profile 管理 | 按成熟项目做：**共享版本化安装 + 每会话独立 `DSH_HOME`**。P0 已实测成立 |
 | 7 | 首次安装耗时 | **可接受**，不为此转预构建 tarball。P0 实测：Node 7s + dsh 60s |
 | 8 | 远端产物校验 | **版本入名，不做 hash 校验**（Zed 模式） |
-| 9 | 多主机并行 | **要做**，设计见第五章 |
+| 9 | 多主机并行 | **要做**，设计见第六章 |
 | 10 | 远端 Node 版本 | **锁定 v24 系**。P0 实测 v22 在 aarch64 上崩溃率 35%，见 11.2 |
+| 11 | 远端落盘隔离 | **单根自治**（对标 VS Code `~/.vscode-server`）：一切落盘在 `~/.dsh-remote/`，从不写入远端 `~/.dsh` 与 `~/.npm` |
 
 ### 2.1 决策 1 与 2 的耦合（必须先接受）
 
@@ -361,7 +362,7 @@ Connecting → Connected → HeartbeatMissed(n) → Reconnecting
 ```
 session/
   session-manager.ts   单会话编排：引导 → 起远端 → 建隧道 → 开浏览器 → 守护
-  session-registry.ts  多会话簿记（决策 9，见第五章）
+  session-registry.ts  多会话簿记（决策 9，见第六章）
   lifecycle-state.ts   状态机（纯函数状态转移，便于单测）
   heartbeat.ts         心跳
   reconnect.ts         指数退避重连
@@ -447,7 +448,36 @@ credential/
 
 ---
 
-## 五、多主机并行（决策 9）
+## 五、远端落盘隔离（决策 11）
+
+同机跑官方 dsh 的其他人不能被影响。调研结论与实现：
+
+| 项目 | 远端落盘 | 隔离程度 |
+|---|---|---|
+| VS Code | 单根 `~/.vscode-server`（server/扩展/数据/日志全在内），官方明言与远端已有安装互不影响；卸载 = `rm -rf` 该根 | 最干净，**照抄的模型** |
+| Zed | 二进制在 `~/.zed_server`，状态/配置走 XDG 目录 | 弱于 VS Code，远端本地装过 Zed 会共享 |
+| JetBrains | `~/.cache/JetBrains` 下专属目录 | 单根自治 |
+
+dsh 自身契约是「所有用户数据在一个根」（`DSH_HOME` 可整体搬移）——源码逐一
+核实 settings/credentials/attachments/profiles/anonymous-id 全随之走，唯一例外
+是 skill-filesystem 默认读 `~/.agents`（`DSH_AGENTS_HOME` 可覆盖）。
+
+实现（对照审计发现的两处缺口 + doctor 可见性）：
+
+| 落盘 | 状态 |
+|---|---|
+| Node/dsh 安装、会话状态（= `DSH_HOME`）、临时文件、镜像缓存 | ✅ 原本就在 `~/.dsh-remote/` 内 |
+| npm 缓存（含 `_logs`） | ✅ 收进 `~/.dsh-remote/npm-cache`（装机命令带 `npm_config_cache`） |
+| skill 目录 | ✅ runner 设 `DSH_AGENTS_HOME=<会话目录>/agents`，不读机器全局 `~/.agents` |
+| pnpm store | ⚠️ 有意不隔离：仅用户主动跑 `dsh plugin` 才触及，内容寻址并发安全 |
+| doctor | 新增「隔离检查」段：占用清单 + 官方 `~/.dsh` 存在性 + 卸载指引 |
+
+实测：`npm config get cache` 认到我们的根、`npm view` 后 `_cacache` 落我们的根
+而 `~/.npm` 零新写入；远端进程环境确认 `DSH_AGENTS_HOME` 指向会话内目录。
+
+---
+
+## 六、多主机并行（决策 9）
 
 同时连多台主机，以及对同一台主机开多个会话，两种情形都要支持。
 
@@ -473,7 +503,7 @@ credential/
 
 ---
 
-## 六、CLI 表面
+## 七、CLI 表面
 
 ```
 dsh-remote list                        列出 ~/.ssh/config 中的主机
@@ -489,7 +519,7 @@ dsh-remote clean <别名> [--keep-latest] 清理旧版本目录与陈旧会话�
 
 ---
 
-## 七、现有代码处置
+## 八、现有代码处置
 
 ### 7.1 复用清单（显式）
 
@@ -536,11 +566,11 @@ dsh-remote clean <别名> [--keep-latest] 清理旧版本目录与陈旧会话�
 
 ---
 
-## 八、里程碑
+## 九、里程碑
 
 ### P0 — 可行性验证 ✅ 已完成（2026-09-20，OrangePI）
 
-五步全部通过，门禁放行。详细实测数据与结论见第十一章。
+五步全部通过，门禁放行。详细实测数据与结论见第十二章。
 
 | # | 验证项 | 结果 |
 |---|---|---|
@@ -669,7 +699,7 @@ koffi 这类跨平台包会构建出错误产物或直接失败）；`npm pack` 
 
 ---
 
-## 九、风险
+## 十、风险
 
 | 风险 | 说明 | 缓解 |
 |---|---|---|
@@ -690,7 +720,7 @@ koffi 这类跨平台包会构建出错误产物或直接失败）；`npm pack` 
 
 ---
 
-## 十、调研来源
+## 十一、调研来源
 
 源码级（可信度高）：
 
@@ -709,7 +739,7 @@ koffi 这类跨平台包会构建出错误产物或直接失败）；`npm pack` 
 
 ---
 
-## 十一、P0 实测记录（2026-09-20）
+## 十二、P0 实测记录（2026-09-20）
 
 环境：客户端 Windows 11；远端 OrangePI（`192.168.1.82`，aarch64，3 核，15G 内存，Ubuntu glibc 2.35，内核 5.10.0+）。
 
