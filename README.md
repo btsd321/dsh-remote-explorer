@@ -63,7 +63,8 @@ npx tsx src/cli/bin.ts list --ssh-config /path/to/config
 ```
 
 `connect` 之后本进程必须保持运行——正向隧道的本机监听器与 LLM 代理都活在其中。
-远端 dsh 是 detach 的，CLI 退出后仍在跑，下次 `connect` 会探到并复用；要真正停掉用 `kill`。
+**Ctrl-C 会连远端 dsh 一起停止**（断开即干净）；要断开但保留远端进程供下次
+复用，加 `--keep-remote`。会话因故障进入终结态时远端进程也会保留。
 
 ## 凭据如何工作
 

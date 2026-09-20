@@ -34,6 +34,8 @@ export interface ConnectCommandOptions {
   noOpen: boolean;
   /** 强制重启远端 dsh */
   forceRestart: boolean;
+  /** Ctrl-C 后保留远端 dsh（默认连它一起停止） */
+  keepRemote: boolean;
   /** 强制重测镜像 */
   refreshMirrors: boolean;
 }
@@ -113,12 +115,16 @@ export async function runConnect(options: ConnectCommandOptions): Promise<number
   }
 
   println(green('会话已就绪'));
-  println(dim('本进程需保持运行以维持隧道；按 Ctrl-C 断开（远端 dsh 会继续运行）'));
-  println(dim('用 dsh-remote kill <别名> 停止远端 dsh'));
+  if (options.keepRemote) {
+    println(dim('本进程需保持运行以维持隧道；按 Ctrl-C 断开（远端 dsh 保留复用）'));
+  } else {
+    println(dim('本进程需保持运行以维持隧道；按 Ctrl-C 断开并停止远端 dsh'));
+    println(dim('要断开但保留远端 dsh：加 --keep-remote'));
+  }
   println();
 
   // 常驻直到收到中断信号
-  await waitForInterrupt(session, onStateChange);
+  await waitForInterrupt(session, options.keepRemote, onStateChange);
   return 0;
 }
 
@@ -126,12 +132,17 @@ export async function runConnect(options: ConnectCommandOptions): Promise<number
  * 等待中断信号或会话终结。
  *
  * @param session - 会话
+ * @param keepRemote - Ctrl-C 后保留远端 dsh（--keep-remote；默认停止它）
  * @param onStateChange - 状态回调（用于终结态判定）
  */
 async function waitForInterrupt(
   session: RemoteSession,
+  keepRemote: boolean,
   onStateChange: (state: SessionState, description: string) => void,
 ): Promise<void> {
+  /** 是否因用户中断而退出——决定远端 dsh 的去留 */
+  let interruptedByUser = false;
+
   await new Promise<void>((resolve) => {
     let settled = false;
     const finish = (): void => {
@@ -144,8 +155,9 @@ async function waitForInterrupt(
     };
 
     const onSigint = (): void => {
+      interruptedByUser = true;
       println();
-      println(dim('正在断开…'));
+      println(dim(keepRemote ? '正在断开…' : '正在断开并停止远端 dsh…'));
       finish();
     };
     process.once('SIGINT', onSigint);
@@ -165,8 +177,18 @@ async function waitForInterrupt(
     watchdog.unref();
   });
 
-  await session.close();
-  println(dim('已断开。远端 dsh 仍在运行，下次 connect 会自动复用'));
+  // Ctrl-C：默认连远端 dsh 一起停（用户要求的语义——断开即干净）。
+  // 终结态退出则保留远端：那是故障出口不是用户意图，远端进程多半无恙，
+  // 留着可复用。--keep-remote 恢复旧的 detach 语义
+  const stopRemote = interruptedByUser && !keepRemote;
+  await session.close({ stopRemote });
+  if (stopRemote) {
+    println(dim('已断开，远端 dsh 已停止'));
+  } else if (interruptedByUser) {
+    println(dim('已断开。远端 dsh 仍在运行，下次 connect 会自动复用'));
+  } else {
+    println(dim('已断开。远端 dsh 保留（可用 connect 复用或 kill 停止）'));
+  }
 }
 
 /**

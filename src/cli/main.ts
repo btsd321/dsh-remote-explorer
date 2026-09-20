@@ -67,6 +67,7 @@ function printHelp(): void {
   println('  --local-port <端口>       本机监听端口（默认由系统分配）');
   println('  --no-open                 不自动打开浏览器');
   println('  --force-restart           即便远端已有可用会话也重新启动');
+  println('  --keep-remote             Ctrl-C 断开时保留远端 dsh（默认连它一起停止）');
   println(`  --node-version <版本>     Node 版本（默认 ${versions.node}）`);
   println(`  --dsh-version <版本>      dsh 版本或 dist-tag（默认 ${versions.dsh}）`);
   println('  --refresh-mirrors         强制重测镜像延迟，忽略缓存');
@@ -137,6 +138,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       'local-port': { type: 'string' },
       'no-open': { type: 'boolean', default: false },
       'force-restart': { type: 'boolean', default: false },
+      'keep-remote': { type: 'boolean', default: false },
       all: { type: 'boolean', default: false },
       keep: { type: 'string' },
     },
@@ -208,6 +210,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       ...(values['dsh-version'] ? { dshVersion: values['dsh-version'] } : {}),
       noOpen: values['no-open'] === true,
       forceRestart: values['force-restart'] === true,
+      keepRemote: values['keep-remote'] === true,
       refreshMirrors,
     });
   }

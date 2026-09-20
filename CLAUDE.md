@@ -39,7 +39,9 @@ npx tsx src/cli/bin.ts provision OrangePI --cwd //home/xlli67
 npx tsx src/cli/bin.ts provision OrangePI --node-version v24.20.0
 
 # 完整会话（常驻进程；改动 session/、tunnel/ 或 credential/ 后用它验证）
-# 凭据路径验证：环境里带 key 启动，从远端经代理打一次上游（见 PLAN.md P4 记录）
+# Ctrl-C 默认连远端 dsh 一起停；--keep-remote 保留远端进程。行为验证脚本：
+# npx tsx tests/stop-remote-on-close.ts OrangePI（Windows 收不到合成 SIGINT，
+# 脚本直接走 Ctrl-C 处理器的同一条 close 路径）
 DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect OrangePI --cwd //home/xlli67 --local-port 18950 --no-open
 npx tsx src/cli/bin.ts status
 npx tsx src/cli/bin.ts kill OrangePI --all
