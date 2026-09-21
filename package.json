@@ -4,6 +4,23 @@
   "description": "远程开发启动器：把 dsh 装到远程主机并在本机浏览器中使用，凭据不离开本机",
   "type": "module",
   "license": "Apache-2.0",
+  "homepage": "https://github.com/btsd321/dsh-remote-explorer#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/btsd321/dsh-remote-explorer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/btsd321/dsh-remote-explorer/issues"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "remote",
+    "ssh",
+    "tunnel",
+    "remote-development"
+  ],
   "bin": {
     "dsh-remote-explorer": "bin/dsh-remote-explorer.mjs"
   },
