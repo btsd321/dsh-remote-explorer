@@ -54,7 +54,7 @@ dsh 已发布到 npm（`@deepseek-ai/dsh`，`publishConfig.access: public`），
 | 8 | 远端产物校验 | **版本入名，不做 hash 校验**（Zed 模式） |
 | 9 | 多主机并行 | **要做**，设计见第六章 |
 | 10 | 远端 Node 版本 | **锁定 v24 系**。P0 实测 v22 在 aarch64 上崩溃率 35%，见 11.2 |
-| 11 | 远端落盘隔离 | **单根自治**（对标 VS Code `~/.vscode-server`）：一切落盘在 `~/.dsh-remote/`，从不写入远端 `~/.dsh` 与 `~/.npm` |
+| 11 | 远端落盘隔离 | **单根自治**（对标 VS Code `~/.vscode-server`）：一切落盘在 `~/.dsh-remote-explorer/btsd321/`，从不写入远端 `~/.dsh` 与 `~/.npm` |
 
 ### 2.1 决策 1 与 2 的耦合（必须先接受）
 
@@ -79,7 +79,7 @@ dsh 已发布到 npm（`@deepseek-ai/dsh`，`publishConfig.access: public`），
                 │ HTTP / WebSocket              │ │ 127.0.0.1:<远端端口>      │ │
                 │ + 会话令牌                     │ │ + dsh-remote-guard 认证   │ │
 ┌───────────────▼────────────────┐              │ └──────────────────────────┘ │
-│ dsh-remote CLI（常驻）          │  正向转发     │  ├ session / agent           │
+│ dsh-remote-explorer CLI（常驻）          │  正向转发     │  ├ session / agent           │
 │ ├ 传输层 (ssh2)  ══════════════╪══════════════▶│  ├ fs / subprocess           │
 │ ├ 引导层（装 Node + dsh）        │              │  ├ terminal / lsp            │
 │ ├ 隧道层                        │              │  └ sandbox（landlock 可用）   │
@@ -163,7 +163,7 @@ provision/
 远端布局：
 
 ```
-~/.dsh-remote/
+~/.dsh-remote-explorer/btsd321/
   versions/
     dsh-0.1.6-alpha.2/            ← 共享安装，版本入名，多版本并存
       node_modules/.bin/dsh
@@ -199,8 +199,8 @@ provision/
 
 1. 远端并发发轻量探测请求，对每个候选取最小延迟
 2. 全部不可达 ⇒ 抛带诊断的错误（列出每个候选的失败原因），不静默回落
-3. 结果写 `~/.dsh-remote/mirror-cache.json`，带 TTL 与远端主机指纹；命中缓存跳过测速
-4. `dsh-remote doctor` 强制重测并打印全部延迟
+3. 结果写 `~/.dsh-remote-explorer/btsd321/mirror-cache.json`，带 TTL 与远端主机指纹；命中缓存跳过测速
+4. `dsh-remote-explorer doctor` 强制重测并打印全部延迟
 
 **探测命令必须带 `-L` 并校验响应内容，这是 P0 抓到的真问题。** 第一次测速用的是 `curl -fsS -m 5 -o /dev/null -w '%{time_total}'`，得到阿里 0.25s、官方 1.27s，看起来阿里快 5 倍。但阿里镜像对 `index.json` 返回 **302 重定向**，而 `-fsS` 不跟随重定向——那 0.25s 测的是 nginx 的 302 页面，不是真实内容。加上 `-L` 并校验响应首字符是 `[`（JSON 数组）后，排名完全变了：
 
@@ -264,8 +264,8 @@ env PATH=<node bin>:$PATH npm install --registry=<测速选出的镜像> \
 
 第 4 个事实让"共享安装 + 每会话 `DSH_HOME`"成立：模块解析是**双锚**的——bundle 名先从 dsh 安装位置解析，再从 profile 目录解析。也就是说 **dsh 装在哪与 `DSH_HOME` 指向哪是解耦的**。所以：
 
-- **安装**：`~/.dsh-remote/versions/dsh-<版本>/`，所有会话共享，装一次
-- **会话状态**：`DSH_HOME=~/.dsh-remote/sessions/<会话 id>/`，每会话独立
+- **安装**：`~/.dsh-remote-explorer/btsd321/versions/dsh-<版本>/`，所有会话共享，装一次
+- **会话状态**：`DSH_HOME=~/.dsh-remote-explorer/btsd321/sessions/<会话 id>/`，每会话独立
 
 这同时对应了成熟项目的两层划分——Zed 是"共享版本化二进制 + `proxy --identifier <唯一标识>`"（`ssh.rs:465-548`），VS Code 是"共享 per-commit server + 独立数据目录"。
 
@@ -280,7 +280,7 @@ sessions/<会话 id>/profiles/remote/
 启动命令形态（P0 实测可用）：
 
 ```sh
-env DSH_HOME=~/.dsh-remote/sessions/<会话 id> \
+env DSH_HOME=~/.dsh-remote-explorer/btsd321/sessions/<会话 id> \
     <安装目录>/node_modules/.bin/dsh --profile remote \
     --host 127.0.0.1 --port <启动器分配> --no-open
 ```
@@ -466,8 +466,8 @@ dsh 自身契约是「所有用户数据在一个根」（`DSH_HOME` 可整体�
 
 | 落盘 | 状态 |
 |---|---|
-| Node/dsh 安装、会话状态（= `DSH_HOME`）、临时文件、镜像缓存 | ✅ 原本就在 `~/.dsh-remote/` 内 |
-| npm 缓存（含 `_logs`） | ✅ 收进 `~/.dsh-remote/npm-cache`（装机命令带 `npm_config_cache`） |
+| Node/dsh 安装、会话状态（= `DSH_HOME`）、临时文件、镜像缓存 | ✅ 原本就在 `~/.dsh-remote-explorer/btsd321/` 内 |
+| npm 缓存（含 `_logs`） | ✅ 收进 `~/.dsh-remote-explorer/btsd321/npm-cache`（装机命令带 `npm_config_cache`） |
 | skill 目录 | ✅ runner 设 `DSH_AGENTS_HOME=<会话目录>/agents`，不读机器全局 `~/.agents` |
 | pnpm store | ⚠️ 有意不隔离：仅用户主动跑 `dsh plugin` 才触及，内容寻址并发安全 |
 | doctor | 新增「隔离检查」段：占用清单 + 官方 `~/.dsh` 存在性 + 卸载指引 |
@@ -506,13 +506,13 @@ dsh 自身契约是「所有用户数据在一个根」（`DSH_HOME` 可整体�
 ## 七、CLI 表面
 
 ```
-dsh-remote list                        列出 ~/.ssh/config 中的主机
-dsh-remote connect <别名> [--cwd <远端路径>]
+dsh-remote-explorer list                        列出 ~/.ssh/config 中的主机
+dsh-remote-explorer connect <别名> [--cwd <远端路径>]
                                        主命令：引导 → 起远端 → 建隧道 → 开浏览器 → 常驻守护
-dsh-remote status                      所有会话状态（含跨主机）
-dsh-remote kill <别名> [--all]          杀远端 dsh（对标 VS Code "Kill VS Code Server on Host"）
-dsh-remote doctor <别名>                诊断：镜像延迟、Node/dsh 版本、通道配额、隧道连通性
-dsh-remote clean <别名> [--keep-latest] 清理旧版本目录与陈旧会话目录
+dsh-remote-explorer status                      所有会话状态（含跨主机）
+dsh-remote-explorer kill <别名> [--all]          杀远端 dsh（对标 VS Code "Kill VS Code Server on Host"）
+dsh-remote-explorer doctor <别名>                诊断：镜像延迟、Node/dsh 版本、通道配额、隧道连通性
+dsh-remote-explorer clean <别名> [--keep-latest] 清理旧版本目录与陈旧会话目录
 ```
 
 `--cwd` 参与会话 id 计算，是"同主机多会话"的入口。`kill` 与 `doctor` 不是锦上添花——VS Code 的故障排查文档把"kill server"列为一大类连接错误的通用解法。`clean` 是版本入名 + 每会话目录策略的必要配套（两者都会累积）。
@@ -582,11 +582,11 @@ dsh-remote clean <别名> [--keep-latest] 清理旧版本目录与陈旧会话�
 
 ### P1 — 连接闭环
 
-`transport/` + `hosts/` + `provision/probe.ts` + `mirror-selector.ts`，同时按 4.6 表格铺好 guard 的接口预留位。交付：`dsh-remote list` 与 `doctor` 能跑，能打印远端 os/arch/node 版本与各镜像实测延迟。
+`transport/` + `hosts/` + `provision/probe.ts` + `mirror-selector.ts`，同时按 4.6 表格铺好 guard 的接口预留位。交付：`dsh-remote-explorer list` 与 `doctor` 能跑，能打印远端 os/arch/node 版本与各镜像实测延迟。
 
 ### P2 — 引导闭环 ✅ 已完成
 
-`provision/` 全部（`node-installer` / `dsh-installer` / `profile-writer` / `provisioner`）+ `util/session-id.ts`，交付 `dsh-remote provision` 命令。
+`provision/` 全部（`node-installer` / `dsh-installer` / `profile-writer` / `provisioner`）+ `util/session-id.ts`，交付 `dsh-remote-explorer provision` 命令。
 
 实测（验证机）：
 
@@ -843,4 +843,43 @@ node_modules/@deepseek-ai/node-addon-system-linux-arm64/bin/musl/system.node
 
 ### 11.7 P0 遗留
 
-远端保留了可复用产物：`~/.dsh-remote/node/v24.11.1`、`~/.dsh-remote/versions/dsh-0.1.6-alpha.2`。已清理：测试会话目录、临时文件、不稳定的 v22、测试进程。一个陈旧的 18903 监听残留（已不可连接，随 sshd 回收）。
+远端保留了可复用产物：`~/.dsh-remote-explorer/btsd321/node/v24.11.1`、`~/.dsh-remote-explorer/btsd321/versions/dsh-0.1.6-alpha.2`。已清理：测试会话目录、临时文件、不稳定的 v22、测试进程。一个陈旧的 18903 监听残留（已不可连接，随 sshd 回收）。
+
+---
+
+## 十三、dsh 插件形态（0.6.0 决策记录，2026-09-22）
+
+第 4.6/P5 节曾论证"远端侧 guard 插件不需要"——该结论**不变**。0.6.0 新增的是**本机侧宿主形态**：把本工具装进用户本机正在跑的 dsh（`dsh plugin --profile web add dsh-remote-explorer`），与当年被否掉的远端插件是两回事。
+
+### 13.1 用户拍板的决策
+
+| # | 决策 | 备注 |
+|---|---|---|
+| 1 | 包名/仓库名/CLI 命令名统一 **dsh-remote-explorer** | npm 名可用（已核实）；远端根目录随之改 `~/.dsh-remote-explorer/btsd321/`——作者名子目录防同名工具互踩 |
+| 2 | 能力范围 = 宿主半外壳 + Web 管理面板 | settings.section 单页三区（连接表单/会话表/进度日志），不做侧栏 tab 与 hero 注入 |
+| 3 | 单包双形态 | bin（CLI，tsx 直跑）+ dsh.bundle（插件，esbuild 产物 lib/）同包发布 |
+| 4 | 命名 = `/remote-ssh` 单命令 + `remote_*` 工具前缀 | **全套工具给 agent**（connect/status/kill 均可被模型调用，走 dsh 审批门槛）；避开第三方 dsh-remote 插件的 `/remote` 与 `rw_*` |
+| 5 | 宿主 dispose 默认连远端一起停 | `keepRemoteOnDispose` 可配置保留；手动 disconnect 同样默认停远端（对齐 CLI Ctrl-C 语义） |
+| 6 | 参考 flymysql/dsh-remote 的 SFTP 实现做**内部传输提速** | 池化会话/会话内 4 路并发/fastPut/每操作超时/死连接重试一次；不新增用户可见的上传下载工具 |
+
+### 13.2 关键机制核实（对照 deepseek-harness 源码）
+
+- 安装链：`dsh plugin` → pnpm 装进 `$DSH_HOME/profiles/<name>/node_modules` → `reconcile()` 把声明了 `dsh.bundle.patch` 的包自动追加进 `dsh.profile.bundles`。需要 PATH 上有 pnpm。
+- 鉴权通道：面板路由走 `connection.fetch.register` 的 `/api` 前缀（Host/Origin 栅栏 403 + 令牌/Cookie 401），弃用裸 webServer 路由（无鉴权）。带令牌首访首页 = 303 + set-cookie（`authorizeIndex`）。
+- 浏览器半：`dsh.client` 声明 + `exports["./client"]` → boot graph → `/plugins/??<包名>/client.js` 组合下发 → `window.__ModuleLoader__.load({ id: 包名, factory })`；react 走 factory 同步 require（平台种子 18.2）。
+- peer 范围 `^0.1.5-rc.2 || ^0.1.6-0`：semver 实测恰好覆盖现役 latest 与 alpha 两个 dist-tag；未来 prerelease 的 unmet-peer 警告可接受（autoInstallPeers:false 下安装仍成功）。
+
+### 13.3 实测踩坑（全部已固化为护栏或注释）
+
+1. **宿主产物必须 ESM**：CJS bundle `require()` ESM-only 的 dsh-tools 崩（ERR_INTERNAL_ASSERTION）；ESM + createRequire banner（补 require/__filename/__dirname 三件套）同时解决 ssh2 惰性 require 与 crypto.js 的 __dirname 引用。
+2. Windows 上 pnpm 对 `file:` 依赖是**硬链接拷贝**（同 inode）：dev 沙箱同步必须按 inode 判等跳过，无脑 rm+cp 会顺着链接删仓库产物/因 src=dest 抛错。
+3. 组合脚本 URL 在 HTML 里 `&` 被转义成 `&amp;`，提取后必须还原，否则 rev 参数名变成 `amp;rev` → 404。
+4. `pkill/pgrep -f "dsh --profile remote"` 会匹配承载命令的 shell 自己（第 8 条老坑在验证脚本里再次应验）——远端进程存活检查用 pid 文件 + `kill -0`。
+5. MSYS 路径改写不止咬 CLI：浏览器自动化的 fill 参数同样在 shell 层被改写（`/home/x` → `D:/SoftWare/Git/home/x`），插件的 invalid_cwd 防御在面板路径上真实拦截了一次。
+
+### 13.4 验收记录（2026-09-22，OrangePI aarch64）
+
+- 冒烟：file: 安装 → bundle 自动激活 → ping 401 → 首页引导图含包 → client bundle 200，全绿
+- 面板 E2E：Settings → 远程 SSH 会话 → connect OrangePI（invalid_cwd 拦截 MSYS 路径后成功）→ 阶段日志增量滚动 → 已连接（本机端口 1742）→「打开」新标签载入**远端** dsh 界面 → 断开（勾停远端）→ 远端进程确证停止（pid 文件清理、ps 无残留）
+- SFTP：4MB 二进制往返字节一致（写 185ms/读 908ms）、特殊字符文本无损、8×256KB 批量并发摘要一致、admin 配额无泄漏
+- CLI 回归：list/doctor（含新 SFTP 探测段）/status/stop-remote-on-close 全过；settings 镜像与 patch.yml 经 SFTP 落盘且远端 dsh 正常读取

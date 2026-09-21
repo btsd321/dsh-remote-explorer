@@ -1,4 +1,4 @@
-# dsh-remote
+# dsh-remote-explorer
 
 **[English](README.md)** | [中文](README.cn.md)
 
@@ -15,7 +15,7 @@ Inspired by VS Code Remote-SSH, Zed, and JetBrains Gateway — **code and sessio
 
 ## Installation and running
 
-Pick either mode — commands and options are identical.
+The CLI has two run modes (identical commands and options); if you already run dsh locally, you can also install this tool as a **dsh plugin** (Option 3).
 
 ### Option 1: run from source
 
@@ -28,19 +28,40 @@ npx tsx src/cli/bin.ts list
 
 ### Option 2: run a release package
 
-Download the archive for your platform from the release page (produced by the [packaging script](#packaging), named `dsh-remote-<version>-<platform>.<zip|tar.gz>`), unpack it, and run directly — no Node, npm, or network required on the target:
+Download the archive for your platform from the release page (produced by the [packaging script](#packaging), named `dsh-remote-explorer-<version>-<platform>.<zip|tar.gz>`), unpack it, and run directly — no Node, npm, or network required on the target:
 
 | Platform | Archive | How to run after unpacking |
 |---|---|---|
-| win32-x64 | `.zip` | `dsh-remote.cmd <command>` |
-| linux-x64 / linux-arm64 | `.tar.gz` | `./dsh-remote <command>` |
-| darwin-x64 / darwin-arm64 | `.tar.gz` | `./dsh-remote <command>` |
+| win32-x64 | `.zip` | `dsh-remote-explorer.cmd <command>` |
+| linux-x64 / linux-arm64 | `.tar.gz` | `./dsh-remote-explorer <command>` |
+| darwin-x64 / darwin-arm64 | `.tar.gz` | `./dsh-remote-explorer <command>` |
 
-Each package bundles the official Node binary (SHASUMS256-verified at download time) and a single-file CLI `dsh-remote.cjs` (all dependencies bundled in). Verify the archive against the sha256 published with the release.
+Each package bundles the official Node binary (SHASUMS256-verified at download time) and a single-file CLI `dsh-remote-explorer.cjs` (all dependencies bundled in). Verify the archive against the sha256 published with the release.
+
+### Option 3: install as a dsh plugin
+
+If you already run dsh (Web/Desktop) on this machine, install this tool into dsh and manage remote sessions from a settings panel, a slash command, and agent tools:
+
+```bash
+# Requires pnpm on PATH (the dsh plugin command forwards to pnpm verbatim)
+dsh plugin --profile web add dsh-remote-explorer
+# When dsh is not on PATH:
+npx --yes @deepseek-ai/dsh plugin --profile web add dsh-remote-explorer
+# From a local checkout (build the plugin artifacts first):
+npm run build:plugin && dsh plugin --profile web add /path/to/repo
+```
+
+Restart `dsh web` after installing. The plugin provides three surfaces:
+
+- **Settings → Remote SSH Sessions** panel: pick a host, connect/disconnect, live progress log; each session's "Open" link pops a new tab serving the **remote dsh UI** through the SSH tunnel
+- **Slash command** `/remote-ssh`: `hosts | connect <alias> [remote-dir] | status | disconnect <alias|session-id> [--keep-remote]`
+- **Agent tools** `remote_hosts_list / remote_connect / remote_status / remote_kill` (behind dsh's regular tool-approval gate)
+
+The plugin shares the CLI's session orchestration and remote layout (`~/.dsh-remote-explorer/btsd321/`), and the session table is shared in both directions: `dsh-remote-explorer status` shows plugin-kept sessions, and the panel shows CLI-kept ones (read-only, marked "external"). Two differences: **session lifetime rides the host dsh process** — quitting dsh stops the remote dsh too by default (`keepRemoteOnDispose: true` in the profile patch keeps it); LLM keys are read from the environment of the process that launched dsh. See the [usage guide](docs/usage-en.md).
 
 ## Quick start
 
-> Examples below use the **source-run** form. With a release package, replace `npx tsx src/cli/bin.ts` with `./dsh-remote` (Windows: `dsh-remote.cmd`) — the options are identical.
+> Examples below use the **source-run** form. With a release package, replace `npx tsx src/cli/bin.ts` with `./dsh-remote-explorer` (Windows: `dsh-remote-explorer.cmd`) — the options are identical.
 
 ```bash
 # List hosts from ~/.ssh/config
@@ -95,10 +116,10 @@ Remote dsh ──(placeholder token)──▶ Remote 127.0.0.1:<reverse-port>/r/
 
 ## Remote disk isolation
 
-Modeled after VS Code's `~/.vscode-server` single-root self-contained model: everything this tool writes on the remote is inside `~/.dsh-remote/` (installations, per-session state, npm cache, temporary files). It **never writes to** remote `~/.dsh` (official dsh's home) or `~/.npm` (shared npm cache). The remote dsh's skill directory is also redirected into the session (`DSH_AGENTS_HOME`), not the machine-global `~/.agents`.
+Modeled after VS Code's `~/.vscode-server` single-root self-contained model: everything this tool writes on the remote is inside `~/.dsh-remote-explorer/btsd321/` (installations, per-session state, npm cache, temporary files). It **never writes to** remote `~/.dsh` (official dsh's home) or `~/.npm` (shared npm cache). The remote dsh's skill directory is also redirected into the session (`DSH_AGENTS_HOME`), not the machine-global `~/.agents`.
 
 - Other users running official dsh on the same machine are not affected; `doctor`'s isolation check section reports usage.
-- Full uninstall = `rm -rf ~/.dsh-remote`, one command, clean.
+- Full uninstall = `rm -rf ~/.dsh-remote-explorer/btsd321`, one command, clean.
 - Known low-risk sharing: remote pnpm store — only touched if someone actively runs `dsh plugin` on the remote; content-addressed and concurrency-safe.
 
 **When writing remote paths in Git Bash, use double slashes** (`--cwd //home/xxx`) or set `MSYS_NO_PATHCONV=1` first. MSYS rewrites `/home/xxx` into something like `D:/SoftWare/Git/home/xxx` before the argument reaches the program, which the CLI can only detect and reject.
@@ -115,7 +136,7 @@ Local (Windows/Linux/macOS)                      Remote (Linux/macOS)
 └───────────────┬────────────────┘              │                              │
                 │ HTTP / WS + session token     │  ├ session / agent           │
 ┌───────────────▼────────────────┐  forward     │  ├ fs / subprocess           │
-│ dsh-remote CLI (long-running)  │══════════════▶│  ├ terminal / lsp            │
+│ dsh-remote-explorer CLI (long-running)  │══════════════▶│  ├ terminal / lsp            │
 │ ├ transport  ssh2 conn & fwd   │              │  └ sandbox                    │
 │ ├ provision  install Node & dsh│              │                              │
 │ ├ tunnel     port forwarding   │  reverse     │                              │
@@ -176,7 +197,7 @@ Code style guide is in [docs/type_script_style.md](docs/type_script_style.md) �
 
 ## Packaging
 
-Produces release packages (see [Installation and running](#option-2-run-a-release-package)): esbuild bundles the CLI with all runtime dependencies into a single `dsh-remote.cjs`, then the official Node binary for the target platform is added, along with launchers and docs, and everything is archived. Output lands in `dist/` (gitignored) — **this does not change how the source itself runs via tsx**.
+Produces release packages (see [Installation and running](#option-2-run-a-release-package)): esbuild bundles the CLI with all runtime dependencies into a single `dsh-remote-explorer.cjs`, then the official Node binary for the target platform is added, along with launchers and docs, and everything is archived. Output lands in `dist/` (gitignored) — **this does not change how the source itself runs via tsx**.
 
 ```bash
 npx tsx scripts/package.ts                        # package for the current platform

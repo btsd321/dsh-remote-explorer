@@ -8,17 +8,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 这是什么
 
-`@deepseek-ai/dsh-remote` 是一个**独立 CLI**（不是 Cordis 插件）：把 dsh 装到远程主机上运行，本机只留浏览器，LLM 凭据不离开本机。
+`dsh-remote-explorer` 把 dsh 装到远程主机上运行，本机只留浏览器，LLM 凭据不离开本机。0.6.0 起**单包双形态**：
 
-参照 VS Code Remote-SSH / Zed / JetBrains Gateway 的做法——代码与会话都在远端，本机只做呈现。完整架构依据、调研来源、实测数据见 [PLAN.md](PLAN.md)。
+- **独立 CLI**（主形态）：`bin/dsh-remote-explorer.mjs` → tsx 直跑 `src/cli/`
+- **dsh 插件**：`dsh plugin --profile web add dsh-remote-explorer` 装进本机 dsh，提供 Settings 面板 + `/remote-ssh` 命令 + `remote_*` agent 工具；宿主半在 `src/plugin/`、浏览器半在 `src/plugin-client/`，经 `scripts/build-plugin.ts` 打包为 `lib/`（gitignored）发布
 
-**没有构建步骤。** `tsconfig.json` 是 `noEmit: true` + `allowImportingTsExtensions: true`，源码以 `.ts` 形式经 tsx 直接运行。不要在开发流程里加打包产物或 `outDir`。**分发打包是独立动作**：`scripts/package.ts` 用 esbuild 出单文件 .mjs 并打入目标平台 Node 二进制，产物在 `dist/`（gitignored）——它不改变源码的 tsx 运行方式，也不提交任何产物。
+两形态共享同一套 session/ 编排——插件不是精简版。参照 VS Code Remote-SSH / Zed / JetBrains Gateway 的做法——代码与会话都在远端，本机只做呈现。完整架构依据、调研来源、实测数据见 [PLAN.md](PLAN.md)。
 
-### 重要：0.4.0 是架构重写
+**开发流程没有构建步骤。** `tsconfig.json` 是 `noEmit: true` + `allowImportingTsExtensions: true`，源码以 `.ts` 形式经 tsx 直接运行。不要在开发流程里加打包产物或 `outDir`。**打包是分发独立动作**：`scripts/package.ts`（CLI 平台包，产物 `dist/`）与 `scripts/build-plugin.ts`（插件双入口，产物 `lib/`）都只在分发前跑，产物均 gitignored、不提交。插件入口例外于「tsx 直跑」：dsh loader 经纯 ESM import 加载插件、不走 tsx，所以插件形态必须用构建产物。
 
-0.3.x 是 Cordis 插件形态（dsh 跑本机 + helper RPC 把文件操作转到远端）。那套代码**已全部删除**：helper RPC、TLS-PSK 流、依赖收集器、native stub、三个 workspace shim、注入式 Web 面板、WebSocket 桥接。
+### 重要：0.4.0 是架构重写；0.3.x 的插件形态不要复活
 
-如果你在 git 历史或旧文档里看到 `Ssh2Connection`、`RemoteHostController`、`RemoteWorkspaceAdapter`、`installRemoteDirectoryPicker`、`collectHelperDependencies`、`cordis.patch.yml`——那些都是旧架构，不要参考，不要恢复。
+0.3.x 也是"Cordis 插件"，但那是**另一套设计**（dsh 跑本机 + helper RPC 把文件操作转到远端），代码已全部删除：helper RPC、TLS-PSK 流、依赖收集器、native stub、三个 workspace shim、注入式 Web 面板、WebSocket 桥接。0.6.0 的插件形态是"本机 dsh 宿主驱动本 CLI 的编排能力"，与 0.3.x 没有继承关系。
+
+如果你在 git 历史或旧文档里看到 `Ssh2Connection`、`RemoteHostController`、`RemoteWorkspaceAdapter`、`installRemoteDirectoryPicker`、`collectHelperDependencies`——那些都是旧架构，不要参考，不要恢复。根目录的 `cordis.patch.yml` 是 0.6.0 新插件形态的 bundle patch，与 0.3.x 的同名文件无关。
 
 ## 常用命令
 
@@ -52,6 +55,13 @@ npx tsx src/cli/bin.ts clean myhost
 # 分发包打包（esbuild 单文件 + 目标平台 Node 二进制，产物在 dist/，gitignored）
 # 开发流程仍无构建——本命令只服务分发。--all 打五平台矩阵；默认打当前平台
 npx tsx scripts/package.ts --all
+
+# dsh 插件形态（改动 src/plugin/、src/plugin-client/ 后必须跑）
+npx tsx scripts/build-plugin.ts        # esbuild 双入口 → lib/index.js + lib/client.js
+npx tsx scripts/check-plugin.ts        # 护栏：命令名/工具名/schema/路由前缀/版本一致
+npx tsx scripts/dev-plugin.ts --smoke  # 隔离 DSH_HOME 沙箱：安装→启动→探针（ping 401）
+npx tsx scripts/dev-plugin.ts          # 常驻沙箱，打印带令牌的 URL 供浏览器联调
+npx tsx scripts/dev-plugin.ts --sync   # 产物同步进沙箱（宿主半重启生效，浏览器半刷新生效）
 ```
 
 **在 Git Bash 里传远端路径必须用双斜杠**（`--cwd //home/xxx`）或先设
@@ -67,17 +77,19 @@ npx tsx scripts/package.ts --all
 
 ## 架构
 
-五层，依赖严格单向向下，下层不得 import 上层：
+五层 + 两个平级入口适配层，依赖严格单向向下，下层不得 import 上层：
 
 ```
-入口层      cli/          命令分派、参数解析、终端输出
+入口层      cli/            命令分派、参数解析、终端输出（CLI 形态）
+            plugin/         dsh 插件宿主半：supervisor 簿记、命令/工具/路由注册
+            plugin-client/  dsh 插件浏览器半：Settings 面板（React，slots 注入）
 编排层      session/      会话生命周期、心跳、重连、多会话簿记
 能力层      provision/    装 Node 与 dsh、镜像测速、生成会话 profile
             tunnel/       端口分配、正向转发
             credential/   LLM 凭据代理（反向隧道，key 不出本机）
-传输层      transport/    ssh2 连接、命令执行、SFTP、开通道、反向转发、通道配额
+传输层      transport/    ssh2 连接、命令执行、池化 SFTP、开通道、反向转发、通道配额
 基础层      hosts/        ssh config 解析（主机配置唯一来源）
-            util/         shell 转义、错误类型、会话 id
+            util/         shell 转义、错误类型、会话 id、远端路径校验
 ```
 
 原计划的第二个交付物 `dsh-remote-guard`（远端插件）**最终不需要**：认证 dsh 已内置（P0 发现），`baseURL` 由 profile patch 解决（P4），免认证探活由心跳的 HTTP 层解决（P5，带会话令牌 curl 根路径，任何 HTTP 状态码即证明 webserver 在服务）。详见 PLAN.md 的 P5 节。
@@ -86,9 +98,9 @@ npx tsx scripts/package.ts --all
 
 **1. 主机配置来自 `~/.ssh/config`，不做持久化；也支持 `user@host[:port]` 直连。** `listHosts()` / `resolveHost(alias)` 用 `ssh-config` 库的 `compute()` 合并 `Host *` 默认值并递归解析 `ProxyJump` 跳板机链；config 里不存在的别名若匹配 `user@host[:port]` 语法则按直连处理（无 IdentityFile、无跳板机）。解析结果带模块级缓存，改了 config 文件必须调 `refreshConfig()`。认证优先级：`--private-key` > `--password` > config `IdentityFile` > 交互式密码提示（无 IdentityFile 且在交互终端时提示，不回显，最多重试 3 次；密码只存进程内存，绝不落盘/入日志）。`--password` 会打印泄露风险警告——明文出现在命令行、进程列表与 shell 历史里，是用户显式选择，工具只警告不阻止。
 
-**2. 远端安装按版本入名，多版本并存，不做 hash 校验。** 路径形如 `~/.dsh-remote/versions/dsh-<版本>/`、`~/.dsh-remote/node/<版本>/`，存在性检查是直接执行 `<bin> --version` 成功即复用（Zed 的做法，完整性由 npm 自己兜底）。这是为了避免升级时原地覆盖——那正是"运行中的进程占着文件，写入报 Text file busy"的根因。
+**2. 远端安装按版本入名，多版本并存，不做 hash 校验。** 路径形如 `~/.dsh-remote-explorer/btsd321/versions/dsh-<版本>/`、`~/.dsh-remote-explorer/btsd321/node/<版本>/`，存在性检查是直接执行 `<bin> --version` 成功即复用（Zed 的做法，完整性由 npm 自己兜底）。这是为了避免升级时原地覆盖——那正是"运行中的进程占着文件，写入报 Text file busy"的根因。
 
-**3. 安装共享、会话状态隔离。** dsh 装在 `versions/` 下所有会话共享；每个会话有独立的 `DSH_HOME=~/.dsh-remote/sessions/<会话 id>/`。这条成立是因为 dsh 的模块解析是双锚的（bundle 名先从 dsh 安装位置解析、再从 profile 目录解析），所以"装在哪"与"`DSH_HOME` 指向哪"解耦。`DSH_HOME` 只能走 `env` 前缀传，它是 bootstrap-only，任何 `.env` 都改不了它。
+**3. 安装共享、会话状态隔离。** dsh 装在 `versions/` 下所有会话共享；每个会话有独立的 `DSH_HOME=~/.dsh-remote-explorer/btsd321/sessions/<会话 id>/`。这条成立是因为 dsh 的模块解析是双锚的（bundle 名先从 dsh 安装位置解析、再从 profile 目录解析），所以"装在哪"与"`DSH_HOME` 指向哪"解耦。`DSH_HOME` 只能走 `env` 前缀传，它是 bootstrap-only，任何 `.env` 都改不了它。
 
 **4. 所有远端路径由 [src/provision/remote-paths.ts](src/provision/remote-paths.ts) 统一提供**，任何模块不得自己拼。构造远端路径一律用 `/` 拼字符串，**不要用 `node:path` 的 `join`**——本机可能是 Windows，会产出反斜杠。
 
@@ -131,13 +143,25 @@ npx tsx scripts/package.ts --all
 
 **10. 镜像测速在远端执行，必须带 `-L` 并校验响应内容。** 测的是远端到镜像的连通性，本机测没意义。阿里源对 `index.json` 返回 302，只测时间会把重定向页当成成功并选出错误的"最快"镜像。腾讯与华为镜像已从候选移除（DNS 解析失败）。
 
-**11. 远端落盘隔离契约（对标 VS Code 的 `~/.vscode-server` 单根自治模型）。** 本工具在远端的一切落盘都在 `~/.dsh-remote/` 内；远端 `~/.dsh`（官方 dsh 的家）、`~/.npm`（远端 npm 使用者共享的缓存）**从不被本工具写入**。完全卸载 = `rm -rf ~/.dsh-remote`。为此做的三件事，改相关代码时别破坏：
+**11. 远端落盘隔离契约（对标 VS Code 的 `~/.vscode-server` 单根自治模型）。** 本工具在远端的一切落盘都在 `~/.dsh-remote-explorer/btsd321/` 内；远端 `~/.dsh`（官方 dsh 的家）、`~/.npm`（远端 npm 使用者共享的缓存）**从不被本工具写入**。完全卸载 = `rm -rf ~/.dsh-remote-explorer/btsd321`。为此做的三件事，改相关代码时别破坏：
 
-- 装机的 npm 命令带 `npm_config_cache=~/.dsh-remote/npm-cache`（[src/provision/dsh-installer.ts](src/provision/dsh-installer.ts) 的 `npmEnv`）——npm 的缓存与 `_logs` 一并收进我们的根
+- 装机的 npm 命令带 `npm_config_cache=~/.dsh-remote-explorer/btsd321/npm-cache`（[src/provision/dsh-installer.ts](src/provision/dsh-installer.ts) 的 `npmEnv`）——npm 的缓存与 `_logs` 一并收进我们的根
 - runner 脚本给远端 dsh 设 `DSH_AGENTS_HOME=<会话目录>/agents`——dsh 的 skill-filesystem 默认会读机器全局 `~/.agents`，不设就加载了别人的 skills
 - 每会话 `DSH_HOME` 本身就是最强的隔离：dsh 契约是「所有用户数据在一个根」，settings/凭据/附件/profiles 全随之走（源码逐一核实过；唯一例外是 `~/.agents`，已用 env 堵上）
 
 已知低风险共享：远端 pnpm store（`~/.local/share/pnpm`）——仅当有人主动在远端跑 `dsh plugin` 才触及，内容寻址并发安全，文档说明即可，不做隔离。`doctor` 的「隔离检查」段会报告占用与官方 `~/.dsh` 的存在性。
+
+**12. dsh 插件形态的硬约束（全部实测踩过，改 src/plugin*/ 前必读）。**
+
+- **宿主产物必须是 ESM**（`lib/index.js`，esbuild `format: 'esm'`）。CJS 产物 `require()` ESM-only 的 `@deepseek-ai/dsh-tools` 会直接崩（Node 24 `ERR_INTERNAL_ASSERTION`）；peer 裸导入只有走 ESM 解析链才能命中 profile 的安装回退链接（`$DSH_HOME/profiles/node_modules`， cordis 单实例的命脉）。ssh2 的惰性 `require('net')` 用 createRequire banner 化解（`HOST_BANNER` 还补了 `__filename/__dirname`——ssh2 的 crypto.js 用 `__dirname` 定位资源，缺了初始化就崩）。
+- **entry id、插件名、locale/slot/settings 命名空间统一 `dsh-remote-explorer`**；cordis.patch.yml 的 entry id 不能叫 `dsh-remote`（第三方 flymysql 插件占用，同 profile 共存会被 loader 拒绝）。浏览器半的 `__ModuleLoader__.load({ id })` **必须等于包名**（graph 行以包名为键），由 build 脚本从 package.json 注入，别手写。
+- **命令名必须匹配 `/^[a-z][a-z0-9_-]*$/`**——非法字符（尤其点号）会让整个 dsh 启动失败；**defineTool 的每个显式 `type:'object'` 节点必须写 `additionalProperties`**——缺失是 authorError，宿主启动即崩。这两条 `scripts/check-plugin.ts` 有静态护栏，发布前必跑。
+- **面板路由只走 `connection.fetch.register` 的 `/api/dsh-remote-explorer/*` 已鉴权通道**，绝不注册裸 webServer 路由（无鉴权，宿主配 0.0.0.0 时会话元数据+写操作直接暴露）。冒烟判读：不带凭据 curl ping 得 **401** = 正常，404 = 插件没挂上，200 = 绕过了鉴权（安全回归）。
+- **Config 必须用 schemastery**（zod 会被 loader 拒绝），3.18 无 enum/optional API——全字段给 default。**Config 里永远不加 password 字段**（随 patch 层落盘 = 明文写磁盘）；面板密码走 POST body → 进程内存 fixed 模式，agent 工具永不接受密码。
+- 可选服务（commands/connection）一律 `ctx.get()` 或 `ctx.inject([...])` 反应式获取，绝不属性直取；一切注册走 `ctx.effect()` 返回清理函数。**dispose 语义**：宿主退出默认 `close({ stopRemote: true })`（用户拍板，对齐 CLI Ctrl-C），`keepRemoteOnDispose` 可保留。
+- dev 沙箱（`scripts/dev-plugin.ts`）：Windows 上 pnpm 对 `file:` 依赖是**硬链接拷贝**（同 inode）——同步脚本按「同 inode 跳过」处理，别改成无脑 rm+cp（rm 会顺着链接删、cp 会因 src=dest 抛错）；组合脚本 URL 从 HTML 提取后要把 `&amp;` 还原成 `&`；带令牌首访首页是 **303 + set-cookie**（令牌换 Cookie），node fetch 要 `redirect:'manual'` 手动接力。
+
+**13. 内部文件传输走池化 SFTP（P2 起），printf-over-exec 只是回退。** `transport/ssh-transport.ts` 维护每连接一条的池化 SFTP 会话（占 1 个 admin 配额，会话内 4 路并发不新开通道），带每操作超时与「死连接作废重试一次」（错误特征见 `STALE_SFTP_PATTERN`）。文本写入统一走 `transport/write-text.ts` 的 `writeRemoteTextFile`（SFTP 主路径，远端没开 sftp 子系统时回退 printf；`tolerant` 区分尽力而为/严格语义）。**二进制内容（图像等资源）没有回退路径**——shell 重定向过不了二进制，只能 SFTP。凭据材料（proxy-token 600 权限）刻意保留 exec+umask 077 单命令原子写，不切换。
 
 ## 已知问题
 

@@ -46,9 +46,9 @@ export interface ProbeResult {
   homeDir: string;
   /** 基础命令可用情况 */
   tools: RemoteTools;
-  /** 已由本工具安装的 Node 列表（`~/.dsh-remote/node/` 下） */
+  /** 已由本工具安装的 Node 列表（`~/.dsh-remote-explorer/btsd321/node/` 下） */
   managedNodes: InstalledRuntime[];
-  /** 已由本工具安装的 dsh 列表（`~/.dsh-remote/versions/` 下） */
+  /** 已由本工具安装的 dsh 列表（`~/.dsh-remote-explorer/btsd321/versions/` 下） */
   managedDsh: InstalledRuntime[];
   /** 家目录所在文件系统的可用空间（字节）；取不到为 undefined */
   availableBytes?: number;

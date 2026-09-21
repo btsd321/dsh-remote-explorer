@@ -1,6 +1,6 @@
 /**
  * @file CLI 入口与参数解析
- * @description `dsh-remote` 命令的入口：解析子命令与参数，分派到各命令实现，
+ * @description `dsh-remote-explorer` 命令的入口：解析子命令与参数，分派到各命令实现，
  *              统一处理错误呈现与退出码。
  *
  * 为什么用 Node 内置的 `node:util` parseArgs 而非 commander：本仓库要保持
@@ -20,6 +20,7 @@ import { runStatus } from './commands/status.js';
 import { runKill } from './commands/kill.js';
 import { runClean } from './commands/clean.js';
 import { RemoteError, toErrorMessage } from '../util/errors.js';
+import { normalizeRemoteCwd, validateRemoteCwd } from '../util/remote-cwd.js';
 import { bold, cyan, dim, printErr, println, red, yellow } from './output.js';
 
 /** 支持的子命令 */
@@ -45,10 +46,10 @@ const EXIT_CODES: Record<RemoteError['code'], number> = {
  * 打印总帮助。
  */
 function printHelp(): void {
-  println(bold('dsh-remote') + dim(' — 在远程主机上运行 dsh，本机只留浏览器'));
+  println(bold('dsh-remote-explorer') + dim(' — 在远程主机上运行 dsh，本机只留浏览器'));
   println();
   println(bold('用法'));
-  println('  dsh-remote <命令> [参数]');
+  println('  dsh-remote-explorer <命令> [参数]');
   println();
   const versions = defaultVersions();
 
@@ -114,13 +115,13 @@ export async function main(argv: readonly string[]): Promise<number> {
   }
   if (rawCommand === '--version' || rawCommand === '-V') {
     // 版本号由 package.json 承载，这里避免读文件带来的路径耦合
-    println('dsh-remote 0.5.0');
+    println('dsh-remote-explorer 0.6.0');
     return 0;
   }
 
   if (!COMMANDS.includes(rawCommand as CommandName)) {
     printErr(red(`未知命令：${rawCommand}`));
-    printErr(dim(`可用命令：${COMMANDS.join('、')}。用 dsh-remote help 查看帮助`));
+    printErr(dim(`可用命令：${COMMANDS.join('、')}。用 dsh-remote-explorer help 查看帮助`));
     return 64;
   }
   const command = rawCommand as CommandName;
@@ -186,7 +187,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   const alias = positionals[0];
   if (alias === undefined) {
     printErr(red(`${command} 需要主机别名`));
-    printErr(dim(`用法：dsh-remote ${command} <别名 | user@host[:port]>。用 dsh-remote list 查看可用别名`));
+    printErr(dim(`用法：dsh-remote-explorer ${command} <别名 | user@host[:port]>。用 dsh-remote-explorer list 查看可用别名`));
     return 64;
   }
 
@@ -282,52 +283,6 @@ function parsePort(raw: string | undefined): number | undefined {
   const port = Number.parseInt(raw, 10);
   if (!Number.isInteger(port) || port < 0 || port > 65_535) return undefined;
   return port;
-}
-
-/**
- * 校验 `--cwd` 是合法的远端 POSIX 绝对路径。
- *
- * 必须校验而不能放过，是因为 **Git Bash（MSYS）会在参数到达本程序之前就改写它**：
- * 在 Git Bash 里写 `--cwd /home/user`，程序实际收到的是
- * `D:/SoftWare/Git/home/user`——MSYS 把看起来像 Unix 路径的参数当成
- * Windows 路径做了转换。这个改写发生在 shell 层，本程序无法阻止，只能识别并拒绝。
- *
- * 放过它的后果不只是路径错：远端工作目录参与会话 id 计算，
- * 同一个逻辑会话会因调用方式不同得到不同 id，于是复用与 kill 都会失灵。
- *
- * @param cwd - 原始参数值；空串表示未指定
- * @returns 错误消息；合法时 undefined
- */
-function validateRemoteCwd(cwd: string): string | undefined {
-  if (cwd.length === 0) return undefined;
-
-  if (/^[A-Za-z]:/.test(cwd)) {
-    return `--cwd 看起来被 shell 改写成了 Windows 路径：${cwd}\n`
-      + '这是 Git Bash（MSYS）的路径转换所致，它在参数到达本程序前就已发生。\n'
-      + '两种绕过方式：用双斜杠写 --cwd //home/xxx，'
-      + '或设环境变量 MSYS_NO_PATHCONV=1 后再执行。';
-  }
-  if (cwd.includes('\\')) {
-    return `--cwd 含反斜杠：${cwd}。远端一定是 POSIX，路径请用 / 分隔`;
-  }
-  if (!cwd.startsWith('/')) {
-    return `--cwd 必须是绝对路径，实际为 ${cwd}`;
-  }
-  return undefined;
-}
-
-/**
- * 归一化远端工作目录。
- *
- * MSYS 对以 `//` 开头的参数不做转换，所以推荐写法 `--cwd //home/xxx`
- * 传进来就是 `//home/xxx`；远端 POSIX 语义下前导双斜杠是实现定义行为，
- * 这里折叠成单斜杠，保证会话 id 对两种写法一致。
- *
- * @param cwd - 已校验的路径
- * @returns 归一化后的路径
- */
-function normalizeRemoteCwd(cwd: string): string {
-  return cwd.startsWith('//') ? cwd.slice(1) : cwd;
 }
 
 /**

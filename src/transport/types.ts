@@ -71,6 +71,29 @@ export interface ExecOptions {
   allowNonZeroExit?: boolean;
 }
 
+/** 远端文件读写选项 */
+export interface RemoteFileOptions {
+  /** 超时（毫秒）；省略则用传输层默认值（批量上传另有更宽的默认值） */
+  timeoutMs?: number;
+  /** 取消信号；触发时等待中的操作立即拒绝 */
+  signal?: AbortSignal;
+  /**
+   * 文件模式（如 `0o600`）。
+   *
+   * 仅在**创建新文件**时生效（SFTP writeFile 语义，等同 open 的 mode 参数）；
+   * 覆盖已存在文件不改其模式。需要强制修正模式时另行 chmod。
+   */
+  mode?: number;
+}
+
+/** 批量文件传输中的一个条目 */
+export interface FileTransfer {
+  /** 本机文件路径 */
+  localPath: string;
+  /** 远端绝对路径（POSIX 风格） */
+  remotePath: string;
+}
+
 /** 反向转发收到的一个入站连接 */
 export interface ReverseConnection {
   /** 远端侧发起连接的地址 */
@@ -140,13 +163,57 @@ export interface RemoteTransport {
   /**
    * 经 SFTP 上传单个本地文件到远端。
    *
-   * 仅用于离线回退路径（`--upload-fallback`）；主路径是远端自装。
+   * 走池化 SFTP 会话（每连接一条，会话内并发不占额外通道配额）；
+   * 死连接自动作废会话并重试一次。
    *
    * @param localPath - 本机文件路径
    * @param remotePath - 远端绝对路径（POSIX 风格）
    * @param signal - 取消信号
    */
   uploadFile(localPath: string, remotePath: string, signal?: AbortSignal): Promise<void>;
+
+  /**
+   * 批量上传本地文件到远端（fastPut，ssh2 内部分块并发流式）。
+   *
+   * 提速机制取自参考实现（flymysql/dsh-remote 的 pool/sync）：所有文件共享
+   * **一条**池化 SFTP 会话，会话内按固定并发度流水线传输——SFTP 协议支持
+   * 多个在飞请求，并发不新开 SSH 通道，通道配额纪律不受影响。
+   *
+   * 失败语义：首个错误即停止调度后续文件，等待在飞完成后抛出该错误。
+   *
+   * @param files - 传输条目列表
+   * @param options - 超时（默认比单操作更宽）与取消信号
+   */
+  uploadFiles(files: readonly FileTransfer[], options?: RemoteFileOptions): Promise<void>;
+
+  /**
+   * 把内容写入远端文件（SFTP，二进制安全）。
+   *
+   * 与 shell 重定向（printf > file）相比：无命令长度上限、无转义开销、
+   * 可传任意字节。目标文件的父目录必须已存在（本层不做 mkdir -p，
+   * 目录骨架是调用方引导流程的职责）。
+   *
+   * @param remotePath - 远端绝对路径（POSIX 风格）
+   * @param content - 文件内容（字符串按 utf8 编码）
+   * @param options - 超时、取消信号与文件模式
+   */
+  writeRemoteFile(remotePath: string, content: string | Buffer, options?: RemoteFileOptions): Promise<void>;
+
+  /**
+   * 读取远端文件全部内容（SFTP，二进制安全）。
+   *
+   * @param remotePath - 远端绝对路径（POSIX 风格）
+   * @param options - 超时与取消信号
+   * @returns 文件内容
+   */
+  readRemoteFile(remotePath: string, options?: RemoteFileOptions): Promise<Buffer>;
+
+  /**
+   * 探测远端 SFTP 子系统可用性（试建一次会话，成功后留在池里复用）。
+   *
+   * @throws RemoteError('CONNECT_FAILED') SFTP 子系统不可用或会话建立失败
+   */
+  checkSftp(): Promise<void>;
 
   /**
    * 开一条通向远端目标的双向通道。

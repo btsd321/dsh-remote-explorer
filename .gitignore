@@ -6,6 +6,9 @@ lib/
 # 分发打包产物（scripts/package.ts 产出，不进仓库）
 /dist/
 
+# 插件开发沙箱（scripts/dev-plugin.ts 的隔离 DSH_HOME，不进仓库）
+/.dev-harness/
+
 # 系统文件
 .DS_Store
 Thumbs.db

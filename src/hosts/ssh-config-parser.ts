@@ -298,7 +298,7 @@ export function resolveHost(alias: string): ResolvedHostWithJump {
     if (adHoc !== undefined) return { target: adHoc, jumpHosts: [] };
     throw new RemoteError(
       'HOST_NOT_FOUND',
-      `在 ${cachedPath} 中找不到主机别名 ${alias}；用 dsh-remote list 查看可用别名，`
+      `在 ${cachedPath} 中找不到主机别名 ${alias}；用 dsh-remote-explorer list 查看可用别名，`
         + '或用 user@host[:port] 直连',
       { hostAlias: alias },
     );

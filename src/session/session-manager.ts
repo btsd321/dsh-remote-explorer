@@ -25,13 +25,14 @@
  *   绑定）。后启动的视图挂不上反向转发时降级为警告——凭据路径由先来的视图维持。
  *
  * **远端 dsh 默认不随 CLI 退出而停止。** 它是 detach 的，下次连接可直接复用。
- * 要真正停掉需 `close({ stopRemote: true })` 或 `dsh-remote kill`。
+ * 要真正停掉需 `close({ stopRemote: true })` 或 `dsh-remote-explorer kill`。
  *
  * 分层：本文件属编排层，可用能力层与传输层。
  */
 
 import { assertConnectable, resolveHostWithAuth, type AuthOverrides } from '../hosts/ssh-config-parser.js';
 import { SshTransport, isAuthFailure } from '../transport/ssh-transport.js';
+import { writeRemoteTextFile } from '../transport/write-text.js';
 import { provision, type ProvisionResult } from '../provision/provisioner.js';
 import { probeRemote } from '../provision/probe.js';
 import { createRemotePaths, type RemotePaths } from '../provision/remote-paths.js';
@@ -50,7 +51,7 @@ import {
 import { removeSession, upsertSession } from './session-registry.js';
 import { generateProxyToken } from '../credential/token.js';
 import { TunnelProxyCredential } from '../credential/tunnel-proxy.js';
-import { PasswordProvider } from '../util/password-prompt.js';
+import { PasswordProvider, type PasswordPromptFn } from '../util/password-prompt.js';
 import {
   deepseekRoute, extractProviderRoutes, mirrorSettingsForTunnel, readLocalSettings,
 } from '../credential/provider-routes.js';
@@ -94,6 +95,16 @@ export interface OpenSessionOptions {
    * 只存本进程内存，不落盘、不进日志
    */
   password?: string;
+  /**
+   * 自定义密码提示回调（dsh 插件形态用：密码来自面板表单而非终端）。
+   * 优先级 password > promptPassword > 内置终端提示；CLI 不传，行为不变
+   */
+  promptPassword?: PasswordPromptFn;
+  /**
+   * 转发失败告警回调（插件形态接进会话日志缓冲）。
+   * 不传时 LocalForward 直写 stderr（CLI 形态既有行为）
+   */
+  onForwardError?: (message: string) => void;
 }
 
 /** 会话关闭选项 */
@@ -237,11 +248,12 @@ export class RemoteSession {
     const reconnectConfig = { ...DEFAULT_RECONNECT_CONFIG, ...options.reconnect };
     const lifecycleConfig = { ...DEFAULT_LIFECYCLE_CONFIG, ...options.lifecycle };
 
-    // 密码提供器：--password 走固定值，否则首次连接交互提示并缓存；
-    // 重连（reconnectOnce）走静默 peek，不弹提示
-    const passwords = new PasswordProvider(
-      auth.password !== undefined ? { fixed: auth.password } : undefined,
-    );
+    // 密码提供器：--password 走固定值，promptPassword 走注入途径（插件形态），
+    // 否则首次连接交互提示并缓存；重连（reconnectOnce）走静默 peek，不弹提示
+    const passwords = new PasswordProvider({
+      ...(auth.password !== undefined ? { fixed: auth.password } : {}),
+      ...(options.promptPassword ? { prompt: options.promptPassword } : {}),
+    });
     options.onStageStart?.('建立 SSH 连接');
     const transport = new SshTransport(options.hostAlias, resolved, {
       getPassword: (hostKey, label, attempt) => passwords.get(hostKey, label, attempt),
@@ -323,10 +335,11 @@ export class RemoteSession {
       if (secret && localSettings) {
         const mirrored = mirrorSettingsForTunnel(localSettings, secret.reversePort);
         if (mirrored) {
-          await transport.exec(
-            `printf '%s' ${quote(mirrored)} > ${quote(paths.sessionSettingsFile(sessionId))}`,
-            { allowNonZeroExit: true },
-          );
+          // SFTP 主路径落盘（远端未开 sftp 子系统时自动回退 printf-over-exec）。
+          // 容忍模式与旧实现的 allowNonZeroExit 语义一致：镜像失败不阻断会话
+          await writeRemoteTextFile(transport, paths.sessionSettingsFile(sessionId), mirrored, {
+            tolerant: true,
+          });
         }
       }
 
@@ -361,9 +374,12 @@ export class RemoteSession {
         }
       }
 
-      // 10. 建正向隧道。监听器跨重连存活，端口从此不再变化
+      // 10. 建正向隧道。监听器跨重连存活，端口从此不再变化；
+      //     转发失败告警经钩子上抛（插件形态接日志缓冲；CLI 缺省直写 stderr）
       options.onStageStart?.('建立正向隧道');
-      const forward = new LocalForward(transport, '127.0.0.1', processInfo.port);
+      const forward = new LocalForward(transport, '127.0.0.1', processInfo.port, {
+        ...(options.onForwardError ? { onForwardError: options.onForwardError } : {}),
+      });
       const localPort = await forward.listen(options.localPort ?? 0);
       options.onStageDone?.(`127.0.0.1:${localPort} → 远端 ${processInfo.port}`);
 

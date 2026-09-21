@@ -22,6 +22,7 @@
 
 import { RemoteError } from '../util/errors.js';
 import { quote } from '../util/shell-quote.js';
+import { writeRemoteTextFile } from '../transport/write-text.js';
 import type { RemotePaths } from './remote-paths.js';
 import type { RemoteTransport } from '../transport/types.js';
 
@@ -152,14 +153,14 @@ export async function prepareSessionProfile(
     }
   }
 
-  // 3. 写 patch 文件（每次重写：端口与令牌每次会话都可能变）
+  // 3. 写 patch 文件（每次重写：端口与令牌每次会话都可能变）。
+  //    SFTP 主路径（远端未开 sftp 子系统时自动回退 printf-over-exec）；
+  //    严格模式——patch 承载凭据 baseURL 重定向，写失败必须立刻暴露
   let patchFile: string | undefined;
   if (options.patches && options.patches.length > 0) {
     patchFile = paths.sessionPatchFile(sessionId);
     const yaml = renderPatchYaml(options.patches);
-    await transport.exec(`printf '%s' ${quote(yaml)} > ${quote(patchFile)}`, {
-      ...(signal ? { signal } : {}),
-    });
+    await writeRemoteTextFile(transport, patchFile, yaml, signal ? { signal } : {});
   }
 
   return {

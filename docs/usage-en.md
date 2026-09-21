@@ -1,10 +1,10 @@
-# dsh-remote Usage Guide (English)
+# dsh-remote-explorer Usage Guide (English)
 
 **[English](usage-en.md)** | [中文](usage-cn.md)
 
-This document provides a detailed walkthrough of every `dsh-remote` command, its options, and common workflows.
+This document provides a detailed walkthrough of every `dsh-remote-explorer` command, its options, and common workflows.
 
-> Examples use the source-run form (`npx tsx src/cli/bin.ts <command>`). With a release package, substitute `./dsh-remote <command>` (Windows: `dsh-remote.cmd <command>`) — commands and options are identical.
+> Examples use the source-run form (`npx tsx src/cli/bin.ts <command>`). With a release package, substitute `./dsh-remote-explorer <command>` (Windows: `dsh-remote-explorer.cmd <command>`) — commands and options are identical.
 
 ## Table of contents
 
@@ -22,6 +22,7 @@ This document provides a detailed walkthrough of every `dsh-remote` command, its
 - [Common workflows](#common-workflows)
 - [Exit codes](#exit-codes)
 - [Git Bash path caveat](#git-bash-path-caveat)
+- [Using it as a dsh plugin](#using-it-as-a-dsh-plugin)
 
 ---
 
@@ -30,7 +31,7 @@ This document provides a detailed walkthrough of every `dsh-remote` command, its
 - **Node.js** v20.19+ or v22+ on the local machine (for running tsx).
 - A reachable remote host: either a `Host` entry in `~/.ssh/config`, or an ad-hoc `user@host[:port]` target (IPv6 must go through the config). Authentication supports private keys (`IdentityFile`, overridable with `--private-key`); with no key configured and an interactive terminal, you will be prompted for a password (no echo; kept in memory only, never written to disk). You can also pass `--password <password>` — **this leaks**: the plaintext is visible in the process list and shell history. The CLI prints a warning; treat it as a stopgap.
 - The remote host must be **Linux or macOS** (POSIX). The local client supports Windows, Linux, and macOS.
-- **API keys** for whichever LLM providers you use (e.g. `DEEPSEEK_API_KEY`, `ASTUDIO_API_KEY`), set as environment variables in the shell where you run `dsh-remote connect`.
+- **API keys** for whichever LLM providers you use (e.g. `DEEPSEEK_API_KEY`, `ASTUDIO_API_KEY`), set as environment variables in the shell where you run `dsh-remote-explorer connect`.
 
 ## Authentication and host targeting
 
@@ -65,7 +66,7 @@ Automatic reconnection is unattended: it **never prompts** and silently reuses t
 ## Command overview
 
 ```
-dsh-remote <command> [options]
+dsh-remote-explorer <command> [options]
 ```
 
 | Command | Description |
@@ -160,7 +161,7 @@ npx tsx src/cli/bin.ts provision <alias> --cwd //home/user
 
 **Why provision separately:** Provisioning is the slowest and most failure-prone step (~75 seconds for a fresh install). Separating it allows independent retry and diagnosis.
 
-**Version isolation:** Each Node and dsh version is installed in its own directory (e.g. `~/.dsh-remote/node/v24.11.1/`, `~/.dsh-remote/versions/dsh-0.1.6-alpha.2/`). Upgrading never overwrites in place — this avoids "Text file busy" errors when a running process holds files open.
+**Version isolation:** Each Node and dsh version is installed in its own directory (e.g. `~/.dsh-remote-explorer/btsd321/node/v24.11.1/`, `~/.dsh-remote-explorer/btsd321/versions/dsh-0.1.6-alpha.2/`). Upgrading never overwrites in place — this avoids "Text file busy" errors when a running process holds files open.
 
 **Output:** A table showing the remote base directory, Node version, dsh version, dsh entry path, and session `DSH_HOME`.
 
@@ -366,7 +367,7 @@ npx tsx src/cli/bin.ts kill my-server --all
 npx tsx src/cli/bin.ts clean my-server
 
 # Full remote uninstall (run on the remote host itself)
-rm -rf ~/.dsh-remote
+rm -rf ~/.dsh-remote-explorer/btsd321
 ```
 
 ### Force restart a stuck session
@@ -411,3 +412,92 @@ When using Git Bash (MSYS) on Windows, writing remote paths like `--cwd /home/us
 - Or set the environment variable: `MSYS_NO_PATHCONV=1`
 
 The CLI normalizes `//home/user` to `/home/user` internally, so session ids are consistent regardless of which form you use.
+
+(The plugin form is unaffected: panel and chat-box input never passes through a shell — write `/home/user` directly.)
+
+---
+
+## Using it as a dsh plugin
+
+Since 0.6.0 this tool is also a valid dsh plugin package: installed into a local dsh profile, remote-session management appears in three surfaces — a Settings panel, a slash command, and agent tools. **The plugin shares the CLI's session orchestration, remote provisioning, and session table** — it is not a lite version, just the same engine in a different cockpit.
+
+### Installation
+
+Prerequisites: a local dsh (`@deepseek-ai/dsh` ≥ 0.1.5-rc.2) and **pnpm on PATH** (the `dsh plugin` command forwards to pnpm verbatim; exit 127 when missing).
+
+```bash
+# From npm (installs into the web profile and auto-activates)
+dsh plugin --profile web add dsh-remote-explorer
+
+# When dsh is not on PATH
+npx --yes @deepseek-ai/dsh plugin --profile web add dsh-remote-explorer
+
+# From a local checkout (development): build the plugin artifacts first
+npm run build:plugin
+dsh plugin --profile web add /path/to/repo
+
+# Development sandbox (isolated DSH_HOME, never touches ~/.dsh; includes boot smoke)
+npx tsx scripts/dev-plugin.ts          # resident, Ctrl-C to stop
+npx tsx scripts/dev-plugin.ts --smoke  # probes then kills (CI)
+npx tsx scripts/dev-plugin.ts --sync   # sync artifacts into the sandbox only
+```
+
+Restart `dsh web` after installing (dsh contract: package replacement requires a process restart to load new code). Uninstall: `dsh plugin --profile web remove dsh-remote-explorer`.
+
+### The three surfaces
+
+**Settings → Remote SSH Sessions** (panel):
+
+- Connect form: host (dropdown from `~/.ssh/config`, or type `user@host[:port]`), remote directory (remembers the last value per host), advanced options (local port / force restart / mirror re-test / Node and dsh versions / private key path), SSH password field
+- Session table: state dot, local port, an "Open ↗" link (pops a new tab serving the **remote dsh UI through the tunnel**), a "Disconnect" button (with "Also stop remote dsh" checked by default); sessions kept by other local processes are marked "external" and read-only
+- Progress log: incremental live tail of the selected session (provisioning stages, state transitions, errors)
+
+**Slash command** (chat composer):
+
+```
+/remote-ssh hosts                             list ssh config hosts
+/remote-ssh connect <alias> [remote-dir]      start connecting in the background (returns immediately)
+/remote-ssh status                            session list and states
+/remote-ssh disconnect <alias|session-id> [--keep-remote]
+```
+
+**Agent tools** (callable by the model, behind dsh's regular tool-approval gate): `remote_hosts_list`, `remote_connect`, `remote_status`, `remote_kill`. All non-blocking: connect returns the session id immediately and the model polls status for progress. **Tools never accept a password parameter** — hosts needing password auth go through the panel or the CLI.
+
+### Configuration (profile patch layer)
+
+Override by entry id in the profile's `cordis.patch.yml`:
+
+```yaml
+- id: dsh-remote-explorer
+  config:
+    host: myhost              # default host alias
+    cwd: /home/youruser       # default remote directory
+    keepRemoteOnDispose: false # keep the remote dsh when the host exits
+    localPort: 0              # local port (0 = auto-assign)
+    nodeVersion: ""           # empty = provisioner default
+    dshVersion: ""            # empty = provisioner default
+    forceRestart: false
+    refreshMirrors: false
+    panel: true               # false = skip panel routes, keep command and tools
+```
+
+**There is no password field** — Config lands on disk with the patch layer; a password there would be plaintext on disk.
+
+### Lifecycle and credentials (differences from the CLI)
+
+| | CLI | Plugin |
+|---|---|---|
+| Session rides which process | the resident `connect` CLI process | the host dsh process |
+| On process exit | Ctrl-C stops the remote by default (`--keep-remote` keeps it) | dispose stops the remote by default (`keepRemoteOnDispose: true` keeps it) |
+| On SIGKILL | remote survives detached; the `kill` command cleans up | same |
+| LLM key source | environment of the shell launching the CLI | environment of the process launching dsh |
+| Settings mirror source | `~/.dsh/settings.yaml` | `$DSH_HOME/settings.yaml` (whatever the host actually uses) |
+
+The session table (`~/.dsh/remote-sessions.json`) is shared both ways: the panel shows CLI-kept sessions ("external", read-only) and `status` shows plugin-kept ones.
+
+### Troubleshooting
+
+- **Panel missing after install**: make sure dsh was restarted; `curl http://127.0.0.1:<port>/api/dsh-remote-explorer/ping` without credentials should return **401** (= plugin mounted and route protected), 404 = plugin not active (check `dsh.profile.bundles` in the profile's `package.json`)
+- **pnpm not found (exit 127)**: `npm i -g pnpm`
+- **Peer dependency warnings**: expected under `autoInstallPeers: false`; at runtime peers resolve through the profile's installation fallback links to the host's copies — harmless
+- **Connect stuck in provisioning**: watch the panel log; a first provisioning downloads Node and dsh (minutes) — run `doctor` to pre-check the host

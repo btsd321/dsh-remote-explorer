@@ -1,7 +1,8 @@
 /**
  * @file 基于 ssh2 的远端传输实现
  * @description {@link RemoteTransport} 的 SSH 实现：纯 JS 的 ssh2 客户端，
- *              支持跳板机链、命令执行、SFTP 上传、正向与反向端口转发。
+ *              支持跳板机链、命令执行、池化 SFTP 传输（二进制安全、会话内
+ *              并发、死连接自愈）、正向与反向端口转发。
  *
  * 为什么用 ssh2 而不是系统 `ssh` 命令：客户端可能是 Windows。Zed 全程用系统 ssh
  * 并靠 ControlMaster 复用连接，但其源码注明 Windows 上 ControlMaster 不支持、
@@ -31,12 +32,14 @@ import {
 } from 'ssh2';
 import { RemoteError, toErrorMessage } from '../util/errors.js';
 import { quote } from '../util/shell-quote.js';
-import { ChannelPool, type ChannelPoolConfig } from './channel-pool.js';
+import { ChannelPool, type ChannelLease, type ChannelPoolConfig } from './channel-pool.js';
 import type {
   ExecOptions,
   ExecResult,
+  FileTransfer,
   RemoteArch,
   RemoteChannel,
+  RemoteFileOptions,
   RemoteOs,
   RemotePlatform,
   RemoteTransport,
@@ -94,6 +97,31 @@ const MAX_PASSWORD_ATTEMPTS = 3;
  * 只有「握手成功但认证挂住」这种罕见情形才会等满 120 秒
  */
 const PASSWORD_READY_TIMEOUT_MS = 120_000;
+
+/**
+ * 批量上传的单文件默认超时。
+ *
+ * 大文件在慢链路上远超 30 秒的命令级超时——fastPut 是分块流式传输，
+ * 超时口径必须按「整个文件」而不是「单次请求」算。
+ */
+const UPLOAD_TIMEOUT_MS = 300_000;
+
+/**
+ * 批量上传的会话内并发度（参考实现 sync.js 的 mapLimit(files, 4) 同款）。
+ *
+ * 并发发生在**同一条** SFTP 通道内（协议支持多个在飞请求），不新开 SSH
+ * 通道——通道配额纪律（admin 上限 3）不受影响。
+ */
+const UPLOAD_CONCURRENCY = 4;
+
+/**
+ * SFTP 会话失效的错误特征（与参考实现 pool.js 同口径）。
+ *
+ * 覆盖两类故障：服务端空闲回收/网络抖动导致的子通道终止，以及连接级断开。
+ * 命中即作废池化会话并用新会话重试一次——keepalive 未察觉的服务端断开
+ * 由此兜底；非此类错误（权限、路径不存在）重试没有意义，直接抛。
+ */
+const STALE_SFTP_PATTERN = /channel open failure|open failed|unexpected sftp session termination|session termination|disconnect|socket error|no response from server|connection lost/i;
 
 /** 单次密码认证的内部状态（connectClient 内局部持有，不逃逸到方法外） */
 interface PasswordAuthState {
@@ -157,6 +185,12 @@ export class SshTransport implements RemoteTransport {
   private readonly jumpClients: Client[] = [];
   /** 已请求的反向监听端口 */
   private readonly reversePorts = new Set<number>();
+  /** 池化 SFTP 会话（懒建、跨操作复用；失效时置 undefined 由重试路径重建） */
+  private sftp: SFTPWrapper | undefined;
+  /** SFTP 会话建立的单飞 promise（并发调用共享一次建会话） */
+  private sftpOpening: Promise<SFTPWrapper> | undefined;
+  /** 池化 SFTP 会话占用的 admin 通道租约；会话失效时随之归还 */
+  private sftpLease: ChannelLease | undefined;
   private readonly pool: ChannelPool;
   private readonly timeoutMs: number;
   private readonly keepaliveIntervalMs: number;
@@ -268,44 +302,300 @@ export class SshTransport implements RemoteTransport {
   }
 
   /**
-   * 经 SFTP 上传单个文件。
-   *
-   * 仅用于离线回退路径。批量上传必须串行复用同一 SFTP 会话——并发会超通道上限。
+   * 经 SFTP 上传单个文件（走池化会话，含超时与死连接重试一次）。
    *
    * @param localPath - 本机文件路径
    * @param remotePath - 远端绝对路径（POSIX 风格）
    * @param signal - 取消信号
    */
   async uploadFile(localPath: string, remotePath: string, signal?: AbortSignal): Promise<void> {
-    const client = this.requireClient();
-    signal?.throwIfAborted();
+    await this.uploadFiles([{ localPath, remotePath }], signal ? { signal } : {});
+  }
 
-    const lease = await this.pool.acquire('admin', signal);
-    let sftp: SFTPWrapper | undefined;
+  /**
+   * 批量上传本地文件（单条池化 SFTP 会话 + 会话内 4 路并发流水线）。
+   *
+   * @param files - 传输条目列表
+   * @param options - 超时（默认 {@link UPLOAD_TIMEOUT_MS}）与取消信号
+   * @throws RemoteError 首个失败文件的错误（停止调度后续，等在飞完成后抛）
+   */
+  async uploadFiles(files: readonly FileTransfer[], options: RemoteFileOptions = {}): Promise<void> {
+    options.signal?.throwIfAborted();
+    if (files.length === 0) return;
+    const timeoutMs = options.timeoutMs ?? UPLOAD_TIMEOUT_MS;
+
+    // 共享游标的 worker 池（参考实现 sync.js 的 mapLimit 同构）：
+    // 首错即停止取新条目，在飞的完成后统一抛
+    let nextIndex = 0;
+    let firstError: unknown;
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        if (firstError !== undefined) return;
+        const file = files[nextIndex];
+        nextIndex += 1;
+        if (file === undefined) return;
+        try {
+          await this.withSftpRetry((sftp) => this.runSftpOp<void>(
+            `上传 ${file.remotePath}`, timeoutMs, options.signal,
+            (ok, fail) => {
+              sftp.fastPut(file.localPath, file.remotePath, (error) => {
+                if (error) fail(error);
+                else ok(undefined);
+              });
+            },
+          ));
+        } catch (error) {
+          firstError ??= this.sftpOpError(
+            `上传 ${file.localPath} 到 ${file.remotePath}`, error,
+          );
+        }
+      }
+    };
+    const workers: Promise<void>[] = [];
+    for (let index = 0; index < Math.min(UPLOAD_CONCURRENCY, files.length); index += 1) {
+      workers.push(worker());
+    }
+    await Promise.all(workers);
+    if (firstError !== undefined) throw firstError;
+  }
+
+  /**
+   * 把内容写入远端文件（二进制安全；父目录必须已存在）。
+   *
+   * @param remotePath - 远端绝对路径（POSIX 风格）
+   * @param content - 文件内容（字符串按 utf8 编码）
+   * @param options - 超时、取消信号与文件模式（仅创建新文件时生效）
+   * @throws RemoteError('EXEC_FAILED') 写入失败
+   */
+  async writeRemoteFile(
+    remotePath: string,
+    content: string | Buffer,
+    options: RemoteFileOptions = {},
+  ): Promise<void> {
+    options.signal?.throwIfAborted();
+    const timeoutMs = options.timeoutMs ?? this.timeoutMs;
     try {
-      sftp = await new Promise<SFTPWrapper>((resolve, reject) => {
+      await this.withSftpRetry((sftp) => this.runSftpOp<void>(
+        `写入 ${remotePath}`, timeoutMs, options.signal,
+        (ok, fail) => {
+          sftp.writeFile(
+            remotePath,
+            content,
+            options.mode !== undefined ? { mode: options.mode } : {},
+            (error) => {
+              if (error) fail(error);
+              else ok(undefined);
+            },
+          );
+        },
+      ));
+    } catch (error) {
+      throw this.sftpOpError(`写入文件 ${remotePath}`, error);
+    }
+  }
+
+  /**
+   * 读取远端文件全部内容（二进制安全）。
+   *
+   * @param remotePath - 远端绝对路径（POSIX 风格）
+   * @param options - 超时与取消信号
+   * @returns 文件内容
+   * @throws RemoteError('EXEC_FAILED') 读取失败（含文件不存在）
+   */
+  async readRemoteFile(remotePath: string, options: RemoteFileOptions = {}): Promise<Buffer> {
+    options.signal?.throwIfAborted();
+    const timeoutMs = options.timeoutMs ?? this.timeoutMs;
+    try {
+      return await this.withSftpRetry((sftp) => this.runSftpOp<Buffer>(
+        `读取 ${remotePath}`, timeoutMs, options.signal,
+        (ok, fail) => {
+          sftp.readFile(remotePath, (error, data) => {
+            if (error) fail(error);
+            else ok(data);
+          });
+        },
+      ));
+    } catch (error) {
+      throw this.sftpOpError(`读取文件 ${remotePath}`, error);
+    }
+  }
+
+  /**
+   * 探测 SFTP 子系统可用性（试建一次会话，成功后留在池里复用）。
+   *
+   * @throws RemoteError('CONNECT_FAILED') 会话建立失败（如远端未开 sftp 子系统）
+   */
+  async checkSftp(): Promise<void> {
+    await this.acquireSftp();
+  }
+
+  /**
+   * 取池化 SFTP 会话；没有则单飞建一条。
+   *
+   * 会话占 1 个 admin 通道配额，整个生命周期内复用——会话内并发操作
+   * （SFTP 协议支持多个在飞请求）不占额外配额。
+   *
+   * @param signal - 取消信号（作用于建会话时的通道申请）
+   * @returns 就绪的 SFTP 会话
+   * @throws RemoteError('CONNECT_FAILED') 未连接或会话建立失败
+   */
+  private acquireSftp(signal?: AbortSignal): Promise<SFTPWrapper> {
+    if (this.sftp) return Promise.resolve(this.sftp);
+    // 单飞：并发调用共享同一次建会话；失败时清空让下次调用重建
+    this.sftpOpening ??= this.openSftpSession(signal).finally(() => {
+      this.sftpOpening = undefined;
+    });
+    return this.sftpOpening;
+  }
+
+  /**
+   * 新建一条 SFTP 会话并入池。
+   *
+   * @param signal - 取消信号
+   * @returns 就绪的 SFTP 会话
+   * @throws RemoteError('CONNECT_FAILED') 会话建立失败
+   */
+  private async openSftpSession(signal?: AbortSignal): Promise<SFTPWrapper> {
+    const client = this.requireClient();
+    const lease = await this.pool.acquire('admin', signal);
+    try {
+      const sftp = await new Promise<SFTPWrapper>((resolve, reject) => {
         client.sftp((error, wrapper) => {
           if (error) reject(this.connectError(`打开 SFTP 会话失败: ${error.message}`, error));
           else resolve(wrapper);
         });
       });
-      await new Promise<void>((resolve, reject) => {
-        sftp!.fastPut(localPath, remotePath, (error) => {
-          if (error) {
-            reject(new RemoteError(
-              'EXEC_FAILED',
-              `上传 ${localPath} 到 ${this.hostAlias}:${remotePath} 失败: ${error.message}`,
-              { cause: error, hostAlias: this.hostAlias },
-            ));
-          } else {
-            resolve();
-          }
-        });
+      // 会话级失效监听：服务端空闲回收、网络抖动都会关掉子通道，就地作废
+      // 池——下一个操作经 withSftpRetry 的 stale 路径自动重建（双保险：
+      // close 通常随 error 到来，两个都挂）
+      sftp.on('close', () => {
+        if (this.sftp === sftp) this.invalidateSftp();
       });
-    } finally {
-      sftp?.end();
+      sftp.on('error', () => {
+        if (this.sftp === sftp) this.invalidateSftp();
+      });
+      this.sftp = sftp;
+      this.sftpLease = lease;
+      return sftp;
+    } catch (error) {
       lease.release();
+      throw error;
     }
+  }
+
+  /** 作废池化 SFTP 会话并归还通道租约；幂等 */
+  private invalidateSftp(): void {
+    const sftp = this.sftp;
+    const lease = this.sftpLease;
+    this.sftp = undefined;
+    this.sftpLease = undefined;
+    if (sftp) {
+      try {
+        sftp.end();
+      } catch { /* 连接已断时会话随之消失，end 失败无需处理 */ }
+    }
+    lease?.release();
+  }
+
+  /**
+   * 在池化会话上执行一次 SFTP 操作，死连接自动作废会话并重试一次。
+   *
+   * 重试口径与参考实现（pool.js 的 exec/sftp 双路径）一致：只有
+   * {@link STALE_SFTP_PATTERN} 命中的错误才值得换新会话再试；权限、
+   * 路径不存在这类错误重试没有意义，直接抛给调用方。
+   *
+   * @param op - 在就绪会话上执行的操作
+   * @returns 操作结果
+   */
+  private async withSftpRetry<T>(op: (sftp: SFTPWrapper) => Promise<T>): Promise<T> {
+    let sftp = await this.acquireSftp();
+    try {
+      return await op(sftp);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!STALE_SFTP_PATTERN.test(message)) throw error;
+      // 会话已失效：作废重建，重试一次（再失败就抛，不无限循环）
+      this.invalidateSftp();
+      sftp = await this.acquireSftp();
+      return op(sftp);
+    }
+  }
+
+  /**
+   * 给单次 SFTP 回调式操作套超时与取消（形态与 runExec 的收口一致）。
+   *
+   * 超时/取消只会让本方法的 promise 拒绝——已发出的 SFTP 请求无法撤销，
+   * 但会话随后会被作废路径回收，不会泄漏通道。
+   *
+   * @param describe - 操作描述（进错误消息）
+   * @param timeoutMs - 超时（毫秒）
+   * @param signal - 取消信号
+   * @param start - 启动操作；完成时调用 ok/fail 之一（恰好一次）
+   * @returns 操作结果
+   * @throws RemoteError('EXEC_FAILED') 超时或操作失败
+   * @throws RemoteError('ABORTED') 被取消
+   */
+  private runSftpOp<T>(
+    describe: string,
+    timeoutMs: number,
+    signal: AbortSignal | undefined,
+    start: (ok: (value: T) => void, fail: (error: Error) => void) => void,
+  ): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const cleanup = (): void => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const ok = (value: T): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(value);
+      };
+      const fail = (error: Error): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+      const timer = setTimeout(() => {
+        fail(new RemoteError(
+          'EXEC_FAILED',
+          `主机 ${this.hostAlias} 上的 SFTP 操作超时（${timeoutMs}ms）：${describe}`,
+          { hostAlias: this.hostAlias },
+        ));
+      }, timeoutMs);
+      timer.unref();
+      const onAbort = (): void => {
+        fail(new RemoteError('ABORTED', `主机 ${this.hostAlias} 上的 SFTP 操作被取消：${describe}`, {
+          hostAlias: this.hostAlias,
+        }));
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      try {
+        start(ok, fail);
+      } catch (error) {
+        // start 同步抛错（会话已死等）：归一化后走 fail
+        fail(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+  }
+
+  /**
+   * 把 SFTP 操作错误归一化为带上下文的 RemoteError。
+   *
+   * @param describe - 操作描述（进错误消息）
+   * @param error - 原始错误
+   * @returns 归一化错误；已是 RemoteError 时原样返回
+   */
+  private sftpOpError(describe: string, error: unknown): RemoteError {
+    if (error instanceof RemoteError) return error;
+    return new RemoteError(
+      'EXEC_FAILED',
+      `主机 ${this.hostAlias} 上${describe}失败: ${toErrorMessage(error)}`,
+      { cause: error, hostAlias: this.hostAlias },
+    );
   }
 
   /**
@@ -406,6 +696,8 @@ export class SshTransport implements RemoteTransport {
     if (this.disposed) return;
     this.disposed = true;
     this.pool.close();
+    // 池化 SFTP 会话随连接一起回收（先于 client.end，租约归还进已关闭的池是无害操作）
+    this.invalidateSftp();
 
     // 1. 撤反向监听（连接已断时会失败，忽略）
     if (this.client) {
@@ -866,6 +1158,9 @@ export class SshTransport implements RemoteTransport {
   private markFailed(error: Error): void {
     this.failure ??= error;
     this.pool.close();
+    // 连接已死，池化 SFTP 会话必然随之失效——就地作废，
+    // 后续操作经 requireClient 直接报「连接已失效」而不是等 SFTP 超时
+    this.invalidateSftp();
   }
 
   /**

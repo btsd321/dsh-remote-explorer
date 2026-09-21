@@ -39,6 +39,9 @@ export interface ChannelPoolConfig {
  *
  * admin 类（exec 命令、SFTP）确实受 OpenSSH `MaxSessions`（默认 10）约束，
  * 取 3 留余量即可——本工具的 exec 是串行的（心跳每 5 秒一条命令）。
+ * 注意池化 SFTP 会话（ssh-transport 的 acquireSftp）会**长期占用 1 个**
+ * admin 额度：剩余 2 个给 exec 用（心跳 + 一路并发操作），仍然够；
+ * 会话内的并发传输发生在同一条通道里，不占额外额度。
  *
  * forward 类是另一回事，实测取 5 是错的（用户实测踩过）：浏览器对单一 web
  * 主机常规保持 6 条以上 HTTP/1.1 keep-alive 连接，加上 WebSocket 与 SSE，

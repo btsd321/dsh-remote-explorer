@@ -22,13 +22,18 @@
  */
 
 /**
- * 本工具在远端家目录下的根目录名。
+ * 本工具在远端家目录下的根目录（相对家目录的两级路径）。
+ *
+ * 两级结构的用意：顶层 `.dsh-remote-explorer/` 按工具名隔离，其下的作者名
+ * 子目录 `btsd321/` 再按作者隔离——同名工具的不同发布方（或本工具未来换维护者）
+ * 在远端各占一棵子树，互不覆盖。完全卸载 = `rm -rf ~/.dsh-remote-explorer`。
  *
  * 导出是因为探测阶段还不知道家目录绝对路径，需要在远端脚本里用
  * `"$HOME"/<此名>` 拼接。注意那种场合只能转义这个名字本身，
  * 不能把 `$HOME` 一起塞进 `quote()`——单引号会阻止 shell 展开。
+ * 名字含 `/` 没有关系：`quote()` 的单引号包裹对多段路径同样成立。
  */
-export const BASE_DIR_NAME = '.dsh-remote';
+export const BASE_DIR_NAME = '.dsh-remote-explorer/btsd321';
 
 /**
  * 远端路径集合。
@@ -37,7 +42,7 @@ export const BASE_DIR_NAME = '.dsh-remote';
  * 因为 `~` 在非交互 shell 下的展开行为不可依赖。
  */
 export interface RemotePaths {
-  /** 根目录绝对路径，如 `/home/user/.dsh-remote` */
+  /** 根目录绝对路径，如 `/home/user/.dsh-remote-explorer/btsd321` */
   readonly base: string;
   /** 镜像测速缓存文件 */
   readonly mirrorCache: string;

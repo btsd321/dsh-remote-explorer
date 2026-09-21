@@ -84,7 +84,7 @@ export async function runProvision(options: ProvisionCommandOptions): Promise<nu
     );
     println();
     println(green(`引导完成，用时 ${seconds}s`));
-    println(dim('下一步：dsh-remote connect（P3 提供）'));
+    println(dim('下一步：dsh-remote-explorer connect（P3 提供）'));
     return 0;
   } finally {
     await transport.dispose();

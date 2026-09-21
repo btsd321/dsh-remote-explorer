@@ -7,7 +7,7 @@
  * 模型调用全部失败。这是反向隧道代理方案的既定代价，不是缺陷。
  *
  * 远端 dsh 本身是 detach 的，CLI 退出后它仍在跑，下次 connect 会探到并复用。
- * 要真正停掉用 `dsh-remote kill`。
+ * 要真正停掉用 `dsh-remote-explorer kill`。
  */
 
 import { spawn } from 'node:child_process';
@@ -115,7 +115,7 @@ export async function runConnect(options: ConnectCommandOptions): Promise<number
 
   if (session.reversePort !== undefined && session.missingKeyEnvs.length > 0) {
     println(red(`! 本机未设置 ${session.missingKeyEnvs.join('、')}——对应供应商的模型调用会失败`));
-    println(dim('  在启动 dsh-remote 的环境中导出该变量后重新 connect 即可'));
+    println(dim('  在启动 dsh-remote-explorer 的环境中导出该变量后重新 connect 即可'));
   }
 
   if (!options.noOpen) {
@@ -178,7 +178,7 @@ async function waitForInterrupt(
       if (state.tag === 'reconnect-exhausted') {
         onStateChange(state, describeState(state));
         println(red('会话已终止。远端操作的结果无法确认——远端 dsh 可能仍在运行'));
-        println(dim('用 dsh-remote connect 重新连接，或 dsh-remote kill 停止远端'));
+        println(dim('用 dsh-remote-explorer connect 重新连接，或 dsh-remote-explorer kill 停止远端'));
         finish();
       }
     }, 1_000);

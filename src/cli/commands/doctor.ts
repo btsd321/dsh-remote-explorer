@@ -227,7 +227,29 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
       detail: `管理类已用 ${usage.admin}，转发类已用 ${usage.forward}，无等待`,
     });
 
-    // 7. 隔离检查：本工具在远端的占用清单 + 确认不触碰官方 dsh 的家
+    // 7. SFTP 子系统：内部文件传输的主路径（settings 镜像、patch 落盘走它，
+    //    比 printf-over-exec 快且二进制安全）。不可用不阻断会话——文本写入
+    //    会自动回退 shell 重定向，但回退路径受命令长度限制，值得显式提示
+    progress.start('SFTP 子系统探测');
+    try {
+      await transport.checkSftp();
+      progress.done('可用');
+      findings.push({
+        item: 'SFTP 子系统',
+        verdict: 'ok',
+        detail: '可用（会话已池化，内部文件传输走主路径）',
+      });
+    } catch (error) {
+      progress.fail(toErrorMessage(error));
+      findings.push({
+        item: 'SFTP 子系统',
+        verdict: 'warn',
+        detail: `不可用（${toErrorMessage(error).split('\n').join(' ')}）；`
+          + '文本写入将回退 printf-over-exec，大文件与二进制传输不可用',
+      });
+    }
+
+    // 8. 隔离检查：本工具在远端的占用清单 + 确认不触碰官方 dsh 的家
     findings.push(await checkIsolation(transport, paths));
 
     println();
@@ -247,7 +269,7 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
  * 隔离检查：本工具在远端的落盘清单，以及对官方 dsh 家目录的确认。
  *
  * 隔离契约（对标 VS Code 的 ~/.vscode-server 单根自治模型）：
- * 本工具在远端的一切落盘都在 `~/.dsh-remote/` 内；远端 `~/.dsh`（官方 dsh
+ * 本工具在远端的一切落盘都在 `~/.dsh-remote-explorer/btsd321/` 内；远端 `~/.dsh`（官方 dsh
  * 的家）与 `~/.npm` 从不被本工具写入。检测 `~/.dsh` 是否存在只是给用户
  * 提示「这台机器上有别人在用官方 dsh」——存在与否都不改变本工具的行为。
  *

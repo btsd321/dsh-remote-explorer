@@ -80,10 +80,32 @@ async function promptPassword(promptText: string): Promise<string> {
   }
 }
 
+/**
+ * 自定义密码提示回调。
+ *
+ * 供无终端的宿主（如 dsh 插件形态：密码来自面板表单或宿主自己的 UI）
+ * 注入取密途径。语义与内置终端提示一致：返回 undefined 表示放弃认证。
+ *
+ * @param hostKey - 主机标识（"user@host:port"，由传输层构造）
+ * @param label - 定位标签（「主机 xxx」/「跳板机 1（host:port）」）
+ * @param attempt - 第几次尝试，从 1 起；> 1 表示上一份密码已被拒绝
+ * @returns 密码；undefined 表示放弃
+ */
+export type PasswordPromptFn = (
+  hostKey: string,
+  label: string,
+  attempt: number,
+) => Promise<string | undefined>;
+
 /** PasswordProvider 的构造选项 */
 export interface PasswordProviderOptions {
   /** 固定密码（--password 传入）：只用这一份，被拒后不重试、不提示 */
   fixed?: string;
+  /**
+   * 自定义提示回调：替代内置的终端 readline 提示。
+   * 优先级 fixed > prompt > 内置终端提示；缓存语义（get 缓存、peek 只读）不变
+   */
+  prompt?: PasswordPromptFn;
 }
 
 /**
@@ -94,16 +116,21 @@ export interface PasswordProviderOptions {
  *   `peek` 只读缓存，供重连等无人值守场景——绝不弹提示，没人会回应。
  * - 固定值（--password）：attempt 1 返回该值，attempt > 1 返回 undefined
  *   （重新提示无意义，重试只会白白消耗服务器的 MaxAuthTries 配额）。
+ *
+ * 注入 `prompt` 回调时替代内置终端提示（dsh 插件形态没有终端可提示），
+ * 缓存与重试语义与交互式模式完全一致。
  */
 export class PasswordProvider {
   private readonly cache = new Map<string, string>();
   private readonly fixed: string | undefined;
+  private readonly promptFn: PasswordPromptFn | undefined;
 
   /**
-   * @param options - 传 fixed 时进入固定值模式
+   * @param options - 传 fixed 时进入固定值模式；传 prompt 时替换提示途径
    */
   constructor(options?: PasswordProviderOptions) {
     this.fixed = options?.fixed;
+    this.promptFn = options?.prompt;
   }
 
   /**
@@ -123,11 +150,15 @@ export class PasswordProvider {
     if (cached !== undefined) return cached;
     const hint = attempt > 1 ? `（第 ${attempt} 次尝试；上一次密码被拒绝）` : '';
     try {
-      const password = await promptPassword(`${label} 的登录密码${hint}：`);
+      // 注入了自定义提示（插件形态）走注入途径；否则走内置终端 readline
+      const password = this.promptFn !== undefined
+        ? await this.promptFn(hostKey, label, attempt)
+        : await promptPassword(`${label} 的登录密码${hint}：`);
+      if (password === undefined) return undefined;
       this.cache.set(hostKey, password);
       return password;
     } catch {
-      /* Ctrl-C / 空输入 / 非 TTY：放弃认证，让传输层报「已取消」 */
+      /* Ctrl-C / 空输入 / 非 TTY / 注入回调失败：放弃认证，让传输层报「已取消」 */
       return undefined;
     }
   }

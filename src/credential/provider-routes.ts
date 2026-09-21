@@ -45,8 +45,19 @@ export interface ProxyRoute {
   label: string;
 }
 
-/** 本机 settings.yaml 的默认路径 */
-const LOCAL_SETTINGS_PATH = join(homedir(), '.dsh', 'settings.yaml');
+/**
+ * 本机 settings.yaml 的默认路径。
+ *
+ * 优先 `$DSH_HOME/settings.yaml`：以 dsh 插件形态运行时，本进程就是宿主 dsh，
+ * 它的家由 DSH_HOME 决定（桌面版指向 userData 而非 ~/.dsh）——镜像必须复制
+ * **宿主真正在用的**那份 settings。CLI 形态通常没有 DSH_HOME，回落 ~/.dsh。
+ * 做成函数而非常量：DSH_HOME 是进程环境，读取时机应在调用点而非模块加载点。
+ */
+function defaultLocalSettingsPath(): string {
+  const dshHome = process.env.DSH_HOME;
+  // 本机路径，node:path 的 join 是正确工具（远端路径才禁用 join）
+  return join(dshHome !== undefined && dshHome !== '' ? dshHome : join(homedir(), '.dsh'), 'settings.yaml');
+}
 
 /** DeepSeek 原生通道的路由前缀（保留字，pi-ai 供应商不得占用） */
 const DEEPSEEK_PREFIX = '/anthropic';
@@ -97,10 +108,10 @@ export function deepseekRoute(): ProxyRoute {
 /**
  * 读取本机 settings.yaml 文本。
  *
- * @param path - 覆盖路径（默认 ~/.dsh/settings.yaml）
+ * @param path - 覆盖路径（默认 `$DSH_HOME/settings.yaml`，无 DSH_HOME 时 ~/.dsh/settings.yaml）
  * @returns 文本；文件不存在时 undefined
  */
-export function readLocalSettings(path: string = LOCAL_SETTINGS_PATH): string | undefined {
+export function readLocalSettings(path: string = defaultLocalSettingsPath()): string | undefined {
   try {
     return readFileSync(path, 'utf8');
   } catch { /* 文件不存在或不可读：凭据路径只剩 DeepSeek 原生通道 */ }
@@ -212,6 +223,3 @@ function splitUrl(url: string): { origin: string; path: string } | undefined {
   } catch { /* 非法 URL 的供应商跳过 */ }
   return undefined;
 }
-
-/** 本机 settings.yaml 默认路径（导出供测试与诊断引用） */
-export const localSettingsPath = LOCAL_SETTINGS_PATH;

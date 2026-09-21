@@ -1,10 +1,10 @@
-# dsh-remote 使用指南（中文）
+# dsh-remote-explorer 使用指南（中文）
 
 [English](usage-en.md) | **[中文](usage-cn.md)**
 
-本文档详细介绍 `dsh-remote` 的每个命令、参数及常见工作流。
+本文档详细介绍 `dsh-remote-explorer` 的每个命令、参数及常见工作流。
 
-> 示例统一以源码方式（`npx tsx src/cli/bin.ts <命令>`）书写；用 release 分发包时把它替换为 `./dsh-remote <命令>`（Windows 为 `dsh-remote.cmd <命令>`），命令与参数完全一致。
+> 示例统一以源码方式（`npx tsx src/cli/bin.ts <命令>`）书写；用 release 分发包时把它替换为 `./dsh-remote-explorer <命令>`（Windows 为 `dsh-remote-explorer.cmd <命令>`），命令与参数完全一致。
 
 ## 目录
 
@@ -22,6 +22,7 @@
 - [常见工作流](#常见工作流)
 - [退出码](#退出码)
 - [Git Bash 路径注意事项](#git-bash-路径注意事项)
+- [以 dsh 插件形式使用](#以-dsh-插件形式使用)
 
 ---
 
@@ -30,7 +31,7 @@
 - **Node.js** v20.19+ 或 v22+（本机运行 tsx 用）。
 - 一台可 SSH 登录的远端主机：写进 `~/.ssh/config` 的 `Host` 条目，或用 `user@host[:port]` 直连（IPv6 需写进 config）。认证支持私钥（`IdentityFile`，可用 `--private-key` 覆盖）；未配置私钥且在交互式终端时，会提示输入密码（不回显，只存内存不落盘）；也可用 `--password <密码>` 明文传入——**有泄露风险**（命令行、进程列表与 shell 历史都能看到），CLI 会打印警告，建议仅作临时手段。
 - 远端主机必须是 **Linux 或 macOS**（POSIX）。本机客户端支持 Windows、Linux 和 macOS。
-- 使用哪个 LLM 供应商，就将其 **API key** 作为环境变量导出（如 `DEEPSEEK_API_KEY`、`ASTUDIO_API_KEY`），在运行 `dsh-remote connect` 的 shell 中设置。
+- 使用哪个 LLM 供应商，就将其 **API key** 作为环境变量导出（如 `DEEPSEEK_API_KEY`、`ASTUDIO_API_KEY`），在运行 `dsh-remote-explorer connect` 的 shell 中设置。
 
 ## 认证与主机指定
 
@@ -65,7 +66,7 @@
 ## 命令总览
 
 ```
-dsh-remote <命令> [参数]
+dsh-remote-explorer <命令> [参数]
 ```
 
 | 命令 | 说明 |
@@ -160,7 +161,7 @@ npx tsx src/cli/bin.ts provision <别名> --cwd //home/user
 
 **为什么单独成命令：** 引导是最慢也最容易失败的一步（全新安装约 75 秒）。独立出来便于单独重试与诊断。
 
-**版本隔离：** 每个 Node 和 dsh 版本装在各自目录（如 `~/.dsh-remote/node/v24.11.1/`、`~/.dsh-remote/versions/dsh-0.1.6-alpha.2/`）。升级从不原地覆盖——这避免了"运行中进程占着文件，写入报 Text file busy"的故障。
+**版本隔离：** 每个 Node 和 dsh 版本装在各自目录（如 `~/.dsh-remote-explorer/btsd321/node/v24.11.1/`、`~/.dsh-remote-explorer/btsd321/versions/dsh-0.1.6-alpha.2/`）。升级从不原地覆盖——这避免了"运行中进程占着文件，写入报 Text file busy"的故障。
 
 **输出：** 表格显示远端根目录、Node 版本、dsh 版本、dsh 入口路径和会话 `DSH_HOME`。
 
@@ -365,7 +366,7 @@ npx tsx src/cli/bin.ts kill my-server --all
 npx tsx src/cli/bin.ts clean my-server
 
 # 远端完整卸载（在远端主机上执行）
-rm -rf ~/.dsh-remote
+rm -rf ~/.dsh-remote-explorer/btsd321
 ```
 
 ### 强制重启卡住的会话
@@ -410,3 +411,92 @@ DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect my-server --cwd //home/us
 - 或设置环境变量：`MSYS_NO_PATHCONV=1`
 
 CLI 内部会将 `//home/user` 归一化为 `/home/user`，保证两种写法的会话 id 一致。
+
+（插件形态不受此影响：面板与聊天框输入不经过 shell，`/home/user` 直接写即可。）
+
+---
+
+## 以 dsh 插件形式使用
+
+0.6.0 起本工具同时是合法的 dsh 插件包：装进本机 dsh 的 profile 后，远程会话管理出现在 Settings 面板、slash 命令与 agent 工具三个入口里。**插件与 CLI 共享同一套会话编排、远端引导与会话表**——不是精简版，而是同一引擎换了驾驶舱。
+
+### 安装
+
+前置条件：本机已有 dsh（`@deepseek-ai/dsh` ≥ 0.1.5-rc.2），且 **PATH 上有 pnpm**（`dsh plugin` 命令是对 pnpm 的原样转发，缺失时报 exit 127）。
+
+```bash
+# 从 npm 安装（装进 web profile 并自动激活）
+dsh plugin --profile web add dsh-remote-explorer
+
+# dsh 不在 PATH 时
+npx --yes @deepseek-ai/dsh plugin --profile web add dsh-remote-explorer
+
+# 本地源码安装（开发）：先构建插件产物再装
+npm run build:plugin
+dsh plugin --profile web add /path/to/repo
+
+# 开发沙箱（隔离 DSH_HOME，绝不碰 ~/.dsh；含启动冒烟）
+npx tsx scripts/dev-plugin.ts          # 常驻，Ctrl-C 停
+npx tsx scripts/dev-plugin.ts --smoke  # 探针跑完即杀（CI）
+npx tsx scripts/dev-plugin.ts --sync   # 只同步产物进沙箱
+```
+
+装完重启 `dsh web`（dsh 契约：包替换需重启进程才加载新代码）。卸载：`dsh plugin --profile web remove dsh-remote-explorer`。
+
+### 三个入口
+
+**Settings → 远程 SSH 会话**（面板）：
+
+- 连接表单：主机（下拉来自 `~/.ssh/config`，也可直填 `user@host[:port]`）、远端目录（按主机记忆上次值）、高级选项（本机端口 / 强制重启 / 重测镜像 / Node 与 dsh 版本 / 私钥路径）、SSH 密码框
+- 会话表：状态点、本机端口、「打开 ↗」链接（弹新页 = **隧道转发后的远端 dsh 界面**）、「断开」按钮（默认勾选「同时停止远端 dsh」）；其他本机进程维持的会话标「外部」只读
+- 进度日志：选中会话后实时增量滚动（引导阶段、状态迁移、错误全在这里）
+
+**slash 命令**（聊天输入框）：
+
+```
+/remote-ssh hosts                             列出 ssh config 主机
+/remote-ssh connect <别名> [远端目录]          后台发起连接（立即返回）
+/remote-ssh status                            会话列表与状态
+/remote-ssh disconnect <别名|会话id> [--keep-remote]
+```
+
+**agent 工具**（模型可调用，受 dsh 的工具审批门槛约束）：`remote_hosts_list`、`remote_connect`、`remote_status`、`remote_kill`。全部非阻塞语义：connect 立即返回会话 id，模型用 status 轮询进度。**工具永不接受密码参数**——需要密码认证的主机走面板或 CLI。
+
+### 配置（profile patch 层）
+
+在 profile 的 `cordis.patch.yml` 里按 entry id 覆盖：
+
+```yaml
+- id: dsh-remote-explorer
+  config:
+    host: myhost              # 默认主机别名
+    cwd: /home/youruser       # 默认远端目录
+    keepRemoteOnDispose: false # 宿主退出时是否保留远端 dsh
+    localPort: 0              # 本机端口（0 = 自动分配）
+    nodeVersion: ""           # 空 = provisioner 默认
+    dshVersion: ""            # 空 = provisioner 默认
+    forceRestart: false
+    refreshMirrors: false
+    panel: true               # false = 不注册面板路由，只留命令与工具
+```
+
+**没有 password 字段**——Config 会随 patch 落盘，密码进配置等于明文写磁盘。
+
+### 生命周期与凭据（与 CLI 的差异）
+
+| | CLI | 插件 |
+|---|---|---|
+| 会话挂在哪个进程 | `connect` 的常驻 CLI 进程 | 宿主 dsh 进程 |
+| 进程退出时 | Ctrl-C 默认停远端（`--keep-remote` 保留） | dispose 默认停远端（`keepRemoteOnDispose: true` 保留） |
+| 被 SIGKILL | 远端 detach 存活，`kill` 命令兜底 | 同左 |
+| LLM key 来源 | 启动 CLI 的 shell 环境 | 启动 dsh 的进程环境 |
+| settings 镜像来源 | `~/.dsh/settings.yaml` | `$DSH_HOME/settings.yaml`（宿主真正在用的那份） |
+
+会话表（`~/.dsh/remote-sessions.json`）两形态互见：插件面板显示 CLI 维持的会话（「外部」只读），`status` 命令显示插件维持的会话。
+
+### 故障排查
+
+- **装完面板没出现**：确认重启了 dsh；`curl http://127.0.0.1:<端口>/api/dsh-remote-explorer/ping` 不带凭据应得 **401**（= 插件已挂载且路由受保护），404 = 插件没激活（查 profile `package.json` 的 `dsh.profile.bundles`）
+- **pnpm 未找到（exit 127）**：`npm i -g pnpm`
+- **peer 依赖警告**：`autoInstallPeers: false` 下属预期，运行时经 profile 安装回退链接共享宿主实例，不影响使用
+- **连接一直卡在引导**：面板日志区看阶段输出；远端首次引导要下载 Node 与 dsh（数分钟），`doctor` 可先诊断

@@ -216,7 +216,7 @@ export class TunnelProxyCredential implements CredentialStrategy {
       const presented = extractToken(req);
       if (presented === undefined || !tokenEquals(this.proxyToken, presented)) {
         res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' });
-        res.end('dsh-remote proxy: invalid proxy token');
+        res.end('dsh-remote-explorer proxy: invalid proxy token');
         return;
       }
 
@@ -228,7 +228,7 @@ export class TunnelProxyCredential implements CredentialStrategy {
       const route = matchRoute(this.routes, path);
       if (!route) {
         res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
-        res.end(`dsh-remote proxy: 无匹配的供应商路由（${path}）。`
+        res.end(`dsh-remote-explorer proxy: 无匹配的供应商路由（${path}）。`
           + `可用前缀：${this.routes.map(r => r.prefix).join('、')}`);
         return;
       }
@@ -237,8 +237,8 @@ export class TunnelProxyCredential implements CredentialStrategy {
       const apiKey = process.env[route.keyEnv];
       if (apiKey === undefined || apiKey.length === 0) {
         res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
-        res.end(`dsh-remote proxy: 本机未设置 ${route.keyEnv}（供应商 ${route.label}），`
-          + '无法代理该供应商的调用。请在启动 dsh-remote 的环境中导出该变量后重连');
+        res.end(`dsh-remote-explorer proxy: 本机未设置 ${route.keyEnv}（供应商 ${route.label}），`
+          + '无法代理该供应商的调用。请在启动 dsh-remote-explorer 的环境中导出该变量后重连');
         return;
       }
 
@@ -293,7 +293,7 @@ export class TunnelProxyCredential implements CredentialStrategy {
       if (!res.headersSent) {
         res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
       }
-      res.end(`dsh-remote proxy: 转发失败（${describeError(error)}）`);
+      res.end(`dsh-remote-explorer proxy: 转发失败（${describeError(error)}）`);
     }
   }
 
@@ -305,7 +305,9 @@ export class TunnelProxyCredential implements CredentialStrategy {
    */
   private filteredResponseHeaders(upstream: Response): Record<string, string | string[]> {
     const result: Record<string, string | string[]> = {};
-    for (const [name, value] of upstream.headers) {
+    // 显式 .entries() 而非直接 for...of：tsconfig 加了 DOM lib（插件浏览器半需要）后，
+    // DOM 的 Headers 类型没有 Symbol.iterator，直接迭代会报 TS2488；.entries() 两套类型都兼容
+    for (const [name, value] of upstream.headers.entries()) {
       if (HOP_RESPONSE_HEADERS.has(name.toLowerCase())) continue;
       if (name in result) {
         const existing = result[name]!;

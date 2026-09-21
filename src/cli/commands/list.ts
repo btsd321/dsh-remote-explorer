@@ -33,6 +33,6 @@ export function runList(): number {
     ]),
   );
   println();
-  println(dim(`共 ${hosts.length} 台主机。用 dsh-remote doctor <别名> 检查某台主机的引导条件`));
+  println(dim(`共 ${hosts.length} 台主机。用 dsh-remote-explorer doctor <别名> 检查某台主机的引导条件`));
   return 0;
 }

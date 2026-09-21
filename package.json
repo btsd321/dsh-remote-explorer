@@ -1,31 +1,96 @@
 {
-  "name": "@deepseek-ai/dsh-remote",
-  "version": "0.5.0",
+  "name": "dsh-remote-explorer",
+  "version": "0.6.0",
   "description": "远程开发启动器：把 dsh 装到远程主机并在本机浏览器中使用，凭据不离开本机",
   "type": "module",
   "license": "Apache-2.0",
   "bin": {
-    "dsh-remote": "bin/dsh-remote.mjs"
+    "dsh-remote-explorer": "bin/dsh-remote-explorer.mjs"
+  },
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
   },
   "files": [
     "bin",
     "src",
+    "lib",
+    "cordis.patch.yml",
     "PLAN.md"
   ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-locale"
+      ],
+      "platform": "web"
+    }
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "dsh-remote": "tsx src/cli/bin.ts"
+    "dsh-remote-explorer": "tsx src/cli/bin.ts",
+    "build:plugin": "tsx scripts/build-plugin.ts",
+    "check:plugin": "tsx scripts/check-plugin.ts",
+    "dev:plugin": "tsx scripts/dev-plugin.ts",
+    "prepublishOnly": "tsx scripts/build-plugin.ts && tsx scripts/check-plugin.ts"
   },
   "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1",
     "ssh-config": "5.3.0",
     "ssh2": "1.17.0",
     "tsx": "^4.23.13",
     "yaml": "^2.9.1"
   },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-client-connection": "^0.1.5-rc.2 || ^0.1.6-0",
+    "@deepseek-ai/dsh-client-locale": "^0.1.5-rc.2 || ^0.1.6-0",
+    "@deepseek-ai/dsh-client-ui-renderer": "^0.1.5-rc.2 || ^0.1.6-0",
+    "@deepseek-ai/dsh-commands": "^0.1.5-rc.2 || ^0.1.6-0",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.5-rc.2 || ^0.1.6-0",
+    "@deepseek-ai/dsh-system-prompt": "^0.1.5-rc.2 || ^0.1.6-0",
+    "@deepseek-ai/dsh-tools": "^0.1.5-rc.2 || ^0.1.6-0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-client-connection": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-locale": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-renderer": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-commands": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-host-webserver": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-client-connection": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-locale": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-ui-settings": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.1.6-alpha.2",
+    "@deepseek-ai/dsh-commands": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-host-webserver": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-system-prompt": "0.1.6-alpha.2",
+    "@deepseek-ai/dsh-tools": "0.1.6-alpha.2",
     "@types/node": "^22.0.0",
+    "@types/react": "^18.2.0",
     "@types/ssh2": "^1.15.0",
     "esbuild": "~0.28.0",
+    "react": "^18.2.0",
     "typescript": "^5.7.0"
   },
   "engines": {

@@ -1,4 +1,4 @@
-# dsh-remote
+# dsh-remote-explorer
 
 [English](README.md) | **[中文](README.cn.md)**
 
@@ -15,7 +15,7 @@
 
 ## 安装与运行
 
-两种方式任选其一，命令与参数完全一致。
+CLI 有两种运行方式（命令与参数完全一致）；本机已在用 dsh 的用户还可以直接装成 **dsh 插件**（方式三）。
 
 ### 方式一：源码运行
 
@@ -28,19 +28,40 @@ npx tsx src/cli/bin.ts list
 
 ### 方式二：release 包运行
 
-从发布处下载对应平台的压缩包（由 [打包](#打包)脚本产出，命名 `dsh-remote-<版本>-<平台>.<zip|tar.gz>`），解压后直接运行——目标机无需 Node、npm 与网络：
+从发布处下载对应平台的压缩包（由 [打包](#打包)脚本产出，命名 `dsh-remote-explorer-<版本>-<平台>.<zip|tar.gz>`），解压后直接运行——目标机无需 Node、npm 与网络：
 
 | 平台 | 包格式 | 解压后的运行方式 |
 |---|---|---|
-| win32-x64 | `.zip` | `dsh-remote.cmd <命令>` |
-| linux-x64 / linux-arm64 | `.tar.gz` | `./dsh-remote <命令>` |
-| darwin-x64 / darwin-arm64 | `.tar.gz` | `./dsh-remote <命令>` |
+| win32-x64 | `.zip` | `dsh-remote-explorer.cmd <命令>` |
+| linux-x64 / linux-arm64 | `.tar.gz` | `./dsh-remote-explorer <命令>` |
+| darwin-x64 / darwin-arm64 | `.tar.gz` | `./dsh-remote-explorer <命令>` |
 
-包内自带官方 Node 二进制（下载时经 SHASUMS256 校验）与单文件 CLI `dsh-remote.cjs`（全部依赖已打进单文件）。下载后建议按发布处公布的 sha256 校验压缩包完整性。
+包内自带官方 Node 二进制（下载时经 SHASUMS256 校验）与单文件 CLI `dsh-remote-explorer.cjs`（全部依赖已打进单文件）。下载后建议按发布处公布的 sha256 校验压缩包完整性。
+
+### 方式三：作为 dsh 插件安装
+
+本机已经在用 dsh（Web/Desktop）时，可把本工具装进 dsh，用设置面板、slash 命令与 agent 工具管理远程会话：
+
+```bash
+# 前置：PATH 上有 pnpm（dsh plugin 命令是对 pnpm 的原样转发）
+dsh plugin --profile web add dsh-remote-explorer
+# dsh 不在 PATH 时：
+npx --yes @deepseek-ai/dsh plugin --profile web add dsh-remote-explorer
+# 本地源码安装（先构建插件产物）：
+npm run build:plugin && dsh plugin --profile web add /path/to/repo
+```
+
+装完重启 `dsh web`。插件提供三个入口：
+
+- **Settings → 远程 SSH 会话** 面板：选主机、连接/断开、实时进度日志；每个会话的「打开」弹新页——就是经 SSH 隧道转发的**远端 dsh 界面**
+- **slash 命令** `/remote-ssh`：`hosts | connect <别名> [远端目录] | status | disconnect <别名|会话id> [--keep-remote]`
+- **agent 工具** `remote_hosts_list / remote_connect / remote_status / remote_kill`（受 dsh 的工具审批门槛约束）
+
+插件与 CLI 共享同一套会话编排与远端落盘（`~/.dsh-remote-explorer/btsd321/`），会话表互通：`dsh-remote-explorer status` 能看到插件维持的会话，插件面板也能看到 CLI 维持的会话（标记「外部」只读）。两点差异：**会话生命周期挂在宿主 dsh 进程上**——dsh 退出默认连远端一起停（profile patch 里 `keepRemoteOnDispose: true` 可保留）；LLM key 取自启动 dsh 的进程环境。详见[使用指南](docs/usage-cn.md)。
 
 ## 快速开始
 
-> 下文示例统一以**源码方式**书写；用 release 包时把 `npx tsx src/cli/bin.ts` 替换为 `./dsh-remote`（Windows 为 `dsh-remote.cmd`），参数完全一致。
+> 下文示例统一以**源码方式**书写；用 release 包时把 `npx tsx src/cli/bin.ts` 替换为 `./dsh-remote-explorer`（Windows 为 `dsh-remote-explorer.cmd`），参数完全一致。
 
 ```bash
 # 列出 ~/.ssh/config 中的主机
@@ -95,10 +116,10 @@ npx tsx src/cli/bin.ts list --ssh-config /path/to/config
 
 ## 远端落盘隔离
 
-对标 VS Code `~/.vscode-server` 的单根自治模型：本工具在远端的一切落盘都在 `~/.dsh-remote/` 内（安装、每会话状态、npm 缓存、临时文件），**从不写入**远端 `~/.dsh`（官方 dsh 的家）与 `~/.npm`（远端 npm 使用者共享的缓存）。远端 dsh 的 skill 目录也重定向到会话内（`DSH_AGENTS_HOME`），不读机器全局的 `~/.agents`。
+对标 VS Code `~/.vscode-server` 的单根自治模型：本工具在远端的一切落盘都在 `~/.dsh-remote-explorer/btsd321/` 内（安装、每会话状态、npm 缓存、临时文件），**从不写入**远端 `~/.dsh`（官方 dsh 的家）与 `~/.npm`（远端 npm 使用者共享的缓存）。远端 dsh 的 skill 目录也重定向到会话内（`DSH_AGENTS_HOME`），不读机器全局的 `~/.agents`。
 
 - 同机跑官方 dsh 的其他人不受任何影响；`doctor` 的「隔离检查」段会报告占用。
-- 完全卸载 = `rm -rf ~/.dsh-remote`，一个命令走干净。
+- 完全卸载 = `rm -rf ~/.dsh-remote-explorer/btsd321`，一个命令走干净。
 - 已知低风险共享：远端 pnpm store——仅当有人主动在远端跑 `dsh plugin` 才触及，内容寻址并发安全。
 
 **在 Git Bash 里写远端路径要用双斜杠**（`--cwd //home/xxx`）或先设 `MSYS_NO_PATHCONV=1`。MSYS 会把 `/home/xxx` 改写成 `D:/SoftWare/Git/home/xxx`，这发生在参数到达程序之前，程序只能识别并拒绝。
@@ -115,7 +136,7 @@ npx tsx src/cli/bin.ts list --ssh-config /path/to/config
 └───────────────┬────────────────┘              │                              │
                 │ HTTP / WS + 会话令牌           │  ├ session / agent           │
 ┌───────────────▼────────────────┐  正向转发     │  ├ fs / subprocess           │
-│ dsh-remote CLI（常驻）          │══════════════▶│  ├ terminal / lsp            │
+│ dsh-remote-explorer CLI（常驻）          │══════════════▶│  ├ terminal / lsp            │
 │ ├ transport  ssh2 连接与转发     │              │  └ sandbox                   │
 │ ├ provision  装 Node 与 dsh      │              │                              │
 │ ├ tunnel     端口转发            │  反向转发     │                              │
@@ -176,7 +197,7 @@ npx -y -p typescript@5.7.3 tsc --noEmit
 
 ## 打包
 
-产出 release 分发包（见[安装与运行](#方式二release-包运行)）：esbuild 把 CLI 与全部运行时依赖打进单个 `dsh-remote.cjs`，再按目标平台打入官方 Node 二进制，组装启动器与文档后压缩。产物在 `dist/`（已 gitignore），**不改变源码的 tsx 运行方式**。
+产出 release 分发包（见[安装与运行](#方式二release-包运行)）：esbuild 把 CLI 与全部运行时依赖打进单个 `dsh-remote-explorer.cjs`，再按目标平台打入官方 Node 二进制，组装启动器与文档后压缩。产物在 `dist/`（已 gitignore），**不改变源码的 tsx 运行方式**。
 
 ```bash
 npx tsx scripts/package.ts                        # 打当前运行平台

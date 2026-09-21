@@ -99,7 +99,7 @@ export async function runKill(options: KillCommandOptions): Promise<number> {
     } else {
       println(yellow('没有正在运行的远端 dsh'));
     }
-    println(dim('安装目录与会话 profile 均保留；用 dsh-remote connect 可再次启动'));
+    println(dim('安装目录与会话 profile 均保留；用 dsh-remote-explorer connect 可再次启动'));
     return 0;
   } finally {
     await transport.dispose();

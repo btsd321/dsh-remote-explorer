@@ -1,0 +1,8 @@
+# dsh-remote-explorer 的 bundle patch：把插件宿主半插入 profile 的 cordis 层栈。
+#
+# 包名 dsh-remote-explorer 与第三方插件 dsh-remote（flymysql）不同名，
+# entry id 直接用包名即可共存，无撞车问题。
+# 用户可在 profile 自己的 cordis.patch.yml 里按此 id 覆盖 config 字段。
+- insert:
+    - id: dsh-remote-explorer
+      name: 'dsh-remote-explorer'

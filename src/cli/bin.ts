@@ -1,6 +1,6 @@
 #!/usr/bin/env -S npx tsx
 /**
- * @file dsh-remote 可执行入口
+ * @file dsh-remote-explorer 可执行入口
  * @description `bin` 字段指向的文件。仅负责调用 {@link run}，不含任何逻辑——
  *              这样测试可以直接 import `main()` 而不触发进程级行为。
  *

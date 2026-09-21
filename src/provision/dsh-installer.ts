@@ -17,7 +17,7 @@
  * 3. **npm 缓存必须收进本工具的根目录。** 不设 `npm_config_cache` 时 npm
  *    写远端用户级 `~/.npm`（缓存与 `_logs` 都在里面）——那是远端其他
  *    npm 使用者的共享目录。隔离契约是「本工具在远端的一切落盘都在
- *    `~/.dsh-remote/` 内、完全不触碰远端 `~/.dsh` 与 `~/.npm`」，
+ *    `~/.dsh-remote-explorer/btsd321/` 内、完全不触碰远端 `~/.dsh` 与 `~/.npm`」，
  *    对标 VS Code 的 `~/.vscode-server` 单根自治模型。
  */
 
@@ -91,7 +91,7 @@ export async function ensureDsh(
 
   // 2. 安装。目录里放一个占位 package.json，让 npm 把依赖装进本目录而不是向上找
   options.onProgress?.(`安装 dsh ${version}（首次约需 1 分钟）`);
-  const placeholder = JSON.stringify({ name: 'dsh-remote-install', private: true });
+  const placeholder = JSON.stringify({ name: 'dsh-remote-explorer-install', private: true });
   const install = [
     `rm -rf ${quote(installDir)}`,
     `mkdir -p ${quote(installDir)}`,
@@ -114,7 +114,7 @@ export async function ensureDsh(
       'EXEC_FAILED',
       `在主机 ${transport.hostAlias} 上安装 dsh ${version} 失败。`
         + '若报错形如 V8 内存分配失败或 SIGTRAP，通常是 Node 运行时在该架构上不稳定，'
-        + '请用 dsh-remote doctor 检查 Node 稳定性自检结果',
+        + '请用 dsh-remote-explorer doctor 检查 Node 稳定性自检结果',
       { cause: error, hostAlias: transport.hostAlias },
     );
   }

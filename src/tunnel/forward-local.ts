@@ -20,6 +20,15 @@ import type { RemoteTransport } from '../transport/types.js';
 /** 本机转发绑定地址，固定回环 */
 const LOCAL_BIND_ADDR = '127.0.0.1';
 
+/** 转发钩子：让上层（会话编排 → CLI/插件）接管本层的告警输出 */
+export interface LocalForwardHooks {
+  /**
+   * 单条入站连接转发失败（开通道失败）时调用。
+   * 未注入时回退直写 stderr（CLI 形态的既有行为）
+   */
+  onForwardError?: (message: string) => void;
+}
+
 /**
  * 正向转发句柄。
  *
@@ -37,11 +46,13 @@ export class LocalForward {
    * @param transport - 初始传输实例
    * @param remoteHost - 远端目标地址（应始终为 127.0.0.1）
    * @param remotePort - 远端目标端口
+   * @param hooks - 告警输出钩子（插件形态注入；缺省直写 stderr）
    */
   constructor(
     transport: RemoteTransport,
     private readonly remoteHost: string,
     private readonly remotePort: number,
+    private readonly hooks: LocalForwardHooks = {},
   ) {
     this.transport = transport;
   }
@@ -154,8 +165,11 @@ export class LocalForward {
       // 而这里要的是干净的连接重置。
       // 不在这里触发重连：重连由会话编排层按心跳统一决策，
       // 否则每个失败的连接都会各自发起一次重连。
-      // 直接写 stderr 而非 cli 层的输出模块：tunnel 层不得向上 import
-      process.stderr.write(`转发失败（连接已断开，浏览器会自行重试）：${toErrorMessage(error)}\n`);
+      // 告警输出走钩子（插件形态接进日志缓冲）；未注入时直写 stderr 而非
+      // cli 层的输出模块——tunnel 层不得向上 import
+      const message = `转发失败（连接已断开，浏览器会自行重试）：${toErrorMessage(error)}`;
+      if (this.hooks.onForwardError) this.hooks.onForwardError(message);
+      else process.stderr.write(`${message}\n`);
       socket.destroy();
       return;
     }

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * @file dsh-remote 可执行壳
+ * @file dsh-remote-explorer 可执行壳
  * @description npm `bin` 字段指向的入口。仓库无构建步骤——源码以 .ts 形式直接运行，
  *              所以这里先注册 tsx 的 ESM 加载器，再动态 import TypeScript 入口。
  *

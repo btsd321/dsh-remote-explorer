@@ -37,7 +37,7 @@ import { toErrorMessage } from '../src/util/errors.js';
 /** 仓库根目录（脚本在 scripts/ 下，上一级即根） */
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-/** Bundle 入口：cli 可执行入口（bin/dsh-remote.mjs 是 tsx 注册壳，分发不用它） */
+/** Bundle 入口：cli 可执行入口（bin/dsh-remote-explorer.mjs 是 tsx 注册壳，分发不用它） */
 const BUNDLE_ENTRY = join(REPO_ROOT, 'src', 'cli', 'bin.ts');
 
 /** 随包分发的文档：许可 + 双语 README + 双语使用指南 */
@@ -280,8 +280,8 @@ function extractNodeBinary(archive: string, member: string, destFile: string): v
 /**
  * 组装单个平台的 staging 目录。
  *
- * @param stagingRoot - staging 根目录（其下建 dsh-remote/）
- * @param bundleFile - 已生成的 dsh-remote.cjs 路径
+ * @param stagingRoot - staging 根目录（其下建 dsh-remote-explorer/）
+ * @param bundleFile - 已生成的 dsh-remote-explorer.cjs 路径
  * @param nodeBinaryFile - 已提取的 Node 二进制路径
  * @param target - 目标平台
  */
@@ -291,21 +291,21 @@ function assembleStaging(
   nodeBinaryFile: string,
   target: Target,
 ): string {
-  const pkgDir = join(stagingRoot, 'dsh-remote');
+  const pkgDir = join(stagingRoot, 'dsh-remote-explorer');
   rmSync(pkgDir, { recursive: true, force: true });
   mkdirSync(pkgDir, { recursive: true });
 
   // 1. 运行时三件套：Node 二进制、单文件 CLI、启动器
   cpSync(nodeBinaryFile, join(pkgDir, target.os === 'win32' ? 'node.exe' : 'node'));
-  cpSync(bundleFile, join(pkgDir, 'dsh-remote.cjs'));
+  cpSync(bundleFile, join(pkgDir, 'dsh-remote-explorer.cjs'));
   if (target.os === 'win32') {
     // cmd 启动器：%~dp0 带结尾反斜杠；@ 抑制命令回显
-    writeFileSync(join(pkgDir, 'dsh-remote.cmd'),
-      '@"%~dp0node.exe" "%~dp0dsh-remote.cjs" %*\r\n');
+    writeFileSync(join(pkgDir, 'dsh-remote-explorer.cmd'),
+      '@"%~dp0node.exe" "%~dp0dsh-remote-explorer.cjs" %*\r\n');
   } else {
     // sh 启动器：以脚本自身位置定位 node 与 cjs，可在任意目录调用
-    writeFileSync(join(pkgDir, 'dsh-remote'),
-      '#!/bin/sh\nexec "$(dirname "$0")/node" "$(dirname "$0")/dsh-remote.cjs" "$@"\n');
+    writeFileSync(join(pkgDir, 'dsh-remote-explorer'),
+      '#!/bin/sh\nexec "$(dirname "$0")/node" "$(dirname "$0")/dsh-remote-explorer.cjs" "$@"\n');
   }
 
   // 2. 文档（许可必须随分发走）
@@ -326,7 +326,7 @@ function assembleStaging(
  * tar.gz 加 `--mode=755`：Windows 文件系统给不出执行位（fs chmod 是 no-op），
  * 统一 755 保证 sh 启动器与 node 在 POSIX 目标机上可直接执行。
  *
- * @param pkgDir - staging 里的 dsh-remote/ 目录
+ * @param pkgDir - staging 里的 dsh-remote-explorer/ 目录
  * @param outDir - 产物目录
  * @param version - 本工具版本
  * @param target - 目标平台
@@ -334,13 +334,13 @@ function assembleStaging(
  */
 function archivePackage(pkgDir: string, outDir: string, version: string, target: Target): string {
   const ext = target.os === 'win32' ? 'zip' : 'tar.gz';
-  const outFile = join(outDir, `dsh-remote-${version}-${target.os}-${target.arch}.${ext}`);
+  const outFile = join(outDir, `dsh-remote-explorer-${version}-${target.os}-${target.arch}.${ext}`);
   rmSync(outFile, { force: true });
   if (target.os === 'win32') {
     // bsdtar 的 -a 按扩展名自动选 zip 格式
-    runTar(['-a', '-cf', outFile, '-C', dirname(pkgDir), 'dsh-remote'], true);
+    runTar(['-a', '-cf', outFile, '-C', dirname(pkgDir), 'dsh-remote-explorer'], true);
   } else {
-    runTar(['-czf', outFile, '--mode=755', '-C', dirname(pkgDir), 'dsh-remote'], false);
+    runTar(['-czf', outFile, '--mode=755', '-C', dirname(pkgDir), 'dsh-remote-explorer'], false);
   }
   return outFile;
 }
@@ -436,10 +436,10 @@ async function main(): Promise<number> {
   mkdirSync(workDir, { recursive: true });
 
   // 4. Bundle：单文件 CLI（全平台共用，只做一次）
-  println(bold(`打包 dsh-remote ${pkg.version}（Node ${nodeVersion}，${mirror} 镜像）`));
+  println(bold(`打包 dsh-remote-explorer ${pkg.version}（Node ${nodeVersion}，${mirror} 镜像）`));
   const progress = new ProgressReporter();
   progress.start('esbuild 打包单文件 CLI');
-  const bundleFile = join(workDir, 'dsh-remote.cjs');
+  const bundleFile = join(workDir, 'dsh-remote-explorer.cjs');
   await build({
     entryPoints: [BUNDLE_ENTRY],
     outfile: bundleFile,
@@ -487,7 +487,7 @@ async function main(): Promise<number> {
   }
   println();
   println(green(`完成：${artifacts.length} 个产物在 ${outDir}`));
-  println(dim('目标机解压后直接运行 dsh-remote（Windows 用 dsh-remote.cmd），无需 Node 与 npm'));
+  println(dim('目标机解压后直接运行 dsh-remote-explorer（Windows 用 dsh-remote-explorer.cmd），无需 Node 与 npm'));
   println(dim('产物不提交进仓库（dist 已 gitignore）'));
 
   // 清理 staging（保留 .node-cache 与产物）

@@ -23,7 +23,7 @@ export function runStatus(): number {
   if (sessions.length === 0) {
     println(yellow('当前没有活跃会话'));
     if (pruned > 0) println(dim(`已清理 ${pruned} 条陈旧记录`));
-    println(dim('用 dsh-remote connect <别名> 开始一个会话'));
+    println(dim('用 dsh-remote-explorer connect <别名> 开始一个会话'));
     return 0;
   }
 
