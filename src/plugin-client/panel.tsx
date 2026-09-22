@@ -4,8 +4,13 @@
  *              /api/dsh-remote-explorer/* 路由（同源 fetch 自动带 dsh 会话
  *              Cookie），列表 2s 轮询、选中会话的日志 1.5s 增量轮询。
  *
- * 「打开」链接 = session.url（隧道转发后的**远端 dsh 界面**，含远端访问
- * 令牌），target=_blank 弹新页——语义等同 CLI 把 URL 打进终端后用户点开。
+ * 窗口形态按环境分流（桌面壳单 OS 窗口，跨 origin 导航全被甩给系统浏览器）：
+ * - 桌面端：单按钮「在新窗口连接」；就绪后开整窗浮动桌面（remote-window.tsx
+ *   的 body 级 webview 覆盖浮层，远程页面铺满整窗、无自建顶栏）。managerUrl 传
+ *   假意图 origin，让远端 handoff pill 的返回/关闭/停止变成可被浮层拦截的意图信号
+ * - 浏览器端：双入口原样——「当前标签」就绪后 3 秒倒计时同标签切入；
+ *   「新标签」target=_blank 弹新页（session.url = 隧道转发后的**远端 dsh
+ *   界面**，含远端访问令牌，语义等同 CLI 把 URL 打进终端后用户点开）
  *
  * 样式纪律：不猜 dsh 设计令牌名（错名 = 文字不可见，参考插件踩过 *-fill
  * 当文字色的坑）——中性色一律 inherit/rgba 半透明灰，仅状态点用语义色；
@@ -24,6 +29,8 @@ import {
   ApiError, fetchHosts, fetchSessionLog, fetchSessions, postConnect, postDisconnect,
   type PanelSession,
 } from './api.js';
+import { isDesktopShell } from './desktop-bridge.js';
+import { openRemoteWindow, OVERLAY_INTENT_ORIGIN } from './remote-window.js';
 import { RemotePluginsSection } from './panel-plugins.js';
 
 /** 会话列表轮询间隔（毫秒） */
@@ -37,6 +44,9 @@ const HANDOFF_COUNTDOWN_SECONDS = 3;
 
 /** localStorage 里「上次远端目录」的键前缀（按主机别名记忆） */
 const LAST_CWD_KEY_PREFIX = 'dsh-remote-explorer:lastCwd:';
+
+/** 是否桌面壳（preload 注入先于一切脚本，页面生命周期内不变，模块级算一次） */
+const DESKTOP = isDesktopShell();
 
 /** 状态标签 → 语义色（状态点用；文案走 locale） */
 const STATE_COLORS: Record<string, string> = {
@@ -112,9 +122,14 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
   const lastSeq = React.useRef(0);
   const logBoxRef = React.useRef<HTMLDivElement | null>(null);
 
-  // ---- 窗口形态交接（VS Code 双入口语义）----
-  /** 本次发起连接选择的窗口形态：current = 就绪后同标签自动切入远端 */
-  const pendingNav = React.useRef<{ sessionId: string; mode: 'current' | 'new' } | null>(null);
+  // ---- 窗口形态交接 ----
+  /**
+   * 本次发起连接选择的窗口形态：
+   * - current = 就绪后同标签自动切入远端（浏览器端，VS Code Connect Current Window）
+   * - new = 就绪后会话行按钮开新标签（浏览器端，弹窗拦截不允许无手势开标签）
+   * - window = 就绪后开整窗浮动桌面（桌面端，remote-window.tsx 的覆盖浮层）
+   */
+  const pendingNav = React.useRef<{ sessionId: string; mode: 'current' | 'new' | 'window' } | null>(null);
   /** 同标签自动导航的倒计时（可取消）；null = 无待跳转 */
   const [countdown, setCountdown] = React.useState<{ url: string; seconds: number } | null>(null);
 
@@ -137,15 +152,22 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
         if (stopped) return;
         setSessions(next);
         setLoadError('');
-        // 交接：本次以「当前标签」形态发起的会话就绪 → 起同标签导航倒计时；
-        // 「新标签」形态不起（弹窗拦截不允许无手势开标签），会话行按钮接管
+        // 交接：会话就绪后按形态分流——桌面端直接开整窗浮层（无倒计时，
+        // 浮层展开即盖住本面板）；浏览器端「当前标签」起倒计时，「新标签」
+        // 不起（弹窗拦截不允许无手势开标签），会话行按钮接管
         const pending = pendingNav.current;
         if (pending !== null) {
           const ready = next.find(item => item.sessionId === pending.sessionId
             && !item.connecting && item.url !== undefined);
           if (ready?.url !== undefined) {
             pendingNav.current = null;
-            if (pending.mode === 'current') {
+            if (pending.mode === 'window') {
+              openRemoteWindow({
+                sessionId: ready.sessionId,
+                url: ready.url,
+                hostAlias: ready.hostAlias,
+              });
+            } else if (pending.mode === 'current') {
               setCountdown({ url: ready.url, seconds: HANDOFF_COUNTDOWN_SECONDS });
             }
           } else if (next.some(item => item.sessionId === pending.sessionId
@@ -213,11 +235,10 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
   /**
    * 发起连接。
    *
-   * @param mode - 窗口形态：current = 就绪后同标签自动切入远端（VS Code
-   *               Connect Current Window）；new = 就绪后会话行按钮开新标签
-   *               （VS Code New Window；浏览器弹窗拦截不允许无手势开标签）
+   * @param mode - 窗口形态：current/new = 浏览器端双入口（同标签倒计时 / 会话行
+   *               开新标签）；window = 桌面端整窗浮动桌面
    */
-  const onConnect = async (mode: 'current' | 'new'): Promise<void> => {
+  const onConnect = async (mode: 'current' | 'new' | 'window'): Promise<void> => {
     if (host.trim() === '' || busy) return;
     setBusy(true);
     setFormError('');
@@ -233,8 +254,11 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
         ...(dshVersion.trim() !== '' ? { dshVersion: dshVersion.trim() } : {}),
         forceRestart,
         refreshMirrors,
-        // 管理页 origin：远端 handoff 组件的「返回/并返回」动作依赖它
-        managerUrl: window.location.origin,
+        // 管理页 origin：浏览器端给真实 origin（handoff「返回」同标签导航回管理页）；
+        // 桌面端给假意图 origin——webview 策略拒绝导航回应用 origin，改用这个 origin
+        // 让 handoff 三个动作变成可被整窗浮层拦截的意图信号（window.open / will-navigate），
+        // handoff 代码零改动、菜单不再只读（见 remote-window.tsx 文件头）
+        managerUrl: DESKTOP ? OVERLAY_INTENT_ORIGIN : window.location.origin,
       });
       pendingNav.current = { sessionId: session.sessionId, mode };
       try {
@@ -374,17 +398,30 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
         </label>
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          {/* VS Code 双入口：当前标签 = 就绪后同标签切入；新标签 = 本页留守管理 */}
-          <button type="button" style={{ ...buttonStyle, fontWeight: 600 }}
-            disabled={busy || host.trim() === ''}
-            onClick={() => { void onConnect('current'); }}>
-            {busy ? t('connecting') : t('connectCurrent')}
-          </button>
-          <button type="button" style={buttonStyle}
-            disabled={busy || host.trim() === ''}
-            onClick={() => { void onConnect('new'); }}>
-            {t('connectNew')}
-          </button>
+          {DESKTOP
+            ? (
+              // 桌面端单入口：就绪后开整窗浮动桌面（桌面壳无跨 origin 导航能力）
+              <button type="button" style={{ ...buttonStyle, fontWeight: 600 }}
+                disabled={busy || host.trim() === ''}
+                onClick={() => { void onConnect('window'); }}>
+                {busy ? t('connecting') : t('connectWindow')}
+              </button>
+            )
+            : (
+              // 浏览器端双入口（VS Code 语义）：当前标签 = 就绪后同标签切入；新标签 = 本页留守管理
+              <>
+                <button type="button" style={{ ...buttonStyle, fontWeight: 600 }}
+                  disabled={busy || host.trim() === ''}
+                  onClick={() => { void onConnect('current'); }}>
+                  {busy ? t('connecting') : t('connectCurrent')}
+                </button>
+                <button type="button" style={buttonStyle}
+                  disabled={busy || host.trim() === ''}
+                  onClick={() => { void onConnect('new'); }}>
+                  {t('connectNew')}
+                </button>
+              </>
+            )}
           {formError !== ''
             ? <span style={{ color: '#ef4444', fontSize: 13 }}>{t('connectError')}：{formError}</span>
             : null}
@@ -408,7 +445,7 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
           ? <div style={{ fontSize: 13, opacity: 0.6 }}>{t('noSessions')}</div>
           : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {sessions.map(session => renderSessionRow(session, selectedId, t, {
+              {sessions.map(session => renderSessionRow(session, selectedId, t, DESKTOP, {
                 onSelect: setSelectedId,
                 onDisconnect: target => { void onDisconnect(target); },
               }))}
@@ -459,6 +496,7 @@ interface RowActions {
  * @param session - 面板会话对象
  * @param selectedId - 当前选中（高亮）
  * @param t - 翻译函数
+ * @param isDesktop - 是否桌面壳（决定行内入口按钮形态）
  * @param actions - 行回调
  * @returns 行内容
  */
@@ -466,6 +504,7 @@ function renderSessionRow(
   session: PanelSession,
   selectedId: string | null,
   t: (key: RemoteExplorerLocaleKey) => string,
+  isDesktop: boolean,
   actions: RowActions,
 ): ReactNode {
   const stateTag = session.connecting ? 'connecting' : session.state.tag;
@@ -509,27 +548,52 @@ function renderSessionRow(
       <span style={{ flex: 1 }} />
       {session.url !== undefined
         ? (
-          <>
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                window.location.href = session.url ?? '';
-              }}
-              style={{
-                background: 'transparent', color: 'inherit', fontSize: 12, fontWeight: 600,
-                border: '1px solid rgba(127,127,127,0.5)', borderRadius: 6,
-                padding: '2px 8px', cursor: 'pointer',
-              }}
-            >
-              {t('enterCurrent')}
-            </button>
-            <a href={session.url} target="_blank" rel="noreferrer"
-              onClick={event => event.stopPropagation()}
-              style={{ fontSize: 13 }}>
-              {t('openNew')} ↗
-            </a>
-          </>
+          isDesktop
+            ? (
+              // 桌面端单入口：开整窗浮动桌面（跨 origin 导航会被桌面壳甩给系统浏览器）
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  openRemoteWindow({
+                    sessionId: session.sessionId,
+                    url: session.url ?? '',
+                    hostAlias: session.hostAlias,
+                  });
+                }}
+                style={{
+                  background: 'transparent', color: 'inherit', fontSize: 12, fontWeight: 600,
+                  border: '1px solid rgba(127,127,127,0.5)', borderRadius: 6,
+                  padding: '2px 8px', cursor: 'pointer',
+                }}
+              >
+                {t('openWindow')}
+              </button>
+            )
+            : (
+              // 浏览器端双入口：同标签切入 / 新标签
+              <>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    window.location.href = session.url ?? '';
+                  }}
+                  style={{
+                    background: 'transparent', color: 'inherit', fontSize: 12, fontWeight: 600,
+                    border: '1px solid rgba(127,127,127,0.5)', borderRadius: 6,
+                    padding: '2px 8px', cursor: 'pointer',
+                  }}
+                >
+                  {t('enterCurrent')}
+                </button>
+                <a href={session.url} target="_blank" rel="noreferrer"
+                  onClick={event => event.stopPropagation()}
+                  style={{ fontSize: 13 }}>
+                  {t('openNew')} ↗
+                </a>
+              </>
+            )
         )
         : null}
       {session.external === true

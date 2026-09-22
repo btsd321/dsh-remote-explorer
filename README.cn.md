@@ -53,7 +53,7 @@ npm run build:plugin && dsh plugin --profile web add /path/to/repo
 
 装完重启 `dsh web`。插件提供三个入口：
 
-- **左导航「远程 SSH 会话」全局面板**：选主机、两种窗口形态连接（当前标签切入 / 新标签）、断开、远端插件管理、实时进度日志；远端窗口侧栏有状态 pill，可返回管理页或关闭/停止连接
+- **左导航「远程 SSH 会话」全局面板**：选主机、连接（桌面端单按钮弹整窗浮动桌面 webview——打开即隐藏主桌面、点主机名回退、点关闭即断开并停止远端；浏览器端当前标签切入 / 新标签双入口）、断开、远端插件管理、实时进度日志；远端窗口侧栏有状态 pill，可返回管理页或关闭/停止连接
 - **slash 命令** `/remote-ssh`：`hosts | connect <别名> [远端目录] | status | disconnect <别名|会话id> [--keep-remote]`
 - **agent 工具** `remote_hosts_list / remote_connect / remote_status / remote_kill`（受 dsh 的工具审批门槛约束）
 

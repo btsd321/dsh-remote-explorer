@@ -31,6 +31,7 @@ import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client';
 import { en, zh, type RemoteExplorerLocaleKey } from './locales.js';
 import { RemoteSessionsIcon } from './icon.js';
 import { IntentBanner } from './intent-banner.js';
+import { RemoteWindowOverlay } from './remote-window.js';
 import { SessionPanel } from './panel.js';
 
 // 把本插件的 locale 命名空间并进全局键表——ctx.locale.register/bind 的
@@ -96,4 +97,12 @@ export function apply(ctx: ClientContext): void {
     id: 'dsh-remote-explorer-intent',
     locale: LOCALE_NS,
   }, IntentBanner));
+
+  // 桌面端整窗浮动桌面（浏览器端渲染 null）：webview 覆盖浮层，打开/收起
+  // 由 remote-window.tsx 的模块级 store 驱动（面板按钮调用）
+  ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+    name: 'shell.overlay',
+    id: 'dsh-remote-explorer-remote-window',
+    locale: LOCALE_NS,
+  }, RemoteWindowOverlay));
 }

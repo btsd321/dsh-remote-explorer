@@ -14,6 +14,8 @@ export type RemoteExplorerLocaleKey =
   | 'password' | 'passwordWarning'
   | 'connect' | 'connecting' | 'connectCurrent' | 'connectNew'
   | 'enterCurrent' | 'openNew' | 'countdown' | 'cancelCountdown'
+  | 'connectWindow' | 'openWindow'
+  | 'overlayLoading' | 'overlayStopping' | 'overlayStoppingRemote' | 'overlayLeaseFailed' | 'overlayReturnHint'
   | 'intentDisconnect' | 'intentStop' | 'intentExecute' | 'intentCancel'
   | 'sessions' | 'noSessions' | 'disconnect' | 'stopRemote' | 'open' | 'external'
   | 'pluginsTitle' | 'pluginsNoSession' | 'pluginsEmpty' | 'pluginsBundle'
@@ -49,6 +51,13 @@ export const zh: Record<RemoteExplorerLocaleKey, string> = {
   openNew: '新标签打开',
   countdown: '会话已就绪，切入远端窗口倒计时',
   cancelCountdown: '取消',
+  connectWindow: '在新窗口连接',
+  openWindow: '新窗口打开',
+  overlayLoading: '正在打开远程桌面…',
+  overlayStopping: '正在断开远程连接…',
+  overlayStoppingRemote: '正在停止远端 dsh…',
+  overlayLeaseFailed: '打开远程桌面失败',
+  overlayReturnHint: '按 Esc 返回管理页',
   intentDisconnect: '远端窗口请求关闭此远程连接（本机隧道与会话登记将解除，远端 dsh 保留）',
   intentStop: '远端窗口请求停止远端 dsh 并关闭此远程连接',
   intentExecute: '执行',
@@ -109,6 +118,13 @@ export const en: Record<RemoteExplorerLocaleKey, string> = {
   openNew: 'Open in new tab',
   countdown: 'Session ready — entering remote window in',
   cancelCountdown: 'Cancel',
+  connectWindow: 'Connect in new window',
+  openWindow: 'Open in new window',
+  overlayLoading: 'Opening remote desktop…',
+  overlayStopping: 'Disconnecting remote session…',
+  overlayStoppingRemote: 'Stopping remote dsh…',
+  overlayLeaseFailed: 'Failed to open remote desktop',
+  overlayReturnHint: 'Press Esc to return to the manager',
   intentDisconnect: 'The remote window asked to close this remote connection (local tunnel and session registration go away; remote dsh stays)',
   intentStop: 'The remote window asked to stop the remote dsh and close this remote connection',
   intentExecute: 'Execute',
