@@ -150,7 +150,8 @@ export async function attachSessionNodeModules(
   paths: RemotePaths,
   sessionId: string,
 ): Promise<void> {
-  const profileNm = `${paths.sessionProfile(sessionId)}/node_modules`;
+  const profileDir = paths.sessionProfile(sessionId);
+  const profileNm = `${profileDir}/node_modules`;
   const storeNm = paths.pluginsStoreNodeModules;
   const script = [
     `if [ -L ${quote(profileNm)} ]; then :;`,
@@ -159,6 +160,17 @@ export async function attachSessionNodeModules(
     'fi',
   ].join('\n');
   await transport.exec(script, { allowNonZeroExit: true });
+  // 远端窗口原生插件 UI 在 profile 目录跑 pnpm：node_modules 是指向 store 的
+  // symlink 时，pnpm 按 profile 根算出的默认 virtual store（profile 下 .pnpm）
+  // 与穿过 symlink 的实际位置（store 下 .pnpm）不符，报
+  // ERR_PNPM_UNEXPECTED_VIRTUAL_STORE。用 .npmrc 把 virtual store 钉到 store
+  // 的那一份，两个表面的 pnpm 共用同一虚拟存储（实测报错后补）
+  await writeRemoteTextFile(
+    transport,
+    `${profileDir}/.npmrc`,
+    `virtual-store-dir=${storeNm}/.pnpm\n`,
+    { tolerant: true },
+  );
 }
 
 /**
