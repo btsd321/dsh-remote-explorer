@@ -188,9 +188,12 @@ const FALLBACK_LINK_NAMES = new Set(['@deepseek-ai', 'cpu-features', 'nan']);
  * 会话 manifest 是 dsh hmr 的 watch 对象——改写即热加载/卸载 bundle 层，
  * 这是「本机活会话立即生效」的实现点。内容无变化时不写（避免无谓 hmr 触发）。
  *
- * 两条自愈/保留规则：
+ * 三条自愈/保留规则：
  * - store deps 从 store node_modules 扫描自愈——远端窗口原生 UI 的 pnpm 安装
  *   落在 store（session nm 是 symlink），其 manifest 写入只到会话层，这里收编
+ * - store bundles 从会话 manifest 收编「store nm 中真实存在」的项——远端原生 UI
+ *   启用插件只写会话 bundles，不收编则下次 sync 覆盖会话 bundles 时会把它关掉
+ *   （面板列表也会显示未启用）；只增不删，handoff/TEMPLATE 不在扫描集内不受影响
  * - 会话 bundles = store bundles ∪ 模板 base bundles（base/web-app 永不被覆盖）
  *
  * @param io - manifest IO
@@ -232,13 +235,7 @@ export async function syncSessionManifest(
       storeChanged = true;
     }
   }
-  if (storeChanged) {
-    await writePluginStoreManifest(io, paths, { ...store, dependencies: storeDeps });
-  }
-  const storeBundles = [
-    ...TEMPLATE_BUNDLES,
-    ...(store.dsh?.profile?.bundles ?? []).filter(name => !TEMPLATE_BUNDLES.includes(name)),
-  ];
+  // 读会话 manifest 提前到 store 写回之前：bundles 收编依赖它的现状
   const sessionManifestPath = `${paths.sessionProfile(sessionId)}/package.json`;
   const sessionRaw = await io.exec(`cat ${quote(sessionManifestPath)}`, {
     allowNonZeroExit: true,
@@ -249,6 +246,29 @@ export async function syncSessionManifest(
   } catch {
     session = {};
   }
+  // 自愈收编 bundles：远端窗口原生 UI 装/启插件只写**会话** manifest 的 bundles，
+  // 若不收编进 store，下次 sync 会用 store bundles 整体覆盖会话 bundles，把原生 UI
+  // 启用的插件（含外观类）关掉、且面板列表显示为未启用。收编条件 = 在会话 bundles
+  // 里且 store nm 中真实存在（scannedNames）；只增不删——handoff 与 TEMPLATE 不在
+  // scannedNames 内，收编碰不到它们，不会误删既有 bundles
+  const storeBundlesList = [...(store.dsh?.profile?.bundles ?? [])];
+  for (const name of session.dsh?.profile?.bundles ?? []) {
+    if (TEMPLATE_BUNDLES.includes(name) || storeBundlesList.includes(name)) continue;
+    if (!scannedNames.has(name)) continue;
+    storeBundlesList.push(name);
+    storeChanged = true;
+  }
+  if (storeChanged) {
+    await writePluginStoreManifest(io, paths, {
+      ...store,
+      dependencies: storeDeps,
+      dsh: { ...store.dsh, profile: { ...store.dsh?.profile, bundles: storeBundlesList } },
+    });
+  }
+  const storeBundles = [
+    ...TEMPLATE_BUNDLES,
+    ...storeBundlesList.filter(name => !TEMPLATE_BUNDLES.includes(name)),
+  ];
   const sameDeps = JSON.stringify(session.dependencies ?? {}) === JSON.stringify(storeDeps);
   const sameBundles = JSON.stringify(session.dsh?.profile?.bundles ?? []) === JSON.stringify(storeBundles);
   if (sameDeps && sameBundles) return false;

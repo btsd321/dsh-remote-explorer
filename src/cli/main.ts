@@ -116,7 +116,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   }
   if (rawCommand === '--version' || rawCommand === '-V') {
     // 版本号由 package.json 承载，这里避免读文件带来的路径耦合
-    println('dsh-remote-explorer 0.6.2');
+    println('dsh-remote-explorer 0.6.3');
     return 0;
   }
 
