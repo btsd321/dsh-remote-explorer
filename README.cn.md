@@ -4,7 +4,7 @@
 
 远程开发启动器：把 [dsh](https://www.npmjs.com/package/@deepseek-ai/dsh) 装到远程主机上运行，本机只留浏览器。LLM 凭据不离开本机。
 
-参照 VS Code Remote-SSH、Zed、JetBrains Gateway 的做法——**代码与会话都在远端，本机只做呈现**。完整架构依据、调研来源与实测数据见 [PLAN.md](PLAN.md)。
+参照 VS Code Remote-SSH、Zed、JetBrains Gateway 的做法——**代码与会话都在远端，本机只做呈现**。
 
 ## 支持的环境
 
@@ -112,7 +112,7 @@ npx tsx src/cli/bin.ts list --ssh-config /path/to/config
 - 缺哪个供应商的 key 只影响该供应商（502 带明确指引），其余照常。
 - 代理令牌与反向端口随会话固定，落盘远端 `.runtime/`（令牌 600 权限），重连与复用读回同一组值。
 - 同一会话的多个本机 CLI 共享凭据路径（反向端口先到先得，后来的视图自动让位）。
-- 已知残余风险：远端同权限用户可借你的通道消耗额度（拿不到 key 本身）。多用户远端主机上请知悉，详见 [PLAN.md](PLAN.md) 4.5 节。
+- 已知残余风险：远端同权限用户可借你的通道消耗额度（拿不到 key 本身）。多用户远端主机上请知悉：代理以每会话令牌、限速与路径白名单提高借用门槛，但无法完全阻断同权限用户。
 
 ## 远端落盘隔离
 

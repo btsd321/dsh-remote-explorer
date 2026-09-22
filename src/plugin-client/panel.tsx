@@ -1,5 +1,5 @@
 /**
- * @file 远程会话管理面板（settings.section 内容）
+ * @file 远程会话管理面板（全局面板内容，main 槽 keyed 注册）
  * @description 单页三区：连接表单、会话表、进度日志。数据全部来自宿主
  *              /api/dsh-remote-explorer/* 路由（同源 fetch 自动带 dsh 会话
  *              Cookie），列表 2s 轮询、选中会话的日志 1.5s 增量轮询。
@@ -227,8 +227,14 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
     cursor: 'pointer',
   };
 
+  // 全局面板自带页头（settings 弹窗时代标题由设置壳显示，迁出后自己给）；
+  // 根容器全高滚动：中央列高度由 layout 决定，内容超长时面板内滚动
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div style={{
+      display: 'flex', flexDirection: 'column', gap: 16,
+      padding: '16px 20px', height: '100%', overflowY: 'auto', boxSizing: 'border-box',
+    }}>
+      <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>{t('nav')}</h2>
       <p style={{ margin: 0, opacity: 0.75, fontSize: 13 }}>{t('sectionIntro')}</p>
 
       {/* ---- 连接表单 ---- */}

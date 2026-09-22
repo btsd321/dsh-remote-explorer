@@ -11,9 +11,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `dsh-remote-explorer` 把 dsh 装到远程主机上运行，本机只留浏览器，LLM 凭据不离开本机。0.6.0 起**单包双形态**：
 
 - **独立 CLI**（主形态）：`bin/dsh-remote-explorer.mjs` → tsx 直跑 `src/cli/`
-- **dsh 插件**：`dsh plugin --profile web add dsh-remote-explorer` 装进本机 dsh，提供 Settings 面板 + `/remote-ssh` 命令 + `remote_*` agent 工具；宿主半在 `src/plugin/`、浏览器半在 `src/plugin-client/`，经 `scripts/build-plugin.ts` 打包为 `lib/`（gitignored）发布
+- **dsh 插件**：`dsh plugin --profile web add dsh-remote-explorer` 装进本机 dsh，提供「远程会话」全局面板（左导航按钮 + 中央面板）+ `/remote-ssh` 命令 + `remote_*` agent 工具；宿主半在 `src/plugin/`、浏览器半在 `src/plugin-client/`，经 `scripts/build-plugin.ts` 打包为 `lib/`（gitignored）发布
 
-两形态共享同一套 session/ 编排——插件不是精简版。参照 VS Code Remote-SSH / Zed / JetBrains Gateway 的做法——代码与会话都在远端，本机只做呈现。完整架构依据、调研来源、实测数据见 [PLAN.md](PLAN.md)。
+两形态共享同一套 session/ 编排——插件不是精简版。参照 VS Code Remote-SSH / Zed / JetBrains Gateway 的做法——代码与会话都在远端，本机只做呈现。
 
 **开发流程没有构建步骤。** `tsconfig.json` 是 `noEmit: true` + `allowImportingTsExtensions: true`，源码以 `.ts` 形式经 tsx 直接运行。不要在开发流程里加打包产物或 `outDir`。**打包是分发独立动作**：`scripts/package.ts`（CLI 平台包，产物 `dist/`）与 `scripts/build-plugin.ts`（插件双入口，产物 `lib/`）都只在分发前跑，产物均 gitignored、不提交。插件入口例外于「tsx 直跑」：dsh loader 经纯 ESM import 加载插件、不走 tsx，所以插件形态必须用构建产物。
 
@@ -82,7 +82,7 @@ npx tsx scripts/dev-plugin.ts --sync   # 产物同步进沙箱（宿主半重启
 ```
 入口层      cli/            命令分派、参数解析、终端输出（CLI 形态）
             plugin/         dsh 插件宿主半：supervisor 簿记、命令/工具/路由注册
-            plugin-client/  dsh 插件浏览器半：Settings 面板（React，slots 注入）
+            plugin-client/  dsh 插件浏览器半：远程会话全局面板（React，slots 注入 main/sidebar.panellist）
 编排层      session/      会话生命周期、心跳、重连、多会话簿记
 能力层      provision/    装 Node 与 dsh、镜像测速、生成会话 profile
             tunnel/       端口分配、正向转发
@@ -92,7 +92,7 @@ npx tsx scripts/dev-plugin.ts --sync   # 产物同步进沙箱（宿主半重启
             util/         shell 转义、错误类型、会话 id、远端路径校验
 ```
 
-原计划的第二个交付物 `dsh-remote-guard`（远端插件）**最终不需要**：认证 dsh 已内置（P0 发现），`baseURL` 由 profile patch 解决（P4），免认证探活由心跳的 HTTP 层解决（P5，带会话令牌 curl 根路径，任何 HTTP 状态码即证明 webserver 在服务）。详见 PLAN.md 的 P5 节。
+原计划的第二个交付物 `dsh-remote-guard`（远端插件）**最终不需要**：认证 dsh 已内置（P0 发现），`baseURL` 由 profile patch 解决（P4），免认证探活由心跳的 HTTP 层解决（P5，带会话令牌 curl 根路径，任何 HTTP 状态码即证明 webserver 在服务）。
 
 ## 必须知道的几件事
 
@@ -154,7 +154,7 @@ npx tsx scripts/dev-plugin.ts --sync   # 产物同步进沙箱（宿主半重启
 **12. dsh 插件形态的硬约束（全部实测踩过，改 src/plugin*/ 前必读）。**
 
 - **宿主产物必须是 ESM**（`lib/index.js`，esbuild `format: 'esm'`）。CJS 产物 `require()` ESM-only 的 `@deepseek-ai/dsh-tools` 会直接崩（Node 24 `ERR_INTERNAL_ASSERTION`）；peer 裸导入只有走 ESM 解析链才能命中 profile 的安装回退链接（`$DSH_HOME/profiles/node_modules`， cordis 单实例的命脉）。ssh2 的惰性 `require('net')` 用 createRequire banner 化解（`HOST_BANNER` 还补了 `__filename/__dirname`——ssh2 的 crypto.js 用 `__dirname` 定位资源，缺了初始化就崩）。
-- **entry id、插件名、locale/slot/settings 命名空间统一 `dsh-remote-explorer`**；cordis.patch.yml 的 entry id 不能叫 `dsh-remote`（第三方 flymysql 插件占用，同 profile 共存会被 loader 拒绝）。浏览器半的 `__ModuleLoader__.load({ id })` **必须等于包名**（graph 行以包名为键），由 build 脚本从 package.json 注入，别手写。
+- **entry id 与插件名统一 `dsh-remote-explorer`，locale 命名空间 `dshRemoteExplorer`，全局面板 id `remote-sessions`**（main 槽 key 与 sidebar.panellist id 同值，branded `MainPanelId` 需断言）；cordis.patch.yml 的 entry id 不能叫 `dsh-remote`（第三方 flymysql 插件占用，同 profile 共存会被 loader 拒绝）。浏览器半的 `__ModuleLoader__.load({ id })` **必须等于包名**（graph 行以包名为键），由 build 脚本从 package.json 注入，别手写。
 - **命令名必须匹配 `/^[a-z][a-z0-9_-]*$/`**——非法字符（尤其点号）会让整个 dsh 启动失败；**defineTool 的每个显式 `type:'object'` 节点必须写 `additionalProperties`**——缺失是 authorError，宿主启动即崩。这两条 `scripts/check-plugin.ts` 有静态护栏，发布前必跑。
 - **面板路由只走 `connection.fetch.register` 的 `/api/dsh-remote-explorer/*` 已鉴权通道**，绝不注册裸 webServer 路由（无鉴权，宿主配 0.0.0.0 时会话元数据+写操作直接暴露）。冒烟判读：不带凭据 curl ping 得 **401** = 正常，404 = 插件没挂上，200 = 绕过了鉴权（安全回归）。
 - **Config 必须用 schemastery**（zod 会被 loader 拒绝），3.18 无 enum/optional API——全字段给 default。**Config 里永远不加 password 字段**（随 patch 层落盘 = 明文写磁盘）；面板密码走 POST body → 进程内存 fixed 模式，agent 工具永不接受密码。

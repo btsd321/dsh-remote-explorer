@@ -4,7 +4,7 @@
 
 Remote development launcher: install [dsh](https://www.npmjs.com/package/@deepseek-ai/dsh) on a remote host and use it from your local browser. LLM credentials never leave your machine.
 
-Inspired by VS Code Remote-SSH, Zed, and JetBrains Gateway — **code and sessions live on the remote, the local machine only renders the UI**. Full architecture rationale, research sources, and benchmark data are in [PLAN.md](PLAN.md).
+Inspired by VS Code Remote-SSH, Zed, and JetBrains Gateway — **code and sessions live on the remote, the local machine only renders the UI**.
 
 ## Supported environments
 
@@ -112,7 +112,7 @@ Remote dsh ──(placeholder token)──▶ Remote 127.0.0.1:<reverse-port>/r/
 - Missing a provider's key only affects that provider (502 with clear guidance); others continue normally.
 - The proxy token and reverse port are fixed per session, persisted to remote `.runtime/` (token at permission 600), and read back on reconnect and reuse.
 - Multiple local CLIs sharing the same session share the credential path (reverse port is first-come-first-served; later views automatically yield).
-- Known residual risk: a same-privilege user on the remote could consume your quota via your tunnel (they cannot extract the key itself). Be aware on multi-user remote hosts; see [PLAN.md](PLAN.md) section 4.5.
+- Known residual risk: a same-privilege user on the remote could consume your quota via your tunnel (they cannot extract the key itself). Be aware on multi-user remote hosts: the proxy raises the bar with per-session tokens, rate limiting, and a path allowlist, but cannot fully block same-privilege users.
 
 ## Remote disk isolation
 
