@@ -17,6 +17,7 @@
 import { SshTransport } from '../../transport/ssh-transport.js';
 import { probeRemote } from '../../provision/probe.js';
 import { createRemotePaths, BASE_DIR_NAME } from '../../provision/remote-paths.js';
+import { ownerFingerprint } from '../../util/owner-fingerprint.js';
 import { quote } from '../../util/shell-quote.js';
 import { prepareHostAuth } from '../host-auth.js';
 import { bold, cyan, dim, green, println, ProgressReporter, yellow } from '../output.js';
@@ -30,6 +31,11 @@ export interface CleanCommandOptions {
   alias: string;
   /** 每个类别保留的最新版本数 */
   keep: number;
+  /**
+   * 连他人指纹的陈旧会话目录一起删（默认只删自己的 + 无 owner 的老目录）。
+   * 多用户同远端账号时防误删他人数据，见 owner-fingerprint.ts
+   */
+  includeOthers?: boolean;
   /** 私钥文件路径覆盖（--private-key） */
   privateKey?: string;
   /** 固定密码（--password）：显式走密码认证 */
@@ -48,6 +54,8 @@ interface CleanReport {
   freedBytes: number;
   /** 被保护跳过的版本 */
   protectedVersions: string[];
+  /** 他人指纹的陈旧会话目录（默认跳过） */
+  skippedOthers: string[];
 }
 
 /**
@@ -79,7 +87,7 @@ export async function runClean(options: CleanCommandOptions): Promise<number> {
     progress.done();
 
     progress.start('收集保护清单与陈旧资源');
-    const report = await collectAndClean(transport, paths.base, options.keep);
+    const report = await collectAndClean(transport, paths.base, options.keep, options.includeOthers === true);
     progress.done();
 
     println();
@@ -99,6 +107,10 @@ export async function runClean(options: CleanCommandOptions): Promise<number> {
     }
     if (report.protectedVersions.length > 0) {
       println(yellow(`受运行中会话保护未删：${report.protectedVersions.join('、')}`));
+    }
+    if (report.skippedOthers.length > 0) {
+      println(yellow(`跳过 ${report.skippedOthers.length} 个他人会话目录（--include-others 可一并删除）：`
+        + `${report.skippedOthers.join('、')}`));
     }
     return 0;
   } finally {
@@ -120,24 +132,28 @@ async function collectAndClean(
   transport: SshTransport,
   baseDir: string,
   keep: number,
+  includeOthers: boolean,
 ): Promise<CleanReport> {
   const base = quote(baseDir);
   // 会话目录里 pid 文件指向的进程仍在 → 是活会话；其 start.sh 记录着在用的
-  // dsh 与 Node 路径，被引用的版本受保护
+  // dsh 与 Node 路径，被引用的版本受保护。死会话输出「目录名\t owner 指纹」
+  // （owner 供跨用户 scope 判定；功能上线前的老目录 owner 为空）
   const collect = [
     'for s in $(find "$HOME"' + `/${quote(BASE_DIR_NAME)}` + '/sessions -mindepth 1 -maxdepth 1 -type d 2>/dev/null); do',
     '  p=$(cat "$s/.runtime/pid" 2>/dev/null)',
     '  if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then',
     '    cat "$s/.runtime/start.sh" 2>/dev/null',
     '  else',
-    '    basename "$s"',
+    '    printf \'%s\\t%s\\n\' "$(basename "$s")" "$(head -1 "$s/.runtime/owner" 2>/dev/null)"',
     '  fi',
     'done',
   ].join('\n');
 
   const collected = await transport.exec(collect, { allowNonZeroExit: true });
+  const mine = ownerFingerprint();
   const protectedVersions: string[] = [];
   const staleSessions: string[] = [];
+  const skippedOthers: string[] = [];
   for (const line of collected.stdout.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -147,9 +163,14 @@ async function collectAndClean(
     const nodeMatch = /node\/(v[0-9][^/]*)\//.exec(trimmed);
     if (dshMatch) protectedVersions.push(`dsh-${dshMatch[1]}`);
     if (nodeMatch) protectedVersions.push(nodeMatch[1]!);
-    // 纯 basename 行（不含路径分隔符）是陈旧会话目录名
+    // 死会话行：目录名(\t owner)?——不含路径分隔符
     if (!dshMatch && !nodeMatch && !trimmed.includes('/') && !trimmed.startsWith('#')) {
-      staleSessions.push(trimmed);
+      const [name = '', owner = ''] = trimmed.split('\t');
+      if (owner !== '' && owner !== mine && !includeOthers) {
+        skippedOthers.push(name);
+        continue;
+      }
+      staleSessions.push(name);
     }
   }
 
@@ -160,6 +181,7 @@ async function collectAndClean(
     nodeVersions: [],
     freedBytes: 0,
     protectedVersions: [...new Set(protectedVersions)],
+    skippedOthers,
   };
   if (staleSessions.length > 0) {
     const targets = staleSessions.map(name => `${base}/sessions/${quote(name)}`).join(' ');

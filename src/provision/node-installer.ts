@@ -14,6 +14,7 @@
 
 import { RemoteError } from '../util/errors.js';
 import { quote } from '../util/shell-quote.js';
+import { INSTALL_LOCK_WAIT_SECONDS, lockInstallCommand } from './install-lock.js';
 import { assertNodeStable, checkNodeStability } from './probe.js';
 import type { RemotePaths } from './remote-paths.js';
 import type { RemoteArch, RemoteOs, RemoteTransport } from '../transport/types.js';
@@ -191,18 +192,20 @@ async function downloadAndExtract(
   }
 
   // 解包并原子地移到目标位置。
-  // 先解到临时目录再 mv，避免中途失败留下半个安装被后续误判为"已装"
-  const extract = [
+  // 先解到临时目录再 mv，避免中途失败留下半个安装被后续误判为"已装"。
+  // 整段套 flock：`rm -rf 目标 && mv` 是写版本目录的临界区，多人同远端
+  // 账号并发引导时会互删（等锁超时计入 exec 超时）
+  const extract = lockInstallCommand(paths, [
     `cd ${quote(tmpDir)}`,
     `tar xf ${quote(tarball)}`,
     `mkdir -p ${quote(dirOf(targetDir))}`,
     `rm -rf ${quote(targetDir)}`,
     `mv ${quote(`${tmpDir}/${dirName}`)} ${quote(targetDir)}`,
-  ].join('\n');
+  ].join('\n'));
 
   try {
     await transport.exec(extract, {
-      timeoutMs: EXTRACT_TIMEOUT_MS,
+      timeoutMs: EXTRACT_TIMEOUT_MS + INSTALL_LOCK_WAIT_SECONDS * 1_000,
       ...(signal ? { signal } : {}),
     });
   } finally {

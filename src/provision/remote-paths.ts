@@ -21,6 +21,17 @@
  * 字符串拼接**，绝不能用 `node:path` 的 `join`——那在 Windows 上会产出反斜杠。
  */
 
+import { createHash } from 'node:crypto';
+import { hostname } from 'node:os';
+
+/**
+ * 本机主机名摘要（8 位 hex）。
+ *
+ * 临时目录名的一段：不同机器的本地 pid 可能相同（都是小整数），
+ * 多人连同一主机时 pid 命名的 tmp 目录会撞——加主机名段消除。
+ */
+const LOCAL_HOST_TAG = createHash('sha1').update(hostname()).digest('hex').slice(0, 8);
+
 /**
  * 本工具在远端家目录下的根目录（相对家目录的两级路径）。
  *
@@ -55,6 +66,23 @@ export interface RemotePaths {
   readonly npmCache: string;
   /** 临时目录根 */
   readonly tmpRoot: string;
+  /**
+   * 引导安装临界区锁文件（flock）。
+   *
+   * 多人同远端账号并发引导时串起版本目录的写临界区，见 install-lock.ts。
+   */
+  readonly installLockFile: string;
+  /**
+   * 远端插件仓库根（host × 远程 OS 用户级，VS Code ~/.vscode-server/extensions 对标）。
+   *
+   * 插件真源在此；会话 profile 连接时同步（硬链接拷贝 + bundles 合并），
+   * 见 plugin-store.ts。
+   */
+  readonly pluginsStore: string;
+  /** 插件仓库清单（dependencies + bundles 唯一真源） */
+  readonly pluginsStoreManifest: string;
+  /** 插件仓库 node_modules */
+  readonly pluginsStoreNodeModules: string;
 
   /**
    * 某 Node 版本的安装目录。
@@ -163,6 +191,17 @@ export interface RemotePaths {
   sessionReversePortFile(sessionId: string): string;
 
   /**
+   * 某会话的 owner 指纹文件（非秘密，644 即可）。
+   *
+   * 内容 = 发起本机指纹（hostname:os用户，可被 DSH_OWNER_TAG 覆盖）。
+   * kill/clean 的跨用户 scope 化靠它区分「我的会话」与「他人的会话」——
+   * VS Code 多用户模型下同远端账号的会话是共享的，但破坏性操作默认
+   * 只动自己发起的。
+   * @param sessionId - 会话 id
+   */
+  sessionOwnerFile(sessionId: string): string;
+
+  /**
    * 一次性临时目录。
    * @param pid - 本机进程 pid，用于并发隔离
    * @param suffix - 区分用途的后缀
@@ -190,6 +229,10 @@ export function createRemotePaths(homeDir: string): RemotePaths {
     mirrorCache: `${base}/mirror-cache.json`,
     npmCache: `${base}/npm-cache`,
     tmpRoot: `${base}/tmp`,
+    installLockFile: `${base}/tmp/install.lock`,
+    pluginsStore: `${base}/plugins`,
+    pluginsStoreManifest: `${base}/plugins/package.json`,
+    pluginsStoreNodeModules: `${base}/plugins/node_modules`,
 
     nodeDir: (version) => `${base}/node/${version}`,
     nodeBin: (version) => `${base}/node/${version}/bin/node`,
@@ -207,7 +250,8 @@ export function createRemotePaths(homeDir: string): RemotePaths {
     sessionSettingsFile: (sessionId) => `${base}/sessions/${sessionId}/settings.yaml`,
     sessionProxyTokenFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/proxy-token`,
     sessionReversePortFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/reverse-port`,
+    sessionOwnerFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/owner`,
 
-    tmpDir: (pid, suffix) => `${base}/tmp/${suffix}-${pid}`,
+    tmpDir: (pid, suffix) => `${base}/tmp/${suffix}-${LOCAL_HOST_TAG}-${pid}`,
   };
 }

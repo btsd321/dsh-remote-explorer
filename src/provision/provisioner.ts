@@ -14,6 +14,7 @@ import { assertDiskSpace, probeRemote, type ProbeResult } from './probe.js';
 import { selectMirror } from './mirror-selector.js';
 import { DEFAULT_NODE_VERSION, ensureNode, type NodeInstallResult } from './node-installer.js';
 import { ensureDsh, resolveDshVersion, type DshInstallResult } from './dsh-installer.js';
+import { ensurePnpm } from './pnpm-installer.js';
 import { prepareSessionProfile, type PatchEntry, type ProfileResult } from './profile-writer.js';
 import { createRemotePaths, type RemotePaths } from './remote-paths.js';
 import type { RemoteTransport } from '../transport/types.js';
@@ -156,6 +157,16 @@ export async function provision(
     ...(signal ? { signal } : {}),
   });
   options.onStageDone?.(dsh.reused ? '复用已有安装' : '已安装');
+
+  // 6.5 准备 pnpm：双表面插件管理的共同前提（远端窗口原生插件 UI 在远端
+  //     进程内跑 pnpm；本地面板经 SSH 在远端 profile 跑 pnpm）。幂等复用
+  options.onStageStart?.('准备 pnpm');
+  const pnpm = await ensurePnpm(transport, paths, {
+    registryUrl: npmSelection.selected.baseUrl,
+    nodeBinDir: node.binDir,
+    ...(signal ? { signal } : {}),
+  });
+  options.onStageDone?.(pnpm.reused ? '复用已有安装' : '已安装');
 
   // 7. 准备会话 profile
   options.onStageStart?.('准备会话 profile');

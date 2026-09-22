@@ -16,6 +16,8 @@ export type RemoteExplorerLocaleKey =
   | 'enterCurrent' | 'openNew' | 'countdown' | 'cancelCountdown'
   | 'intentDisconnect' | 'intentStop' | 'intentExecute' | 'intentCancel'
   | 'sessions' | 'noSessions' | 'disconnect' | 'stopRemote' | 'open' | 'external'
+  | 'pluginsTitle' | 'pluginsNoSession' | 'pluginsEmpty' | 'pluginsBundle'
+  | 'pluginsRemove' | 'pluginsInstall' | 'pluginsSpecPlaceholder' | 'pluginsEnabled'
   | 'stateIdle' | 'stateConnecting' | 'stateConnected' | 'stateHeartbeatMissed'
   | 'stateReconnecting' | 'stateReconnectFailed' | 'stateReconnectExhausted' | 'stateDisconnected'
   | 'log' | 'logEmpty' | 'connectError' | 'loadError' | 'retry'
@@ -53,6 +55,14 @@ export const zh: Record<RemoteExplorerLocaleKey, string> = {
   intentCancel: '取消',
   sessions: '会话',
   noSessions: '当前没有会话',
+  pluginsTitle: '远端插件（选中会话）',
+  pluginsNoSession: '选中一个会话后管理它远端 profile 的插件',
+  pluginsEmpty: '远端 profile 还没有插件依赖',
+  pluginsBundle: 'bundle',
+  pluginsRemove: '卸载',
+  pluginsInstall: '安装',
+  pluginsSpecPlaceholder: '包名或 包名@版本（交给远端 pnpm）',
+  pluginsEnabled: '启用（hmr 热生效）',
   disconnect: '断开',
   stopRemote: '同时停止远端 dsh',
   open: '打开',
@@ -105,6 +115,14 @@ export const en: Record<RemoteExplorerLocaleKey, string> = {
   intentCancel: 'Cancel',
   sessions: 'Sessions',
   noSessions: 'No sessions',
+  pluginsTitle: 'Remote plugins (selected session)',
+  pluginsNoSession: 'Select a session to manage the plugins in its remote profile',
+  pluginsEmpty: 'No plugin dependencies in the remote profile yet',
+  pluginsBundle: 'bundle',
+  pluginsRemove: 'Uninstall',
+  pluginsInstall: 'Install',
+  pluginsSpecPlaceholder: 'package or package@version (handed to remote pnpm)',
+  pluginsEnabled: 'Enabled (hot-applied via hmr)',
   disconnect: 'Disconnect',
   stopRemote: 'Also stop remote dsh',
   open: 'Open',

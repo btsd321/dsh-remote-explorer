@@ -35,11 +35,15 @@ import { SshTransport, isAuthFailure } from '../transport/ssh-transport.js';
 import { writeRemoteTextFile } from '../transport/write-text.js';
 import { provision, type ProvisionResult } from '../provision/provisioner.js';
 import { installHandoffBundle } from '../provision/handoff-installer.js';
+import {
+  attachSessionNodeModules, syncSessionManifest, transportIo,
+} from '../provision/plugin-store.js';
 import { probeRemote } from '../provision/probe.js';
 import { createRemotePaths, type RemotePaths } from '../provision/remote-paths.js';
 import { allocateRemotePorts } from '../tunnel/port-allocator.js';
 import { LocalForward } from '../tunnel/forward-local.js';
 import { computeSessionId } from '../util/session-id.js';
+import { ownerFingerprint } from '../util/owner-fingerprint.js';
 import { RemoteError, toErrorMessage } from '../util/errors.js';
 import { quote } from '../util/shell-quote.js';
 import { probeExistingSession, startRemoteDsh, stopRemoteDsh, type RemoteProcessInfo } from './remote-process.js';
@@ -190,6 +194,41 @@ export class RemoteSession {
   ) {}
 
   /** 浏览器访问地址（含令牌） */
+  /**
+   * 窄 exec 委托：监督器的远端插件管理复用当前传输。
+   *
+   * 重连换传输由本类内部维护，调用方拿到的永远是活的那条；不暴露
+   * transport 本体，避免上层绕过编排层直接改连接状态。
+   *
+   * @param command - 远端命令（不经 sh -c 之外的包装，与 exec 语义一致）
+   * @param options - exec 选项
+   * @returns exec 结果
+   */
+  exec(
+    command: string,
+    options?: Parameters<RemoteTransport['exec']>[1],
+  ): ReturnType<RemoteTransport['exec']> {
+    return this.transport.exec(command, options);
+  }
+
+  /**
+   * 远端路径集合（引导结果的一部分）：监督器的远端插件管理要拼
+   * profile 目录与 mirror-cache 位置，收口在这里避免上层自己拼路径。
+   */
+  get remotePaths(): RemotePaths {
+    return this.provisioned.paths;
+  }
+
+  /**
+   * 写远端文本文件委托（SFTP 主路径）：监督器改远端 profile 清单用。
+   *
+   * @param path - 远端绝对路径
+   * @param content - 文本内容
+   */
+  async writeRemoteFile(path: string, content: string): Promise<void> {
+    await writeRemoteTextFile(this.transport, path, content, {});
+  }
+
   get url(): string {
     return `http://127.0.0.1:${this.forward.localPort}/?token=${this.process.token}`;
   }
@@ -337,17 +376,23 @@ export class RemoteSession {
         ...(options.onStageSkip ? { onStageSkip: options.onStageSkip } : {}),
       });
 
-      // 5.5 handoff 组件（幂等）：合成 bundle 写进 profile 并登记 bundles，
-      //     远端窗口由此获得本机连接管理菜单；远端已装则一条 test -f 跳过。
+      // 5.5 handoff 组件（幂等，store 级）：合成 bundle 写进用户级 plugin store
+      //     并登记启用——该远程账号的所有会话共享这一份，新会话零额外安装。
       //     老会话补装时若远端进程仍存活复用，菜单要等下次远端重启才出现。
       //     安装失败不阻断会话（增强面非成立条件）
       options.onStageStart?.('检查远端交接组件');
       try {
-        const installed = await installHandoffBundle(transport, paths, sessionId);
+        const installed = await installHandoffBundle(transport, paths, provisioned.dsh.version);
         options.onStageDone?.(installed ? '已安装交接组件（远端窗口获得管理菜单）' : '交接组件已就位');
       } catch (error) {
         options.onStageSkip?.(`交接组件安装失败（不影响会话）：${toErrorMessage(error)}`);
       }
+
+      // 5.6 会话接入 store（必须在远端启动前）：profile node_modules 整体
+      //     symlink 到 store + manifest 从 store 合并（改写即 hmr 热生效；
+      //     无变化不写）。老会话遗留的真实 node_modules 目录在此迁移为 symlink
+      await attachSessionNodeModules(transport, paths, sessionId);
+      await syncSessionManifest(transportIo(transport), paths, sessionId);
 
       // 6. settings 镜像：本机 settings 整体复制到会话 DSH_HOME（热重载，
       //    复用会话时同值重写无副作用），仅 pi-ai 供应商的 baseURL 重定向进
@@ -374,6 +419,16 @@ export class RemoteSession {
           transport, provisioned, sessionId, options, webPort!, credential,
         );
       }
+
+      // 8.5 owner 指纹落盘：kill/clean 的跨用户 scope 化凭据（非秘密）。
+      //     容忍模式——写失败不阻断会话（最坏退化为「无 owner 的老目录」语义）
+      await writeRemoteTextFile(
+        transport,
+        paths.sessionOwnerFile(sessionId),
+        `${ownerFingerprint()}\n`,
+        { tolerant: true },
+      );
+
 
       // 9. 起本机 LLM 代理并挂反向转发
       let reverseHandle: ReverseHandle | undefined;

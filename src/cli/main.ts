@@ -76,6 +76,7 @@ function printHelp(): void {
   println(bold('kill 参数'));
   println('  --cwd <远端路径>          指定要停止的会话');
   println('  --all                     停止该主机上的全部会话（含孤儿进程）');
+  println('  --include-others          --all/clean 时连他人会话一起操作（默认只动自己的）');
   println();
   println(bold('clean 参数'));
   println('  --keep <数量>             每个类别保留的最新版本数（默认 1）');
@@ -146,6 +147,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       'force-restart': { type: 'boolean', default: false },
       'keep-remote': { type: 'boolean', default: false },
       all: { type: 'boolean', default: false },
+      'include-others': { type: 'boolean', default: false },
       keep: { type: 'string' },
       'private-key': { type: 'string' },
       password: { type: 'string' },
@@ -220,6 +222,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       alias,
       cwd,
       all: values.all === true,
+      ...(values['include-others'] === true ? { includeOthers: true } : {}),
       ...(privateKey ? { privateKey } : {}),
       ...(effectivePassword !== undefined ? { password: effectivePassword } : {}),
     });
@@ -235,6 +238,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     return runClean({
       alias,
       keep,
+      ...(values['include-others'] === true ? { includeOthers: true } : {}),
       ...(privateKey ? { privateKey } : {}),
       ...(effectivePassword !== undefined ? { password: effectivePassword } : {}),
     });

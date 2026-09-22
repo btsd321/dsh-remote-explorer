@@ -53,7 +53,7 @@ npm run build:plugin && dsh plugin --profile web add /path/to/repo
 
 装完重启 `dsh web`。插件提供三个入口：
 
-- **Settings → 远程 SSH 会话** 面板：选主机、连接/断开、实时进度日志；每个会话的「打开」弹新页——就是经 SSH 隧道转发的**远端 dsh 界面**
+- **左导航「远程 SSH 会话」全局面板**：选主机、两种窗口形态连接（当前标签切入 / 新标签）、断开、远端插件管理、实时进度日志；远端窗口侧栏有状态 pill，可返回管理页或关闭/停止连接
 - **slash 命令** `/remote-ssh`：`hosts | connect <别名> [远端目录] | status | disconnect <别名|会话id> [--keep-remote]`
 - **agent 工具** `remote_hosts_list / remote_connect / remote_status / remote_kill`（受 dsh 的工具审批门槛约束）
 
@@ -125,6 +125,19 @@ npx tsx src/cli/bin.ts list --ssh-config /path/to/config
 **在 Git Bash 里写远端路径要用双斜杠**（`--cwd //home/xxx`）或先设 `MSYS_NO_PATHCONV=1`。MSYS 会把 `/home/xxx` 改写成 `D:/SoftWare/Git/home/xxx`，这发生在参数到达程序之前，程序只能识别并拒绝。
 
 `doctor` 会检查连接、平台、基础命令、磁盘余量、已装运行时、**Node 运行时稳定性**与各镜像实测延迟。它是排查远程环境问题的首选手段——远程开发的故障大多出在环境而非代码。
+
+## 多用户与远端插件管理
+
+多用户模型对齐 VS Code Remote-SSH：
+
+- **不同远程 OS 账号**连接同一主机 = 完全隔离（各自的远端根目录、会话与插件）
+- **同一远程账号** = 共享会话根：同 (主机, 远端目录) 即同一个远端会话（多人多视图），会话内容互见、LLM 凭据代理归先到者——这是预期行为（VS Code 同账号共享 server 亦然）。每人独立远程账号可获得完全隔离
+- `kill --all` 与 `clean` 默认只作用于**本机发起的会话**（owner 指纹，会话启动时写入远端 `.runtime/owner`）与无活进程的残留；他人会话跳过并列明，`--include-others` 恢复全量行为
+
+远端插件管理双表面（VS Code「连着就能管」），插件仓库为**用户级**（该远程账号一份，所有会话共享，对标 `~/.vscode-server/extensions/`；会话 profile 经 symlink 接入，零副本）：
+
+- **远端窗口内**：远端 dsh 自带的 Settings 插件 UI 完全可用（引导期已为远端装好 pnpm）
+- **本地管理页**：远程会话面板的「远端插件」区可做清单 / 安装 / 启停 / 卸载；操作后**本会话立即 hmr 热生效**，其他会话在下次连接时同步（VS Code 的 Reload Required 等价语义，不自动重启远端）
 
 ## 架构
 

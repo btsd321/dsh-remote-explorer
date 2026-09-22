@@ -24,6 +24,7 @@ import {
   ApiError, fetchHosts, fetchSessionLog, fetchSessions, postConnect, postDisconnect,
   type PanelSession,
 } from './api.js';
+import { RemotePluginsSection } from './panel-plugins.js';
 
 /** 会话列表轮询间隔（毫秒） */
 const SESSIONS_POLL_MS = 2_000;
@@ -414,6 +415,9 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
             </div>
           )}
       </section>
+
+      {/* ---- 远端插件管理（VS Code「本地视图管远端」表面） ---- */}
+      <RemotePluginsSection sessionId={selectedId} t={t} />
 
       {/* ---- 进度日志 ---- */}
       <section>

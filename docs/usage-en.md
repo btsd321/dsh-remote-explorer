@@ -194,8 +194,9 @@ DEEPSEEK_API_KEY=sk-xxx ASTUDIO_API_KEY=sk-xxx \
 
 **What happens during connect:**
 
-1. **Provision** — installs Node and dsh on the remote (skipped if already installed).
-2. **Start remote dsh** — launches dsh in detached mode with per-session `DSH_HOME` and environment variables.
+1. **Provision** — installs Node and dsh on the remote (skipped if already installed), installs pnpm, and ensures the user-level plugin store skeleton.
+2. **Attach plugin store** — symlinks the session profile's node_modules to the user-level plugin store and syncs its manifest (hot-applied via hmr).
+3. **Start remote dsh** — launches dsh in detached mode with per-session `DSH_HOME` and environment variables.
 3. **Build forward tunnel** — forwards the remote dsh webserver port to a local port so the browser can reach it.
 4. **Credential wiring** — starts the reverse tunnel proxy, injects placeholder tokens into the remote environment, mirrors local `settings.yaml` with provider baseURLs redirected into the tunnel.
 5. **Open browser** — launches the default browser with the session URL (includes access token).
@@ -246,12 +247,15 @@ npx tsx src/cli/bin.ts kill <alias> --all
 | Option | Description |
 |---|---|
 | `--cwd <path>` | Specify which session to stop (mutually exclusive with `--all`) |
-| `--all` | Stop all sessions on this host (including orphans) |
+| `--all` | Stop all sessions **started from this machine** on this host (including orphans) |
+| `--include-others` | With `--all`, also stop sessions owned by other fingerprints (default: skip and list them) |
 | `--ssh-config <path>` | Use a custom ssh config file |
 | `--private-key <path>` | Private key path, wins over the config's IdentityFile (see [Authentication](#authentication-and-host-targeting)) |
 | `--password <password>` | Plaintext password auth (leaks; see [Authentication](#authentication-and-host-targeting)) |
 
 **Safety:** Process targeting uses pid files or listen-port-based lookup — **never `pkill -f`**, which would kill the SSH session running the command itself.
+
+**Multi-user scope:** Every session directory carries an owner fingerprint (local hostname + OS user) written at session start. `--all` stops only sessions **whose fingerprint matches this machine** plus process-less leftovers; live sessions with someone else's fingerprint are skipped and listed. `--include-others` restores the old full-scope behavior. This prevents killing another person's session when several people connect through the same remote account.
 
 Install directories and session profiles are preserved after kill. Use `connect` to restart.
 
@@ -274,6 +278,7 @@ npx tsx src/cli/bin.ts clean <alias> --keep 2
 | Option | Description |
 |---|---|
 | `--keep <N>` | Number of latest versions to keep per category (default: 1) |
+| `--include-others` | Also delete stale session directories owned by other fingerprints (default: skip and list them) |
 | `--ssh-config <path>` | Use a custom ssh config file |
 | `--private-key <path>` | Private key path, wins over the config's IdentityFile (see [Authentication](#authentication-and-host-targeting)) |
 | `--password <password>` | Plaintext password auth (leaks; see [Authentication](#authentication-and-host-targeting)) |
@@ -282,9 +287,11 @@ npx tsx src/cli/bin.ts clean <alias> --keep 2
 
 **What it cleans:**
 
-- **Stale session directories** — sessions whose pid file points to a dead process.
+- **Stale session directories** — sessions whose pid file points to a dead process; directories owned by other fingerprints are skipped by default (`--include-others` includes them).
 - **Old dsh versions** — keeps the N newest, deletes the rest (protected versions excluded).
 - **Old Node versions** — same rule.
+
+The user-level plugin store (`plugins/`) is shared data and is **never touched by clean**.
 
 **Output:** Reports freed space, deleted sessions/versions, and any protected versions.
 
@@ -419,7 +426,7 @@ The CLI normalizes `//home/user` to `/home/user` internally, so session ids are 
 
 ## Using it as a dsh plugin
 
-Since 0.6.0 this tool is also a valid dsh plugin package: installed into a local dsh profile, remote-session management appears in three surfaces — a Settings panel, a slash command, and agent tools. **The plugin shares the CLI's session orchestration, remote provisioning, and session table** — it is not a lite version, just the same engine in a different cockpit.
+Since 0.6.0 this tool is also a valid dsh plugin package: installed into a local dsh profile, remote-session management appears in three surfaces — a global panel in the left navigation, a slash command, and agent tools. **The plugin shares the CLI's session orchestration, remote provisioning, and session table** — it is not a lite version, just the same engine in a different cockpit.
 
 ### Installation
 
@@ -446,10 +453,11 @@ Restart `dsh web` after installing (dsh contract: package replacement requires a
 
 ### The three surfaces
 
-**Settings → Remote SSH Sessions** (panel):
+**Left navigation "Remote SSH Sessions"** (global panel, level with the "Plugins" button; moved out of Settings in 0.6.x — Settings holds preferences, workflow panels get their own surface):
 
-- Connect form: host (dropdown from `~/.ssh/config`, or type `user@host[:port]`), remote directory (remembers the last value per host), advanced options (local port / force restart / mirror re-test / Node and dsh versions / private key path), SSH password field
-- Session table: state dot, local port, an "Open ↗" link (pops a new tab serving the **remote dsh UI through the tunnel**), a "Disconnect" button (with "Also stop remote dsh" checked by default); sessions kept by other local processes are marked "external" and read-only
+- Connect form: host (dropdown from `~/.ssh/config`, or type `user@host[:port]`), remote directory (remembers the last value per host), advanced options (local port / force restart / mirror re-test / Node and dsh versions / private key path), SSH password field. **Two window-mode buttons** (VS Code's dual entry points): "Connect in current tab" = after the session is ready, a 3-second cancellable countdown navigates this tab into the remote window; "Connect in new tab" = this page stays as the manager and the session row opens the remote in a new tab
+- Session table: state dot, local port, "Enter (current tab)" and "Open in new tab ↗" (the new tab serves the **remote dsh UI through the tunnel**), a "Disconnect" button (with "Also stop remote dsh" checked by default); sessions kept by other local processes are marked "external" and read-only
+- Remote plugins section: with a session selected, manage the user-level plugin store of its remote profile (list / install / enable / disable / uninstall, see [Remote plugin management](#remote-plugin-management))
 - Progress log: incremental live tail of the selected session (provisioning stages, state transitions, errors)
 
 **Slash command** (chat composer):
@@ -462,6 +470,23 @@ Restart `dsh web` after installing (dsh contract: package replacement requires a
 ```
 
 **Agent tools** (callable by the model, behind dsh's regular tool-approval gate): `remote_hosts_list`, `remote_connect`, `remote_status`, `remote_kill`. All non-blocking: connect returns the session id immediately and the model polls status for progress. **Tools never accept a password parameter** — hosts needing password auth go through the panel or the CLI.
+
+### Remote window handoff
+
+The remote window (the remote dsh UI opened via "Open in new tab" or the countdown) carries a **status pill** at the sidebar foot (host alias + state dot). Clicking it opens the local connection-manager menu: connection state, progress-log tail, and three actions — **Back to local manager** / **Close remote connection and return** / **Stop remote dsh and return**. The latter two are navigate-then-act: the tab first navigates back to the local manager (intent hash in the address bar), where a banner asks for confirmation before executing — disconnecting would instantly kill the remote page served through the tunnel, so the action must run from the surviving side (the counterpart of VS Code's "Close Remote Connection" reloading the window back to local). In CLI form there is no manager page, so the remote menu degrades to read-only.
+
+### Remote plugin management
+
+The remote plugin store is **user-level** (one per remote OS account: `~/.dsh-remote-explorer/btsd321/plugins/`, the counterpart of VS Code's `~/.vscode-server/extensions/`); every session profile of that account attaches via symlink with zero copies. Two surfaces operate on the same store:
+
+- **Local manager page**: the panel's "Remote plugins" section — list / install (package name or `name@version`, handed to remote pnpm) / enable / disable / uninstall. Changes hot-apply to **your own live session via hmr** immediately; other users' live sessions pick them up at their next connect
+- **Inside the remote window**: the remote dsh's own Settings plugin UI (provisioning installs pnpm on the remote)
+
+Install/uninstall fall back to "effective after reconnect/restart" on remote dsh versions without hmr. Concurrent installs are serialized by pnpm's own directory lock plus a flock around provisioning critical sections.
+
+### Multi-user and session ownership
+
+Follows the VS Code model: **different remote OS accounts = fully isolated** (separate remote roots, sessions, and plugin stores); **same remote account = shared session root and plugin store** — same (host, remote directory) means the same session with multiple views: sessions see each other and the credential proxy belongs to the first view. Sharing is expected behavior (VS Code shares one server per account likewise); use separate remote accounts per person for full isolation. Destructive operations (`kill --all` / `clean`) are scoped by owner fingerprint, see their sections; the fingerprint can be overridden with the `DSH_OWNER_TAG` environment variable (test hook).
 
 ### Configuration (profile patch layer)
 
@@ -497,7 +522,9 @@ The session table (`~/.dsh/remote-sessions.json`) is shared both ways: the panel
 
 ### Troubleshooting
 
-- **Panel missing after install**: make sure dsh was restarted; `curl http://127.0.0.1:<port>/api/dsh-remote-explorer/ping` without credentials should return **401** (= plugin mounted and route protected), 404 = plugin not active (check `dsh.profile.bundles` in the profile's `package.json`)
-- **pnpm not found (exit 127)**: `npm i -g pnpm`
+- **Global panel missing after install**: make sure dsh was restarted and look for the "Remote SSH Sessions" button in the left navigation; `curl http://127.0.0.1:<port>/api/dsh-remote-explorer/ping` without credentials should return **401** (= plugin mounted and route protected), 404 = plugin not active (check `dsh.profile.bundles` in the profile's `package.json`)
+- **pnpm not found (exit 127)**: `npm i -g pnpm` (only needed for local `dsh plugin add/remove`; the remote store uses the pnpm provisioning installs on the remote)
 - **Peer dependency warnings**: expected under `autoInstallPeers: false`; at runtime peers resolve through the profile's installation fallback links to the host's copies — harmless
 - **Connect stuck in provisioning**: watch the panel log; a first provisioning downloads Node and dsh (minutes) — run `doctor` to pre-check the host
+- **No status pill in the remote window**: make sure the session connected on 0.6.x or later (older sessions get the component backfilled at reconnect; a reused live remote process shows it only after its next restart); with the session cookie, the remote `/api/dsh-remote-handoff/meta` should return 200, 503 = session runtime materials missing
+- **Remote plugin install fails**: read the pnpm error in the panel log; the registry comes from the provisioning benchmark cache; concurrent provisioning/install on the same remote account makes the later one wait on the flock, timing out after 15 minutes with "another bootstrap is in progress"

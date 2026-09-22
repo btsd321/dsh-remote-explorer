@@ -1,34 +1,33 @@
 /**
- * @file 会话级 handoff 组件的远端安装
- * @description 把合成包 `dsh-remote-handoff`（宿主半 + 浏览器半 + 空 patch）
- *              写进**新会话** profile 的 node_modules，并登记进 profile 清单的
- *              dependencies 与 `dsh.profile.bundles`——远端 dsh 启动时即加载它，
- *              远端页面由此获得「本机连接管理」菜单（VS Code 状态栏远端标识的
- *              等价物，设计见 src/handoff/protocol.ts 文件头）。
+ * @file 远端交接组件（handoff）的 store 级安装
+ * @description 合成包 `dsh-remote-handoff`（宿主半 + 浏览器半 + insert patch）
+ *              写进**用户级 plugin store**（不再写会话 profile）：该远程账号的
+ *              所有会话经 store symlink 共享同一份 handoff，新会话零额外安装。
  *
- * **幂等按合成包标记安装**：远端已有包目录则立即跳过（每次连接只多一条
- * `test -f`）。老会话（功能上线前建的 profile）在下次连接时补装；若远端 dsh
- * 进程彼时仍存活复用，bundle 要等下一次远端重启才加载——菜单迟到但不缺席，
- * 优雅降级期间远端页面零感知。
+ * 0.4.0 的「远端不装插件」红线经用户拍板解除——前提是每个会话的远端 dsh 跑
+ * 在独立 `DSH_HOME`（`sessions/<id>/`），与远端他人的 `~/.dsh` 零交集；store
+ * 同样在本工具远端根内，隔离契约不破。
  *
- * 隔离依据：会话 profile 在 `sessions/<id>/` 下（每会话独立 DSH_HOME），
- * 与远端他人的 `~/.dsh` 零交集——这是用户拍板解除「远端不装组件」红线的前提。
- *
- * 落盘走 SFTP 主路径（writeRemoteTextFile，远端没开 sftp 子系统时回退 printf）。
- * 文本内容全部本机生成，无远端拼接；包内文件为构建产物原文，不含动态值。
+ * 幂等按包目录标记：store 里已有 handoff 包目录则只确保登记（manifest 含
+ * deps+bundles），文件内容每次重写自愈（老内容如空 patch 重连一次即修复）。
+ * 老会话补装时若远端进程仍存活复用，菜单要等下一次远端重启才出现（迟到但
+ * 不缺席，降级期间远端页面零感知）。
  */
 
 import { quote } from '../util/shell-quote.js';
 import { writeRemoteTextFile } from '../transport/write-text.js';
-import { loadHandoffPayload } from '../handoff/payload.js';
 import { HANDOFF_PKG_NAME } from '../handoff/protocol.js';
+import { loadHandoffPayload } from '../handoff/payload.js';
+import {
+  ensurePluginStore, readPluginStoreManifest, transportIo, writePluginStoreManifest,
+} from './plugin-store.js';
 import type { RemotePaths } from './remote-paths.js';
 import type { RemoteTransport } from '../transport/types.js';
 
 /**
- * 合成包的 bundle patch：bundle 层在 boot 里就是**一层 patch**——宿主半 entry
- * 靠 insert 行进 entry 树（本仓库 cordis.patch.yml 的同款机制）。空 patch 列表
- * 等于这层什么都不贡献，宿主半永远不加载（实测踩过）。
+ * handoff 合成包的 bundle patch：bundle 层在 boot 里就是**一层 patch**——宿主半
+ * entry 靠 insert 行进 entry 树（本仓库 cordis.patch.yml 的同款机制）。空 patch
+ * 列表等于这层什么都不贡献，宿主半永远不加载（实测踩过）。
  */
 const HANDOFF_PATCH_YAML = `- insert:
     - id: ${HANDOFF_PKG_NAME}
@@ -37,15 +36,13 @@ const HANDOFF_PATCH_YAML = `- insert:
 
 /**
  * 合成包清单：bundle 元数据指向上面的 insert patch，client 元数据让 boot graph
- * 把浏览器半扫进组合脚本。dependencies 用 file: 自指，pnpm 万一在远端跑起来
- * 也能就地解析而不是去 registry 找不存在的发布版。
- * @param version - 占位版本（诊断用，无发布语义）
+ * 把浏览器半扫进组合脚本。
  * @returns 清单文本
  */
-function renderPackageJson(version: string): string {
+function renderHandoffPackageJson(): string {
   return `${JSON.stringify({
     name: HANDOFF_PKG_NAME,
-    version,
+    version: '0.0.0',
     private: true,
     type: 'module',
     main: 'index.js',
@@ -69,23 +66,22 @@ function renderPackageJson(version: string): string {
 }
 
 /**
- * 安装 handoff 合成包进会话 profile 并登记 bundle（幂等）。
+ * 安装/自愈 store 里的 handoff 合成包并登记启用。
  *
  * @param transport - 已连接的传输
  * @param paths - 远端路径集合
- * @param sessionId - 会话 id
- * @returns true = 本次新装；false = 远端已有（文件内容仍重写自愈）
- * @throws Error 产物载荷缺失（开发流程没跑过 build-plugin）或落盘/登记失败
+ * @param dshVersion - 会话使用的 dsh 版本（store 回退链接锚定）
+ * @returns true = 本次新装包目录；false = 已存在（内容仍重写自愈）
+ * @throws Error 产物载荷缺失（开发流程没跑过 build-plugin）
  */
 export async function installHandoffBundle(
   transport: RemoteTransport,
   paths: RemotePaths,
-  sessionId: string,
+  dshVersion: string,
 ): Promise<boolean> {
-  const pkgDir = `${paths.sessionProfile(sessionId)}/node_modules/${HANDOFF_PKG_NAME}`;
+  await ensurePluginStore(transport, paths, dshVersion);
 
-  // 标记检查只用于回报「新装/已就位」；文件内容每次重写（静态产物，幂等自愈——
-  // 装过旧内容（如空 patch）的老会话重连一次即修复）
+  const pkgDir = `${paths.pluginsStoreNodeModules}/${HANDOFF_PKG_NAME}`;
   const marker = await transport.exec(
     `test -f ${quote(`${pkgDir}/package.json`)} && echo EXISTS || true`,
     { allowNonZeroExit: true },
@@ -97,11 +93,9 @@ export async function installHandoffBundle(
     throw new Error('handoff 产物缺失——分发形态需先跑 scripts/build-plugin.ts');
   }
 
-  // 远端 profile 经 --dump-config 初始化，不保证有 node_modules 目录；
-  // writeRemoteTextFile 不建父目录，这里先补齐
   await transport.exec(`mkdir -p ${quote(pkgDir)}`, {});
   const files: [string, string][] = [
-    ['package.json', renderPackageJson('0.0.0')],
+    ['package.json', renderHandoffPackageJson()],
     ['index.js', payload.host],
     ['client.js', payload.client],
     ['cordis.patch.yml', HANDOFF_PATCH_YAML],
@@ -110,28 +104,29 @@ export async function installHandoffBundle(
     await writeRemoteTextFile(transport, `${pkgDir}/${name}`, content, {});
   }
 
-  // 登记进 profile 清单：dependencies（解析锚）+ dsh.profile.bundles（加载开关）。
-  // 读-改-写全程经传输层，清单是本工具自己初始化的 profile，字段形状已知
-  const manifestPath = `${paths.sessionProfile(sessionId)}/package.json`;
-  const read = await transport.exec(`cat ${quote(manifestPath)}`);
-  const manifest = JSON.parse(read.stdout) as {
-    dependencies?: Record<string, string>;
-    dsh?: { profile?: { bundles?: string[] } };
-  };
-  const dependencies = manifest.dependencies ?? {};
-  dependencies[HANDOFF_PKG_NAME] = `file:./node_modules/${HANDOFF_PKG_NAME}`;
+  // 登记进 store manifest：**只进 bundles，不进 dependencies**——handoff 是
+  // 本工具直接落盘的合成包，不经 pnpm；deps 里的 file: 自指 spec 会让 pnpm
+  // 把它当 linked dependency 安装并报 LINKED_PKG_DIR_NOT_FOUND（实测）。
+  // 旧版本写过的 deps 条目在此迁移清除
+  const io = transportIo(transport);
+  const manifest = await readPluginStoreManifest(io, paths);
+  const deps = { ...(manifest.dependencies ?? {}) };
   const bundles = manifest.dsh?.profile?.bundles ?? [];
-  if (!bundles.includes(HANDOFF_PKG_NAME)) bundles.push(HANDOFF_PKG_NAME);
-  const next = {
-    ...manifest,
-    dependencies,
-    dsh: { ...manifest.dsh, profile: { ...manifest.dsh?.profile, bundles } },
-  };
-  await writeRemoteTextFile(
-    transport,
-    manifestPath,
-    `${JSON.stringify(next, undefined, 2)}\n`,
-    {},
-  );
+  let changed = false;
+  if (deps[HANDOFF_PKG_NAME] !== undefined) {
+    delete deps[HANDOFF_PKG_NAME];
+    changed = true;
+  }
+  if (!bundles.includes(HANDOFF_PKG_NAME)) {
+    bundles.push(HANDOFF_PKG_NAME);
+    changed = true;
+  }
+  if (changed) {
+    await writePluginStoreManifest(io, paths, {
+      ...manifest,
+      dependencies: deps,
+      dsh: { ...manifest.dsh, profile: { ...manifest.dsh?.profile, bundles } },
+    });
+  }
   return fresh;
 }

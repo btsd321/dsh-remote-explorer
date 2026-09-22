@@ -53,7 +53,7 @@ npm run build:plugin && dsh plugin --profile web add /path/to/repo
 
 Restart `dsh web` after installing. The plugin provides three surfaces:
 
-- **Settings → Remote SSH Sessions** panel: pick a host, connect/disconnect, live progress log; each session's "Open" link pops a new tab serving the **remote dsh UI** through the SSH tunnel
+- **"Remote SSH Sessions" global panel in the left navigation**: pick a host, connect in two window modes (enter current tab / open new tab), disconnect, manage remote plugins, live progress log; the remote window carries a status pill for returning to the manager or closing/stopping the connection
 - **Slash command** `/remote-ssh`: `hosts | connect <alias> [remote-dir] | status | disconnect <alias|session-id> [--keep-remote]`
 - **Agent tools** `remote_hosts_list / remote_connect / remote_status / remote_kill` (behind dsh's regular tool-approval gate)
 
@@ -125,6 +125,19 @@ Modeled after VS Code's `~/.vscode-server` single-root self-contained model: eve
 **When writing remote paths in Git Bash, use double slashes** (`--cwd //home/xxx`) or set `MSYS_NO_PATHCONV=1` first. MSYS rewrites `/home/xxx` into something like `D:/SoftWare/Git/home/xxx` before the argument reaches the program, which the CLI can only detect and reject.
 
 `doctor` checks connectivity, platform, basic commands, disk space, installed runtimes, **Node runtime stability**, and live mirror latency. It is the first tool for troubleshooting remote environment issues — most remote development failures are environmental, not code.
+
+## Multi-user and remote plugin management
+
+The multi-user model follows VS Code Remote-SSH:
+
+- **Different remote OS accounts** on the same host = fully isolated (separate remote roots, sessions, plugins)
+- **Same remote account** = shared session root: same (host, remote directory) means the same remote session (multiple views), sessions see each other and the credential proxy belongs to the first view — expected behavior (VS Code shares one server per account likewise). Use separate remote accounts per person for full isolation
+- `kill --all` and `clean` default to acting only on **sessions started from this machine** (owner fingerprint written to remote `.runtime/owner` at session start) plus process-less leftovers; other owners' sessions are skipped and listed, `--include-others` restores the old full-scope behavior
+
+Remote plugin management, two surfaces (VS Code's "manage while connected"). The plugin store is **user-level** (one per remote OS account, shared by all its sessions — the counterpart of `~/.vscode-server/extensions/`; session profiles attach via symlink with zero copies):
+
+- **Inside the remote window**: the remote dsh's own Settings plugin UI is fully functional (provisioning installs pnpm on the remote)
+- **Local manager page**: the remote-session panel's "Remote plugins" section lists / installs / enables / disables / uninstalls; changes hot-apply to your own live session via remote hmr and reach other sessions at their next connect (VS Code's Reload Required equivalent — no automatic remote restart)
 
 ## Architecture
 

@@ -19,13 +19,13 @@
 ```typescript
 /**
  * @file 跨平台 SSH 连接模块
- * @description 基于 ssh2 纯 JS 库实现，替代 dsh-ssh 中依赖系统 ssh 命令的实现。
- *              支持 Windows/Linux/macOS 客户端连接 POSIX 远程主机，提供与
- *              dsh-ssh SshConnection 兼容的接口（request/connectStream/dispose/ready）。
+ * @description 在本机监听一个端口，把入站连接经 SSH 通道转到远端 dsh 的 webserver。
+ *              监听器跨重连存活：重连只换传输引用，本机端口不变——否则用户
+ *              已打开的浏览器标签会全部失效。
  *
  * 安全约束：
- * - 流转发统一叠加 TLS-PSK 认证，PSK 由 helper 每流下发
- * - 协议版本、密码套件不可单方面修改，需与 dsh-ssh 同步
+ * - 转发监听只绑 127.0.0.1——绑全网卡等于把远端 GUI 挂到网上
+ * - raw socket 的 error 监听器必须在任何 destroy 之前挂上，未处理 error 事件会直接掀翻进程
  */
 ```
 
@@ -54,15 +54,15 @@ export interface ConnectionHistoryEntry {
 ```typescript
 /** 请求超时（毫秒） */
 requestTimeoutMs?: number;
-/** helper 入口文件的 SHA-256，用于连接时校验；为空串时跳过校验 */
-helperHash: string;
+/** 反向端口：一经启用随会话固定；复用会话时读回落盘值，不重新生成 */
+reversePort: number;
 ```
 
 类型别名同样要有注释：
 
 ```typescript
-/** 连接状态枚举 */
-export type ConnectionState = 'disconnected' | 'connecting' | 'verifying' | 'ready' | 'lost' | 'failed' | 'reconnecting';
+/** 会话生命周期状态标签 */
+export type SessionStateTag = 'idle' | 'connecting' | 'connected' | 'heartbeat-missed' | 'reconnecting' | 'reconnect-failed' | 'reconnect-exhausted' | 'disconnected';
 ```
 
 ### 1.3 类（必需）
@@ -71,22 +71,21 @@ export type ConnectionState = 'disconnected' | 'connecting' | 'verifying' | 'rea
 
 ```typescript
 /**
- * 跨平台 SSH 连接：基于 ssh2 实现，提供与 dsh-ssh SshConnection 兼容的接口。
+ * 正向转发：本机监听 → SSH 通道 → 远端 dsh webserver。
  *
  * 核心设计：
- * - RPC 通道：ssh2 exec 执行远端 Node helper，stdin/stdout 承载 JSON-RPC
- * - 流转发：ssh2 openssh_forwardOutStream 直连远端 Unix 域套接字，再用 TLS-PSK 认证
- * - 心跳租约：定期 heartbeat 保持 helper 活性
- * - 断线语义：连接丢失后所有挂起操作作废，不自动重连（与 dsh-ssh 一致）
+ * - 监听器跨重连存活：只持「当前传输」引用，重连 swapTransport 换引用，本机端口不变
+ * - 通道配额：forward/admin 分类配额由 channel-pool 统一管理
+ * - 重连语义：心跳统一决策重连，单条失败连接不各自发起
  */
-export class Ssh2Connection extends EventEmitter {
+export class LocalForward {
 ```
 
 构造函数参数用 `@param` 标注。公开的 getter 用单行注释说明取值时机：
 
 ```typescript
-/** 远端 Node 可执行文件路径（helper 就绪后可用） */
-get nodeExecutable(): string {
+/** 本机监听端口；`listen()` 之后可用 */
+get localPort(): number {
 ```
 
 ### 1.4 函数与方法（必需）
@@ -120,9 +119,9 @@ private assertOpen(): void {
 关键步骤用编号注释串起流程，让人能顺着读完主干：
 
 ```typescript
-// 1. 确保 ~/.dsh 目录存在
-// 2. 探测并安装 Node
-// 3. 上传 helper bundle 文件
+// 1. 探测远端环境（OS/架构/家目录）
+// 2. 安装 Node 与 dsh（已装则跳过）
+// 3. 会话 profile 接入用户级插件仓库
 ```
 
 以下三种情况**必须**写行内注释：
@@ -130,16 +129,16 @@ private assertOpen(): void {
 - **绕过常规做法的地方**——写清为什么
 
   ```typescript
-  // 首次尝试时跳过 hash 校验（helperHash 为 undefined 时 Ssh2Connection 不校验）
-  // 用单个 SFTP 会话串行上传所有依赖文件，避免并发通道超限
+  // 绝不用 pkill -f：承载命令的 shell 命令行也含该模式，会杀掉自己
+  // 池化 SFTP 会话内 4 路并发，不为每个操作新开通道（配额受限）
   // 消费 stderr 防止缓冲区满导致 channel 关闭
   ```
 
 - **与外部系统的契约**——写清对方的行为
 
   ```typescript
-  // compute() 用 ignoreCase: true 后键名全小写
-  // openssh_forwardOutStream 是 ssh2 的 OpenSSH 扩展：直接连接远端 Unix 域套接字
+  // compute() 合并 Host * 默认值并递归解析 ProxyJump 链
+  // dsh webserver 的 host 只接受 127.0.0.1 与 0.0.0.0，且自身不带 TLS
   ```
 
 - **空的 catch 块**——必须说明为什么可以忽略，不允许留空白 `catch {}`
@@ -155,7 +154,7 @@ private assertOpen(): void {
 
 ### 2.1 一个文件一个职责
 
-文件名用 kebab-case，名字直接反映职责：`ssh-config-parser.ts`、`dependency-collector.ts`、`remote-workspace-registry.ts`。
+文件名用 kebab-case，名字直接反映职责：`ssh-config-parser.ts`、`channel-pool.ts`、`plugin-store.ts`。
 
 单文件超过约 600 行就该考虑拆分。拆分沿职责边界切，不要按"太长了"随意切半。
 
@@ -164,11 +163,11 @@ private assertOpen(): void {
 依赖必须单向向下，不允许反向或环形引用：
 
 ```
-入口/集成层   index.ts、webgui-integration.ts、remote-directory-picker.ts
-门面层        api/remote-host-controller.ts
-编排层        remote-connection.ts
-传输层        ssh2-connection.ts、remote-bootstrap.ts
-基础层        ssh-config-parser.ts、dependency-collector.ts、schemas.ts、native-stub.ts
+入口层        cli/、plugin/、plugin-client/
+编排层        session/
+能力层        provision/、tunnel/、credential/、handoff/
+传输层        transport/
+基础层        hosts/、util/
 ```
 
 下层不得 import 上层。传输层不感知 Cordis 上下文，基础层不感知连接状态。
@@ -218,7 +217,7 @@ export function refreshConfig(): void {
 
 ```typescript
 get history(): readonly ConnectionHistoryEntry[] { return this._history; }
-get activeConnection(): Ssh2Connection | undefined {
+get currentTransport(): RemoteTransport | undefined {
   return this._state === 'ready' ? this.connection : undefined;
 }
 ```
@@ -246,18 +245,11 @@ get activeConnection(): Ssh2Connection | undefined {
   const MIRROR_URLS: Record<NodeMirror, string> = { /* ... */ };
   ```
 
-### 3.1 外部数据必须用 Zod 校验
+### 3.1 外部数据必须校验
 
-所有跨进程边界进来的数据（helper RPC 响应、WebSocket 请求、配置文件）都要过 Zod。schema 集中放 [src/schemas.ts](../src/schemas.ts)，模块私有的放模块内。
-
-- 契约明确的用 `.strict()`，拒绝多余字段
-- 远端实现可能多带字段的用 `.passthrough()`，并注释说明为什么放宽
-- 类型从 schema 推导，不要手写一份再维护两处：`export type Prepared = z.infer<typeof preparedSchema>;`
-
-```typescript
-/** fs.stat 响应 schema（完全放宽，远端返回格式可能与本地不同） */
-const infoSchema = z.object({}).passthrough();
-```
+- **插件 Config 用 schemastery**（`@deepseek-ai/schemastery`，zod 风格 API；dsh loader 拒绝真 zod），全字段给 default（3.18 无 enum/optional API）
+- **跨进程边界的其余数据**（远端命令输出、manifest JSON、路由请求体）用校验函数与容错解析：`validateRemoteCwd` 拒绝 MSYS 改写路径、manifest `JSON.parse` 失败回落空清单并说明原因——解析失败要么明确报错要么明确降级，不静默吞掉
+- **形状同步靠 `import type`**：面板/路由消费的类型从 `supervisor.ts` / `session-manager.ts` 类型导入，编译期强制同步，不手写第二份
 
 ---
 
@@ -267,7 +259,7 @@ const infoSchema = z.object({}).passthrough();
 
   ```typescript
   throw new Error(`跳板机 ${i + 1} (${jh.host}:${jh.port}) 连接失败: ${err.message}`);
-  throw new Error(`helper 入口文件摘要不匹配：期望 ${helperHash}，实际 ${installedHash}`);
+  throw new RemoteError('EXEC_FAILED', `主机 ${hostAlias} 上安装 dsh ${version} 失败：版本不符`, { hostAlias });
   ```
 
 - **需要携带错误码时定义专用错误类**，并设置 `name`：
@@ -337,10 +329,10 @@ const infoSchema = z.object({}).passthrough();
 
 | 对象 | 约定 | 示例 |
 |---|---|---|
-| 文件 | kebab-case | `remote-workspace-registry.ts` |
-| 类 / 接口 / 类型 | PascalCase | `ConnectionOrchestrator`、`ResolvedHostWithJump` |
-| 函数 / 变量 / 方法 | camelCase | `resolveHost`、`helperDirPath` |
-| 模块级常量 | UPPER_SNAKE_CASE | `HELPER_DIR`、`MIN_NODE_MAJOR` |
+| 文件 | kebab-case | `plugin-store.ts` |
+| 类 / 接口 / 类型 | PascalCase | `SessionSupervisor`、`ResolvedHostWithJump` |
+| 函数 / 变量 / 方法 | camelCase | `resolveHost`、`syncSessionManifest` |
+| 模块级常量 | UPPER_SNAKE_CASE | `ROUTE_PREFIX`、`DEFAULT_DSH_VERSION` |
 | 私有字段 | camelCase；与 getter 同名时前缀 `_` | `private _state` + `get state()` |
 | 布尔值 | `is`/`has`/`enabled` 前缀或后缀 | `nodeSufficient`、`hasProxyJump` |
 
@@ -362,19 +354,19 @@ const infoSchema = z.object({}).passthrough();
 
 ## 七、工程化约束
 
-1. **无构建步骤。** 插件以 `.ts` 源码被 tsx 直接加载。开发流程不添加 `outDir` 产物。分发打包走 `scripts/package.ts`（esbuild 单文件 + 目标平台 Node 二进制），产物落 `dist/` 且已 gitignore——不改变源码运行方式，不提交产物。
+1. **开发流程无构建步骤。** CLI 形态以 `.ts` 源码经 tsx 直接运行，开发流程不添加 `outDir` 产物。**插件形态是例外**：dsh loader 经纯 ESM import 加载插件、不走 tsx，必须用 `scripts/build-plugin.ts` 的产物（`lib/`，已 gitignore；含 handoff 双入口，产物文本经 define 内联进宿主半 bundle）。分发打包走 `scripts/package.ts`（esbuild 单文件 + 目标平台 Node 二进制），产物落 `dist/` 且已 gitignore——不改变源码运行方式，不提交产物。
 2. **改代码后跑类型检查**：`npx -y -p typescript@5.7.3 tsc --noEmit`（本地 `tsc` 目前不可用，原因见 [CLAUDE.md](../CLAUDE.md)）。不要让类型错误总数变多。
 3. **新增运行时依赖必须写进 `package.json`**，版本锁定或用窄范围。`node_modules` 里有不等于已声明——`ssh-config` 就是现存的反例。
-4. **协议相关常量不可单方面修改**：`SSH_PROTOCOL_VERSION`、帧格式、TLS-PSK 密码套件必须与 dsh-ssh 同步，改动要在注释里标明兼容性影响。
+4. **协议与命名常量不可单方面修改**：路由前缀（`/api/dsh-remote-explorer`、`/api/dsh-remote-handoff`）、slash 命令名、agent 工具名前缀、handoff 协议版本（`HANDOFF_PROTOCOL_VERSION`）在 `scripts/check-plugin.ts` 都有静态护栏；改动必须同步护栏并在注释里标明兼容性影响（远端旧 bundle 靠协议版本降级只读）。
 5. **跨平台**：客户端可能是 Windows，远端一定是 POSIX。
    - 不要依赖系统 `ssh`/`scp` 命令，用纯 JS 的 ssh2
    - 构造远端路径用 `/` 字符串拼接，**不要用 `node:path` 的 `join`**（Windows 上会产出反斜杠）
    - 本地路径转远端相对路径时显式 `.replace(/\\/g, '/')`
 6. **不落明文凭据**：私钥只以文件路径引用，日志和错误消息不打印密钥、口令、PSK 内容。SSH 密码（交互输入或 `--password` 传入）只存进程内存：交互提示用 node:readline 加只吞字节的 output 实现不回显（零新依赖），`--password` 是用户显式选择、CLI 打警告但不写日志；JS 字符串不可清零，只能丢弃引用靠 GC（已知限制，注释里如实写明，不假装安全）。
 7. **落盘配置放 `~/.dsh/` 下**，读取时容错（文件缺失或损坏回落默认值），写入失败不影响运行时。
-8. **新增 WebSocket 方法要同步改两处**：`webgui-integration.ts` 的 `handleMethod` 分发表 + `client/remote-explorer.js` 的调用点。
+8. **新增面板能力同步三处**：`src/plugin/routes.ts` 的 RouteDef、`src/plugin-client/api.ts` 的客户端函数、面板组件；快照形状经 `import type` 从 `supervisor.ts` 共享，编译期强制同步。远端执行的脚本片段（如 plugin-store 的扫描脚本）里所有动态值必须过 `quote()`。
 9. **前端脚本无框架无构建**：`client/` 下是原生 JS，保持零依赖，不要引入打包器。
-10. **改动连接或引导逻辑后跑一次真实连接测试**（`npx tsx tests/test-quick-connect.ts`）。类型检查通过不等于连得上。
+10. **改动传输或引导逻辑后跑一次真实验证**：插件形态 `npx tsx scripts/dev-plugin.ts --smoke`，CLI 形态真实 `doctor`/`connect`（行为脚本 `tests/stop-remote-on-close.ts`、`tests/sftp-roundtrip.ts`）。类型检查通过不等于连得上。
 
 ---
 
@@ -383,7 +375,7 @@ const infoSchema = z.object({}).passthrough();
 中文，一句话说清做了什么。修 bug 用 `修复:` 前缀，重构用 `重构:` 前缀。
 
 ```
-修复: tryConnect 传空 node/helper/helperHash 导致连接必失败
-重构: 直接解析 ~/.ssh/config 管理主机 + 跳板机队列支持
-远程目录选择器: SSH 连接就绪时替换 ctx.directoryPicker 为远端列表
+修复: 会话 manifest 同步丢模板 base bundles 导致远端 dsh 起不来
+重构: 远端插件仓库改用户级，会话经 symlink 接入
+远程会话面板: 从 settings.section 迁到侧栏全局面板
 ```

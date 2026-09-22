@@ -17,6 +17,7 @@ import { createRemotePaths } from '../../provision/remote-paths.js';
 import { stopRemoteDsh } from '../../session/remote-process.js';
 import { listSessions, removeSession } from '../../session/session-registry.js';
 import { computeSessionId } from '../../util/session-id.js';
+import { ownerFingerprint } from '../../util/owner-fingerprint.js';
 import { quote } from '../../util/shell-quote.js';
 import { prepareHostAuth } from '../host-auth.js';
 import { bold, cyan, dim, green, println, yellow, ProgressReporter } from '../output.js';
@@ -29,6 +30,11 @@ export interface KillCommandOptions {
   cwd: string;
   /** 停止该主机上的全部会话 */
   all: boolean;
+  /**
+   * --all 时连他人指纹的活会话一起停（默认只停自己的 + 无活进程的残留）。
+   * 多用户同远端账号时防误杀他人会话，见 owner-fingerprint.ts
+   */
+  includeOthers?: boolean;
   /** 私钥文件路径覆盖（--private-key） */
   privateKey?: string;
   /** 固定密码（--password）：显式走密码认证 */
@@ -64,14 +70,33 @@ export async function runKill(options: KillCommandOptions): Promise<number> {
 
     // 确定要停哪些会话：--all 时扫远端会话目录，否则只停指定的那一个。
     // 扫远端而非只看本机会话表——远端 dsh 可能由已退出的 CLI 启动，
-    // 那种"孤儿"恰恰是最需要 kill 的情形
-    const sessionIds = options.all
-      ? await listRemoteSessionIds(transport, paths.base)
-      : [computeSessionId(options.alias, options.cwd)];
+    // 那种"孤儿"恰恰是最需要 kill 的情形。
+    // --all 默认按 owner 指纹 scope：只停自己发起的活会话 + 无活进程的残留；
+    // 他人指纹的活会话跳过列明（--include-others 恢复全杀）
+    let sessionIds: string[];
+    const skippedOthers: string[] = [];
+    if (options.all) {
+      const mine = ownerFingerprint();
+      sessionIds = [];
+      for (const entry of await listRemoteSessions(transport, paths.base)) {
+        const foreign = entry.alive && entry.owner !== '' && entry.owner !== mine;
+        if (foreign && options.includeOthers !== true) {
+          skippedOthers.push(entry.id);
+          continue;
+        }
+        sessionIds.push(entry.id);
+      }
+    } else {
+      sessionIds = [computeSessionId(options.alias, options.cwd)];
+    }
 
-    if (sessionIds.length === 0) {
+    if (sessionIds.length === 0 && skippedOthers.length === 0) {
       println(yellow('远端没有会话目录，无需停止'));
       return 0;
+    }
+    if (skippedOthers.length > 0) {
+      println(yellow(`跳过 ${skippedOthers.length} 个他人会话（--include-others 可一并停止）：`
+        + `${skippedOthers.join('、')}`));
     }
 
     let stopped = 0;
@@ -108,20 +133,42 @@ export async function runKill(options: KillCommandOptions): Promise<number> {
   }
 }
 
+/** 远端会话目录的 scope 判定三元组 */
+interface RemoteSessionEntry {
+  /** 会话 id（目录名） */
+  id: string;
+  /** owner 指纹；功能上线前的老目录为空串 */
+  owner: string;
+  /** 远端 dsh 进程是否存活 */
+  alive: boolean;
+}
+
 /**
- * 列出远端已存在的会话 id。
+ * 列出远端会话目录及其 owner/存活状态（一条远端脚本取全，省往返）。
  *
  * @param transport - 已连接的传输
  * @param baseDir - 远端根目录绝对路径
- * @returns 会话 id 列表
+ * @returns 三元组列表
  */
-async function listRemoteSessionIds(
+async function listRemoteSessions(
   transport: SshTransport,
   baseDir: string,
-): Promise<string[]> {
-  const result = await transport.exec(
-    `for d in ${quote(baseDir)}/sessions/*/; do [ -d "$d" ] && basename "$d"; done`,
-    { allowNonZeroExit: true },
-  );
-  return result.stdout.split('\n').map(line => line.trim()).filter(Boolean);
+): Promise<RemoteSessionEntry[]> {
+  const script = [
+    `for d in ${quote(baseDir)}/sessions/*/; do`,
+    '  [ -d "$d" ] || continue',
+    '  id=$(basename "$d")',
+    '  owner=$(head -1 "$d/.runtime/owner" 2>/dev/null)',
+    '  pid=$(cat "$d/.runtime/pid" 2>/dev/null)',
+    '  alive=no',
+    '  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && alive=yes',
+    '  printf \'%s\\t%s\\t%s\\n\' "$id" "$owner" "$alive"',
+    'done',
+  ].join('\n');
+  const result = await transport.exec(script, { allowNonZeroExit: true });
+  return result.stdout.split('\n').map(line => line.split('\t')).filter(parts => parts[0]).map(parts => ({
+    id: (parts[0] ?? '').trim(),
+    owner: (parts[1] ?? '').trim(),
+    alive: (parts[2] ?? '').trim() === 'yes',
+  })).filter(entry => entry.id !== '');
 }

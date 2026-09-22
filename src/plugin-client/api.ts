@@ -144,3 +144,53 @@ export async function postDisconnect(target: string, stopRemote: boolean): Promi
     body: JSON.stringify({ target, stopRemote }),
   });
 }
+
+/** 远端插件清单项（与宿主半 supervisor 的 RemotePluginInfo 同形状） */
+export interface RemotePluginInfo {
+  /** 包名 */
+  name: string;
+  /** 已装版本 */
+  version: string;
+  /** 是否 bundle（声明 dsh.bundle.patch） */
+  bundle: boolean;
+  /** 是否启用中（在 bundles 列表） */
+  enabled: boolean;
+}
+
+/**
+ * 拉远端会话 profile 的插件清单。
+ *
+ * @param sessionId - 会话 id
+ * @returns 清单
+ */
+export async function fetchRemotePlugins(sessionId: string): Promise<RemotePluginInfo[]> {
+  const result = await request<{ plugins: RemotePluginInfo[] }>(
+    `/remote-plugins?session=${encodeURIComponent(sessionId)}`,
+  );
+  return result.plugins;
+}
+
+/** 远端插件动作（install 需 spec；remove/toggle 需 name；toggle 另需 enabled） */
+export type RemotePluginAction =
+  | { action: 'install'; spec: string }
+  | { action: 'remove'; name: string }
+  | { action: 'toggle'; name: string; enabled: boolean };
+
+/**
+ * 执行远端插件动作（宿主半经会话 SSH 通道在远端 profile 内操作）。
+ *
+ * @param sessionId - 会话 id
+ * @param op - 动作
+ * @returns 动作后的清单
+ */
+export async function postRemotePluginAction(
+  sessionId: string,
+  op: RemotePluginAction,
+): Promise<RemotePluginInfo[]> {
+  const result = await request<{ plugins: RemotePluginInfo[] }>('/remote-plugins', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ session: sessionId, ...op }),
+  });
+  return result.plugins;
+}

@@ -115,6 +115,51 @@ function buildRoutes(supervisor: SessionSupervisor): RouteDef[] {
       },
     },
     {
+      // 远端插件管理：GET ?session=<id> 清单；POST 动作 install/remove/toggle。
+      // 全部经监督器复用会话的 SSH 通道在远端 profile 内操作（pnpm + 清单改写）
+      path: `${ROUTE_PREFIX}/remote-plugins`,
+      methods: ['GET', 'POST'],
+      fetch: async (request) => {
+        try {
+          if (request.method === 'GET') {
+            const id = new URL(request.url).searchParams.get('session') ?? '';
+            return Response.json({ plugins: await supervisor.listRemotePlugins(id) });
+          }
+          const body = await readJsonBody(request);
+          const session = stringField(body, 'session');
+          const action = stringField(body, 'action');
+          if (session === undefined || action === undefined) {
+            return Response.json({ code: 'bad_usage', message: '缺少 session 或 action 字段' }, { status: 400 });
+          }
+          if (action === 'install') {
+            const spec = stringField(body, 'spec');
+            if (spec === undefined) {
+              return Response.json({ code: 'bad_usage', message: 'install 需要 spec 字段' }, { status: 400 });
+            }
+            return Response.json({ plugins: await supervisor.installRemotePlugin(session, spec) });
+          }
+          if (action === 'remove') {
+            const name = stringField(body, 'name');
+            if (name === undefined) {
+              return Response.json({ code: 'bad_usage', message: 'remove 需要 name 字段' }, { status: 400 });
+            }
+            return Response.json({ plugins: await supervisor.removeRemotePlugin(session, name) });
+          }
+          if (action === 'toggle') {
+            const name = stringField(body, 'name');
+            const enabled = booleanField(body, 'enabled');
+            if (name === undefined || enabled === undefined) {
+              return Response.json({ code: 'bad_usage', message: 'toggle 需要 name 与 enabled 字段' }, { status: 400 });
+            }
+            return Response.json({ plugins: await supervisor.toggleRemotePlugin(session, name, enabled) });
+          }
+          return Response.json({ code: 'bad_usage', message: `未知动作 ${action}` }, { status: 400 });
+        } catch (error) {
+          return supervisorError(error);
+        }
+      },
+    },
+    {
       path: `${ROUTE_PREFIX}/connect`,
       methods: ['POST'],
       fetch: async (request) => {

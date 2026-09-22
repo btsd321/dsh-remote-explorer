@@ -21,8 +21,9 @@
  *    对标 VS Code 的 `~/.vscode-server` 单根自治模型。
  */
 
-import { RemoteError } from '../util/errors.js';
+import { RemoteError, toErrorMessage } from '../util/errors.js';
 import { quote } from '../util/shell-quote.js';
+import { INSTALL_LOCK_WAIT_SECONDS, installLockHint, lockInstallCommand } from './install-lock.js';
 import type { RemotePaths } from './remote-paths.js';
 import type { RemoteTransport } from '../transport/types.js';
 
@@ -92,27 +93,30 @@ export async function ensureDsh(
   // 2. 安装。目录里放一个占位 package.json，让 npm 把依赖装进本目录而不是向上找
   options.onProgress?.(`安装 dsh ${version}（首次约需 1 分钟）`);
   const placeholder = JSON.stringify({ name: 'dsh-remote-explorer-install', private: true });
-  const install = [
+  // 整段套 flock：npm 写版本目录是临界区，多人同远端账号并发引导会写竞态
+  const install = lockInstallCommand(paths, [
     `rm -rf ${quote(installDir)}`,
     `mkdir -p ${quote(installDir)}`,
     `cd ${quote(installDir)}`,
     `printf '%s' ${quote(placeholder)} > package.json`,
     `npm install --registry=${quote(registryUrl)} --no-audit --no-fund ${quote(`@deepseek-ai/dsh@${version}`)}`,
-  ].join('\n');
+  ].join('\n'));
 
   try {
     await transport.exec(install, {
       pathPrefix: nodeBinDir,
       env: npmEnv(paths),
-      timeoutMs: INSTALL_TIMEOUT_MS,
+      timeoutMs: INSTALL_TIMEOUT_MS + INSTALL_LOCK_WAIT_SECONDS * 1_000,
       ...(signal ? { signal } : {}),
     });
   } catch (error) {
-    // 安装失败必须清掉目录：留下半个安装会让下次的版本检查行为难以预测
+    // 安装失败必须清掉目录：留下半个安装会让下次的版本检查行为难以预测。
+    // 清目录不套锁：失败方持锁期间执行，与成功方临界区不重叠
     await cleanup(transport, installDir);
     throw new RemoteError(
       'EXEC_FAILED',
       `在主机 ${transport.hostAlias} 上安装 dsh ${version} 失败。`
+        + installLockHint(toErrorMessage(error))
         + '若报错形如 V8 内存分配失败或 SIGTRAP，通常是 Node 运行时在该架构上不稳定，'
         + '请用 dsh-remote-explorer doctor 检查 Node 稳定性自检结果',
       { cause: error, hostAlias: transport.hostAlias },
