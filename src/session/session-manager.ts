@@ -58,7 +58,8 @@ import { generateProxyToken } from '../credential/token.js';
 import { TunnelProxyCredential } from '../credential/tunnel-proxy.js';
 import { PasswordProvider, type PasswordPromptFn } from '../util/password-prompt.js';
 import {
-  deepseekRoute, extractProviderRoutes, mirrorSettingsForTunnel, readLocalSettings,
+  deepseekRoute, extractProviderRoutes, mirrorSettingsForTunnel,
+  readLocalSettings, renderProviderTunnelPatch,
 } from '../credential/provider-routes.js';
 import type { ManageHandlers } from '../handoff/protocol.js';
 import type { ReverseHandle, RemoteTransport } from '../transport/types.js';
@@ -394,9 +395,14 @@ export class RemoteSession {
       await attachSessionNodeModules(transport, paths, sessionId);
       await syncSessionManifest(transportIo(transport), paths, sessionId);
 
-      // 6. settings 镜像：本机 settings 整体复制到会话 DSH_HOME（热重载，
-      //    复用会话时同值重写无副作用），仅 pi-ai 供应商的 baseURL 重定向进
-      //    隧道。只镜像 settings——凭据引用不含密钥；绝不镜像 .credentials.yaml
+      // 6. settings 双写：本机 settings 整体复制到会话 DSH_HOME + pi-ai 供应商
+      //    路由写进 home patch 层（`$DSH_HOME/cordis.patch.yml`）。
+      //    - 镜像：dsh ≤0.1.6 运行时热读它；0.1.7 起只在每次进程启动时一次性
+      //      导入（导入后改名 `.imported`），承载其余 section 的传递
+      //    - home patch：0.1.6/0.1.7 都存在且受 hmr 热监听，供应商路由的
+      //      持续热生效靠它——不受 0.1.7 移除 settings.yaml 运行时读取的影响
+      //    两份都只做 baseURL 重定向（凭据引用不含密钥）；绝不镜像
+      //    .credentials.yaml（可能含真实密钥）。复用会话时同值重写无副作用
       if (secret && localSettings) {
         const mirrored = mirrorSettingsForTunnel(localSettings, secret.reversePort);
         if (mirrored) {
@@ -405,6 +411,14 @@ export class RemoteSession {
           await writeRemoteTextFile(transport, paths.sessionSettingsFile(sessionId), mirrored, {
             tolerant: true,
           });
+        }
+        const providerPatch = renderProviderTunnelPatch(localSettings, secret.reversePort);
+        if (providerPatch) {
+          // 同为容忍模式：home patch 失败时 0.1.6 仍有镜像兜底，0.1.7 首启
+          // 导入也还能承接（.imported 语义），会话不因此阻断
+          await writeRemoteTextFile(
+            transport, paths.sessionHomePatchFile(sessionId), providerPatch, { tolerant: true },
+          );
         }
       }
 

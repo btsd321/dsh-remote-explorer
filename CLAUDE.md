@@ -48,6 +48,10 @@ npx tsx src/cli/bin.ts provision myhost --node-version v24.20.0
 DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect myhost --cwd //home/youruser --local-port 18950 --no-open
 npx tsx src/cli/bin.ts status
 npx tsx src/cli/bin.ts kill myhost --all
+# kill 不带 --cwd 时按默认目录算会话 id——停不到用非默认 --cwd 启动的会话
+# （实测踩过：connect 用了 --cwd //home/xxx，kill 忘带同值只报「没有正在运行
+# 的远端 dsh」）。要停非默认 cwd 的会话必须带相同的 --cwd，或用 --all
+# （按 owner 指纹 scope 扫远端全部会话目录）。
 
 # 清理远端陈旧资源（改动 clean.ts 后用它验证）
 npx tsx src/cli/bin.ts clean myhost
@@ -114,7 +118,7 @@ npx tsx scripts/dev-plugin.ts --sync   # 产物同步进沙箱（宿主半重启
 - `quote('$HOME/x')` 里的 `$HOME` 不会展开。需要展开时写 `"$HOME"/${quote(名字)}`。
 - **要在 PATH 前面加目录，用 `exec()` 的 `pathPrefix` 选项，不要走 `env`。** 写 `env: { PATH: '<新>:$PATH' }` 会让 `$PATH` 变成字面量，远端 PATH 只剩这一个目录，连 `rm`、`mkdir` 都找不到——表现为所有远端命令莫名失败。
 
-**6b. 远端安装与 dsh 版本必须显式指定，不要依赖 dist-tag。** registry 上 `@deepseek-ai/dsh` 的 `latest` 指向 0.1.5-rc.2，比 `alpha` 的 0.1.6-alpha.2 旧。[src/provision/provisioner.ts](src/provision/provisioner.ts) 会先把标签解析成具体版本，安装命令里绝不出现标签。
+**6b. 远端安装与 dsh 版本必须显式指定，不要依赖 dist-tag。** registry 上 `@deepseek-ai/dsh` 的 `latest` 指向 0.1.5-rc.2，比 `alpha` 的 0.1.7-alpha.1 旧。[src/provision/provisioner.ts](src/provision/provisioner.ts) 会先把标签解析成具体版本，安装命令里绝不出现标签。
 
 **7. 远端 dsh 已内置令牌认证。** 启动输出形如 `dsh web: http://127.0.0.1:<端口>/?token=<43 字符>`，无令牌访问返回 401，令牌换 `HttpOnly` + `SameSite=Strict` cookie。**令牌不落盘**，只在启动输出首行——所以启动日志文件既是诊断来源也是令牌唯一来源，不能丢。
 
@@ -132,7 +136,7 @@ npx tsx scripts/dev-plugin.ts --sync   # 产物同步进沙箱（宿主半重启
 
 - 远端进程环境里的 key 变量（`DEEPSEEK_API_KEY`、`ASTUDIO_API_KEY` 等）是**代理令牌**（随机值）不是真实 key——dsh 缺 key 会在请求发出前就报 `MISSING_CREDENTIAL`，代理根本收不到，所以必须有占位值。真实 key 只在本机进程（`process.env[keyEnv]` → [src/credential/tunnel-proxy.ts](src/credential/tunnel-proxy.ts) 注入）。
 - **代理是多供应商路由表**：DeepSeek 原生通道走 `/anthropic` 前缀（patch 重定向），`llm-pi-ai` 供应商走 `/r/<名>` 前缀（路由自动从本机 `~/.dsh/settings.yaml` 的 `llm-pi-ai.providers` 提取，见 [src/credential/provider-routes.ts](src/credential/provider-routes.ts)）。转发时请求前缀替换成上游自身路径。每条路由的 keyEnv 各自检查，缺哪个只影响哪个供应商。
-- **远端 settings 镜像**：本机 settings.yaml 整体复制到会话 `DSH_HOME/settings.yaml`（热重载），仅 provider baseURL 重定向。**只镜像 settings（凭据引用），绝不镜像 `.credentials.yaml`**（可能含真实密钥，落远端违背整个设计）。
+- **远端 settings 双写**（0.1.7 适配）：本机 settings.yaml 整体复制到会话 `DSH_HOME/settings.yaml`（dsh ≤0.1.6 运行时热读；0.1.7 起只在每次进程启动时一次性导入进 profile 的 cordis.patch.yml，导入后改名 `.imported`），**同时**把 pi-ai 供应商路由写进 home patch 层 `DSH_HOME/cordis.patch.yml`（0.1.6/0.1.7 都存在且受 hmr 热监听——供应商的持续热生效靠它，见 provider-routes 的 renderProviderTunnelPatch；patch `config` 是整块替换，必须携带完整 `llm-pi-ai` 段）。两份都仅重定向 provider baseURL。**只镜像 settings（凭据引用），绝不镜像 `.credentials.yaml`**（可能含真实密钥，落远端违背整个设计）。
 - **代理令牌与反向端口随会话固定**，落盘远端 `.runtime/proxy-token`（600）与 `.runtime/reverse-port`。反向端口写进了 patch 的 `baseURL`，运行中的远端进程认它——复用、重连、换本机 CLI 必须读回同一组值，别在启动时重新生成。
 - 代理实例（本机回环 http.Server）与正向监听器一样**跨重连存活**，重连只重挂 `forwardIn`。多视图共享会话时反向端口先到先得，挂不上是警告不是错误。
 
@@ -154,7 +158,7 @@ npx tsx scripts/dev-plugin.ts --sync   # 产物同步进沙箱（宿主半重启
 
 **12. dsh 插件形态的硬约束（全部实测踩过，改 src/plugin*/ 前必读）。**
 
-- **宿主产物必须是 ESM**（`lib/index.js`，esbuild `format: 'esm'`）。CJS 产物 `require()` ESM-only 的 `@deepseek-ai/dsh-tools` 会直接崩（Node 24 `ERR_INTERNAL_ASSERTION`）；peer 裸导入只有走 ESM 解析链才能命中 profile 的安装回退链接（`$DSH_HOME/profiles/node_modules`， cordis 单实例的命脉）。ssh2 的惰性 `require('net')` 用 createRequire banner 化解（`HOST_BANNER` 还补了 `__filename/__dirname`——ssh2 的 crypto.js 用 `__dirname` 定位资源，缺了初始化就崩）。
+- **宿主产物必须是 ESM**（`lib/index.js`，esbuild `format: 'esm'`）。CJS 产物 `require()` ESM-only 的 `@deepseek-ai/dsh-tools` 会直接崩（Node 24 `ERR_INTERNAL_ASSERTION`）；peer 裸导入只有走 ESM 解析链才能命中 profile 的安装闭包供给位（`$DSH_HOME/profiles/node_modules`，cordis 单实例的命脉——0.1.6 是物理回退链接，0.1.7 起改为内存拦截层，位置与语义不变）。ssh2 的惰性 `require('net')` 用 createRequire banner 化解（`HOST_BANNER` 还补了 `__filename/__dirname`——ssh2 的 crypto.js 用 `__dirname` 定位资源，缺了初始化就崩）。
 - **entry id 与插件名统一 `dsh-remote-explorer`，locale 命名空间 `dshRemoteExplorer`，全局面板 id `remote-sessions`**（main 槽 key 与 sidebar.panellist id 同值，branded `MainPanelId` 需断言）；cordis.patch.yml 的 entry id 不能叫 `dsh-remote`（第三方 flymysql 插件占用，同 profile 共存会被 loader 拒绝）。浏览器半的 `__ModuleLoader__.load({ id })` **必须等于包名**（graph 行以包名为键），由 build 脚本从 package.json 注入，别手写。
 - **命令名必须匹配 `/^[a-z][a-z0-9_-]*$/`**——非法字符（尤其点号）会让整个 dsh 启动失败；**defineTool 的每个显式 `type:'object'` 节点必须写 `additionalProperties`**——缺失是 authorError，宿主启动即崩。这两条 `scripts/check-plugin.ts` 有静态护栏，发布前必跑。
 - **面板路由只走 `connection.fetch.register` 的 `/api/dsh-remote-explorer/*` 已鉴权通道**，绝不注册裸 webServer 路由（无鉴权，宿主配 0.0.0.0 时会话元数据+写操作直接暴露）。冒烟判读：不带凭据 curl ping 得 **401** = 正常，404 = 插件没挂上，200 = 绕过了鉴权（安全回归）。
@@ -166,7 +170,7 @@ npx tsx scripts/dev-plugin.ts --sync   # 产物同步进沙箱（宿主半重启
 
 **14. 远端窗口交接组件（handoff）是会话级合成包，按标记幂等安装。** 0.4.0 的「远端不装插件」红线经用户拍板解除——前提是每个会话的远端 dsh 跑在独立 `DSH_HOME`（`sessions/<id>/`），与远端他人的 `~/.dsh` 零交集。引导期把合成包 `dsh-remote-handoff`（宿主半 + 浏览器半 + 空 patch，产物经 define 内联进宿主半 bundle，单文件分发形态运行期没有相邻 lib/）写进会话 profile 的 node_modules 并登记 `dsh.profile.bundles`；远端已有包目录则一条 `test -f` 跳过。老会话补装时若远端进程仍存活复用，菜单要等下一次远端重启才出现（迟到但不缺席，降级期间远端页面零感知）。通道是三段鉴权链：远端页面 → 同源 `/api/dsh-remote-handoff/*`（远端 dsh Cookie 栅栏）→ 反向隧道 `127.0.0.1:<反向端口>/manage/*`（代理令牌闸门，与 LLM 路由同纪律）→ 本机监督器闭包。manage 响应只含状态/日志/元信息，不含凭据。**「关闭/停止并返回」必须是 navigate-then-act**：断开会立刻杀死经隧道服务的远端页面，所以远端菜单先同标签导航回管理页（带 `#handoff-disconnect=` / `#handoff-stop=` intent hash），由管理页加载后确认执行——VS Code「Close Remote Connection 后窗口重载回本地」的拓扑等价物。窗口形态对齐 VS Code 双入口：面板「在当前标签页连接」（就绪后 3 秒倒计时同标签切入，可取消）与「在新标签页连接」（弹窗拦截不允许无手势开标签，会话行按钮接管）。CLI 形态没有管理页，meta 的 managerUrl 缺省，远端菜单自动降级只读。
 
-**15. 远端插件仓库是用户级（host × 远程 OS 用户），对标 VS Code `~/.vscode-server/extensions/`。** store 在 `base/plugins/`（pnpm 真目录 + manifest 唯一真源，[plugin-store.ts](src/provision/plugin-store.ts)）；**会话 profile 的 node_modules 是指向 store 的整体 symlink**——会话零包副本；profile 里同时写 `.npmrc` 把 `virtual-store-dir` 钉到 store 的 `.pnpm`（不钉则远端窗口原生 UI 在 profile 目录跑 pnpm 报 `ERR_PNPM_UNEXPECTED_VIRTUAL_STORE`，实测踩过）。peer 裸导入靠 store 内三条回退链接闭环（`@deepseek-ai/` 整目录、`cpu-features`、`nan` → dsh 安装树，等价 dsh 自己在 `$DSH_HOME/profiles/node_modules` 的安装回退链接）；**不要改成按包 symlink 或 per-session 拷贝**（peer 父 walk 与占盘都退化）。生效语义（Reload 语义，不自动重启远端）：store 写操作后本机活会话立即合并 manifest（dsh hmr 热加载/卸载 bundle 层），其他用户的活会话下次连接同步；hmr 不可用的老远端 dsh 回退为重连/重启生效。并发：pnpm 对同目录自带锁 + 引导临界区另有 flock（[install-lock.ts](src/provision/install-lock.ts)）。引导期给远端装 pin 版 pnpm（[pnpm-installer.ts](src/provision/pnpm-installer.ts)，pin 10 系——11 系对未决策的 allowBuilds 致命报错而远端无人交互决策），远端窗口自己的 Settings 插件 UI 由此完全可用；本地面板「远端插件」区经会话既有 SSH 通道本地编排（store 内 pnpm add/remove + 改写 store manifest；**不加远端路由**，监督器复用 RemoteSession 的窄 exec/writeRemoteFile 委托，IO 抽象 ManifestIo 两处复用）。handoff 合成包也在 store（用户级，所有会话共享）。多用户：不同远程 OS 账号 = 完全隔离；**同远端账号 = 共享会话根与 store**（同 (host,目录) 即同会话、会话互见、凭据代理先到者——共享是预期行为，文档建议每人独立远程账号）。破坏性操作按 owner 指纹 scope（[owner-fingerprint.ts](src/util/owner-fingerprint.ts)，会话启动写 `.runtime/owner`，`DSH_OWNER_TAG` 可覆盖供测试）：`kill --all`/`clean` 默认只动自己指纹 + 死会话，`--include-others` 恢复旧全量行为；**store 永不被 clean 触碰**（用户级数据）。tmp 目录名含本机主机名段（异机 pid 可撞）。
+**15. 远端插件仓库是用户级（host × 远程 OS 用户），对标 VS Code `~/.vscode-server/extensions/`。** store 在 `base/plugins/`（pnpm 真目录 + manifest 唯一真源，[plugin-store.ts](src/provision/plugin-store.ts)）；**会话 profile 的 node_modules 是指向 store 的整体 symlink**——会话零包副本；profile 里同时写 `.npmrc` 把 `virtual-store-dir` 钉到 store 的 `.pnpm`（不钉则远端窗口原生 UI 在 profile 目录跑 pnpm 报 `ERR_PNPM_UNEXPECTED_VIRTUAL_STORE`，实测踩过）。peer 裸导入靠 store 内三条回退链接闭环（`@deepseek-ai/` 整目录、`cpu-features`、`nan` → dsh 安装树，走 Node 原生祖先链物理解析——插件 real path 在 store，不经 dsh 的解析干预；0.1.7 起 dsh 在 `$DSH_HOME/profiles/node_modules` 的物理回退链接已改为内存拦截层，对本布局零影响，也不删外部链接——`.dsh-module-fallback` 清理只认 0.1.5 遗留目录）；**不要改成按包 symlink 或 per-session 拷贝**（peer 父 walk 与占盘都退化）。生效语义（Reload 语义，不自动重启远端）：store 写操作后本机活会话立即合并 manifest（dsh hmr 热加载/卸载 bundle 层），其他用户的活会话下次连接同步；hmr 不可用的老远端 dsh 回退为重连/重启生效。并发：pnpm 对同目录自带锁 + 引导临界区另有 flock（[install-lock.ts](src/provision/install-lock.ts)）。引导期给远端装 pin 版 pnpm（[pnpm-installer.ts](src/provision/pnpm-installer.ts)，pin 10 系——11 系对未决策的 allowBuilds 致命报错而远端无人交互决策），远端窗口自己的 Settings 插件 UI 由此完全可用；本地面板「远端插件」区经会话既有 SSH 通道本地编排（store 内 pnpm add/remove + 改写 store manifest；**不加远端路由**，监督器复用 RemoteSession 的窄 exec/writeRemoteFile 委托，IO 抽象 ManifestIo 两处复用）。handoff 合成包也在 store（用户级，所有会话共享）。多用户：不同远程 OS 账号 = 完全隔离；**同远端账号 = 共享会话根与 store**（同 (host,目录) 即同会话、会话互见、凭据代理先到者——共享是预期行为，文档建议每人独立远程账号）。破坏性操作按 owner 指纹 scope（[owner-fingerprint.ts](src/util/owner-fingerprint.ts)，会话启动写 `.runtime/owner`，`DSH_OWNER_TAG` 可覆盖供测试）：`kill --all`/`clean` 默认只动自己指纹 + 死会话，`--include-others` 恢复旧全量行为；**store 永不被 clean 触碰**（用户级数据）。tmp 目录名含本机主机名段（异机 pid 可撞）。
 
 ## 已知问题
 

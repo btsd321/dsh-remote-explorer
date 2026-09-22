@@ -107,7 +107,7 @@ export interface RemotePaths {
 
   /**
    * 某 dsh 版本的安装目录。
-   * @param version - dsh 版本号，如 `0.1.6-alpha.2`
+   * @param version - dsh 版本号，如 `0.1.7-alpha.1`
    */
   dshDir(version: string): string;
 
@@ -163,13 +163,28 @@ export interface RemotePaths {
   /**
    * 某会话的 settings.yaml（本机 settings 的远端镜像，provider baseURL 已重定向）。
    *
-   * dsh 的用户设置文档就放在 `$DSH_HOME/settings.yaml` 且热重载——
-   * 会话的 DSH_HOME 即会话目录，所以这份镜像落在这里会被远端 dsh 直接读取。
+   * dsh ≤0.1.6 的用户设置文档放在 `$DSH_HOME/settings.yaml` 且热重载——
+   * 会话的 DSH_HOME 即会话目录，所以这份镜像落在这里会被旧版远端 dsh 直接读取。
+   * dsh 0.1.7 起 settings.yaml 改为**启动时一次性导入**进 profile 的
+   * cordis.patch.yml（导入后改名 `.imported`，运行中不再读）——镜像对新版
+   * 只在每次进程启动时生效一次，供应商配置的持续热生效由
+   * {@link RemotePaths.sessionHomePatchFile} 承接。
    * 注意**只镜像 settings**（凭据引用，不含密钥），绝不镜像
    * `$DSH_HOME/.credentials.yaml`（可能含真实密钥）。
    * @param sessionId - 会话 id
    */
   sessionSettingsFile(sessionId: string): string;
+
+  /**
+   * 某会话的 `$DSH_HOME/cordis.patch.yml`（dsh 的 home patch 层）。
+   *
+   * dsh 0.1.6 与 0.1.7 都把它列为 patch 层叠之一（profile 的
+   * cordis.patch.yml 之上、`--patch` overlay 之下）且**受 hmr 热监听**——
+   * pi-ai 供应商路由写进这一层，重写即热生效，不受 0.1.7 移除
+   * settings.yaml 运行时读取的影响。
+   * @param sessionId - 会话 id
+   */
+  sessionHomePatchFile(sessionId: string): string;
 
   /**
    * 某会话的代理令牌文件（权限 600）。
@@ -248,6 +263,7 @@ export function createRemotePaths(homeDir: string): RemotePaths {
     sessionLogFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/dsh.log`,
     sessionPatchFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/patch.yml`,
     sessionSettingsFile: (sessionId) => `${base}/sessions/${sessionId}/settings.yaml`,
+    sessionHomePatchFile: (sessionId) => `${base}/sessions/${sessionId}/cordis.patch.yml`,
     sessionProxyTokenFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/proxy-token`,
     sessionReversePortFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/reverse-port`,
     sessionOwnerFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/owner`,
