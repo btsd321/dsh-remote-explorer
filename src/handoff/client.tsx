@@ -1,8 +1,10 @@
 /**
  * @file handoff bundle 浏览器半（运行在远端 dsh 页面内）
- * @description VS Code 状态栏远端标识的等价物：`shell.overlay` 里一枚状态 pill
- *              （主机别名 + 状态点），点开是管理菜单——连接状态、进度日志尾、
- *              三个动作：返回本地管理页 / 关闭远程连接并返回 / 停止远端 dsh 并返回。
+ * @description VS Code 状态栏远端标识的等价物：侧栏底部 `sidebar.footer.action`
+ *              槽里一枚状态 pill（主机别名 + 状态点，与「设置」按钮同排由壳排版
+ *              ——fixed 自定位会压住设置齿轮，交给壳排版从结构上排除冲突），
+ *              点开是管理菜单——连接状态、进度日志尾、三个动作：返回本地管理页 /
+ *              关闭远程连接并返回 / 停止远端 dsh 并返回。
  *
  * 数据全部同源 fetch 本 bundle 宿主半的路由（`/api/dsh-remote-handoff/*`，
  * 远端 dsh 自身 Cookie 鉴权），宿主半再经反向隧道回调本机监督器。
@@ -24,6 +26,7 @@ import type { ReactNode } from 'react';
 import type { Context as ClientContext } from '@deepseek-ai/cordis';
 import type {} from '@deepseek-ai/dsh-client-locale/client';
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client';
+import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client';
 import {
   HANDOFF_PROTOCOL_VERSION, HANDOFF_ROUTE_PREFIX, type HandoffMeta,
 } from './protocol.js';
@@ -150,16 +153,20 @@ export function apply(ctx: ClientContext): void {
     () => ctx.locale.register(LOCALE_NS, { zh, en }),
     'dsh-remote-handoff: locales',
   );
-  ctx.slots.inject('shell.overlay', () => ctx.slots.register({
-    name: 'shell.overlay',
+  // 侧栏底部动作位（设置按钮旁）：壳负责排版，永不与设置齿轮重叠；
+  // 窄栏（rail）形态组件自收 wide=false，只渲染状态点
+  ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
+    name: 'sidebar.footer.action',
     id: 'dsh-remote-handoff',
     locale: LOCALE_NS,
   }, HandoffPill));
 }
 
-/** pill 的 props（locale 面由 slots 框架注入） */
+/** pill 的 props：locale 面由 slots 框架注入，wide 由侧栏壳注入（列状态） */
 interface HandoffPillProps {
   t: (key: HandoffLocaleKey) => string;
+  /** 侧栏是否宽栏（false = 56px rail，只渲染状态点） */
+  wide: boolean;
 }
 
 /**
@@ -169,14 +176,16 @@ interface HandoffPillProps {
  * @returns overlay 内容；meta 不可用时不渲染
  */
 function HandoffPill(props: HandoffPillProps): ReactNode {
-  const { t } = props;
+  const { t, wide } = props;
   const [meta, setMeta] = React.useState<HandoffMeta | null | undefined>(undefined);
   const [state, setState] = React.useState<HandoffState | null>(null);
   const [unreachable, setUnreachable] = React.useState(false);
   const [open, setOpen] = React.useState(false);
   const [log, setLog] = React.useState<HandoffLogEntry[]>([]);
+  const [menuPos, setMenuPos] = React.useState<{ left: number; bottom: number } | null>(null);
   const lastSeq = React.useRef(0);
   const logBoxRef = React.useRef<HTMLDivElement | null>(null);
+  const buttonRef = React.useRef<HTMLButtonElement | null>(null);
 
   // meta 只拉一次：不可达则整个组件静默退场（远端页面无感知）
   React.useEffect(() => {
@@ -264,17 +273,36 @@ function HandoffPill(props: HandoffPillProps): ReactNode {
     textAlign: 'left',
   };
 
+  // 菜单按按钮 rect 测量后 fixed 定位：槽位在侧栏内部，absolute 会被侧栏
+  // overflow 裁剪；fixed + 视口坐标既不被裁，也天然避开设置按钮所在行
+  const toggle = (): void => {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    const rect = buttonRef.current?.getBoundingClientRect();
+    setMenuPos(rect === undefined
+      ? { left: 8, bottom: 56 }
+      : {
+        left: Math.max(8, Math.min(rect.right + 8, window.innerWidth - 372)),
+        bottom: Math.max(8, window.innerHeight - rect.top),
+      });
+    setOpen(true);
+  };
+
   return (
-    <div style={{ position: 'fixed', left: 12, bottom: 12, zIndex: 1200, fontFamily: 'inherit' }}>
-      {open
+    <>
+      {open && menuPos !== null
         ? (
           <div style={{
+            position: 'fixed', left: menuPos.left, bottom: menuPos.bottom,
             width: 360, maxHeight: '70vh', overflowY: 'auto',
             display: 'flex', flexDirection: 'column', gap: 10,
-            padding: 12, marginBottom: 8,
+            padding: 12,
             background: 'rgba(30,30,30,0.92)', color: '#e5e5e5',
             border: '1px solid rgba(127,127,127,0.4)', borderRadius: 8,
             boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+            zIndex: 1300, fontFamily: 'inherit',
           }}
           >
             <strong style={{ fontSize: 13 }}>{t('menuTitle')}</strong>
@@ -339,24 +367,31 @@ function HandoffPill(props: HandoffPillProps): ReactNode {
         )
         : null}
       <button
+        ref={buttonRef}
         type="button"
         title={t('pill')}
-        onClick={() => setOpen(value => !value)}
+        onClick={toggle}
         style={{
           display: 'flex', alignItems: 'center', gap: 6,
-          padding: '4px 10px', fontSize: 12,
-          background: 'rgba(30,30,30,0.85)', color: '#e5e5e5',
-          border: '1px solid rgba(127,127,127,0.4)', borderRadius: 999,
-          cursor: 'pointer',
+          width: '100%', padding: wide ? '6px 10px' : '6px 0',
+          justifyContent: wide ? 'flex-start' : 'center',
+          background: 'transparent', color: 'inherit', border: 'none',
+          cursor: 'pointer', fontSize: 12, fontFamily: 'inherit',
         }}
       >
         <span style={{
-          width: 8, height: 8, borderRadius: '50%',
+          width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
           backgroundColor: dotColor, display: 'inline-block',
         }}
         />
-        {state?.hostAlias ?? '…'}
+        {wide
+          ? (
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {state?.hostAlias ?? '…'}
+            </span>
+          )
+          : null}
       </button>
-    </div>
+    </>
   );
 }
