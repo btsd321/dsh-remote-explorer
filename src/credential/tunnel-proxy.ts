@@ -37,6 +37,7 @@ import { createConnection, type Socket } from 'node:net';
 import http from 'node:http';
 import { Readable } from 'node:stream';
 import type { Duplex } from 'node:stream';
+import { MANAGE_PREFIX, type ManageHandlers } from '../handoff/protocol.js';
 import { tokenEquals } from './token.js';
 import type { ProxyRoute } from './provider-routes.js';
 import type { CredentialPatchEntry, CredentialStrategy } from './types.js';
@@ -81,12 +82,15 @@ export class TunnelProxyCredential implements CredentialStrategy {
    * @param reversePort - 反向隧道在远端占用的端口
    * @param routes - 供应商路由表（含 DeepSeek 原生通道与 pi-ai 供应商）
    * @param hostAlias - 主机别名（诊断与日志用）
+   * @param manage - 远端 handoff 组件的管理回调（监督器闭包）；缺省时
+   *                 `/manage/*` 返回 404——CLI 形态不传，行为不变
    */
   constructor(
     private readonly proxyToken: string,
     readonly reversePort: number,
     private readonly routes: readonly ProxyRoute[],
     private readonly hostAlias: string,
+    private readonly manage?: ManageHandlers,
   ) {
     this.server = http.createServer((req, res) => { void this.handle(req, res); });
     // 客户端在请求中途断开属正常（会话取消），别让它掀翻进程
@@ -225,6 +229,15 @@ export class TunnelProxyCredential implements CredentialStrategy {
       const queryIndex = requestUrl.indexOf('?');
       const path = queryIndex >= 0 ? requestUrl.slice(0, queryIndex) : requestUrl;
       const query = queryIndex >= 0 ? requestUrl.slice(queryIndex) : '';
+
+      // 2a. 管理路由族：远端 handoff 组件经反向隧道回调本机监督器。
+      //     与 LLM 路由同令牌闸门（上面的 1. 已校验）、同回环监听；
+      //     响应只含会话状态/日志/元信息，不含任何凭据内容
+      if (path === MANAGE_PREFIX || path.startsWith(`${MANAGE_PREFIX}/`)) {
+        await this.handleManage(path, query, res);
+        return;
+      }
+
       const route = matchRoute(this.routes, path);
       if (!route) {
         res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
@@ -294,6 +307,53 @@ export class TunnelProxyCredential implements CredentialStrategy {
         res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
       }
       res.end(`dsh-remote-explorer proxy: 转发失败（${describeError(error)}）`);
+    }
+  }
+
+  /**
+   * 处理 `/manage/*` 管理路由：按操作名分派到监督器闭包，JSON 回应。
+   *
+   * 操作集：`state`（?id=）、`log`（?id=&since=）、`meta`。监督器抛错
+   * （如 not_found）转 404——远端组件按「会话已消失」收敛选中态。
+   *
+   * @param path - 请求路径（不含查询串）
+   * @param query - 查询串（含前导 ?）
+   * @param res - 响应对象
+   */
+  private async handleManage(path: string, query: string, res: http.ServerResponse): Promise<void> {
+    const send = (status: number, body: unknown): void => {
+      res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(body));
+    };
+    if (this.manage === undefined) {
+      send(404, { code: 'manage_unavailable', message: '本进程未启用管理回调' });
+      return;
+    }
+    const op = path.slice(MANAGE_PREFIX.length).replace(/^\//, '');
+    const params = new URLSearchParams(query.startsWith('?') ? query.slice(1) : query);
+    const id = params.get('id') ?? '';
+    try {
+      if (op === 'meta') {
+        send(200, this.manage.meta());
+        return;
+      }
+      if (id === '') {
+        send(400, { code: 'bad_usage', message: '缺少 id 参数' });
+        return;
+      }
+      if (op === 'state') {
+        send(200, this.manage.state(id));
+        return;
+      }
+      if (op === 'log') {
+        const since = Number.parseInt(params.get('since') ?? '0', 10);
+        send(200, { log: this.manage.log(id, Number.isFinite(since) ? since : 0) });
+        return;
+      }
+      send(404, { code: 'bad_usage', message: `未知管理操作 ${op}` });
+    } catch (error) {
+      // 监督器错误（not_found 等）归 404；其余归 500，消息不含凭据
+      send(404, { code: 'not_found', message: describeError(error) });
     }
   }
 

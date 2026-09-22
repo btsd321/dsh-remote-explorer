@@ -34,6 +34,7 @@ import { assertConnectable, resolveHostWithAuth, type AuthOverrides } from '../h
 import { SshTransport, isAuthFailure } from '../transport/ssh-transport.js';
 import { writeRemoteTextFile } from '../transport/write-text.js';
 import { provision, type ProvisionResult } from '../provision/provisioner.js';
+import { installHandoffBundle } from '../provision/handoff-installer.js';
 import { probeRemote } from '../provision/probe.js';
 import { createRemotePaths, type RemotePaths } from '../provision/remote-paths.js';
 import { allocateRemotePorts } from '../tunnel/port-allocator.js';
@@ -55,6 +56,7 @@ import { PasswordProvider, type PasswordPromptFn } from '../util/password-prompt
 import {
   deepseekRoute, extractProviderRoutes, mirrorSettingsForTunnel, readLocalSettings,
 } from '../credential/provider-routes.js';
+import type { ManageHandlers } from '../handoff/protocol.js';
 import type { ReverseHandle, RemoteTransport } from '../transport/types.js';
 
 /** 会话打开选项 */
@@ -105,6 +107,11 @@ export interface OpenSessionOptions {
    * 不传时 LocalForward 直写 stderr（CLI 形态既有行为）
    */
   onForwardError?: (message: string) => void;
+  /**
+   * 远端 handoff 组件的管理回调（插件形态由监督器提供闭包）。
+   * 经反向代理的 `/manage/*` 路由族暴露给远端窗口；CLI 不传，行为不变
+   */
+  manageHandlers?: ManageHandlers;
 }
 
 /** 会话关闭选项 */
@@ -312,6 +319,7 @@ export class RemoteSession {
           secret.token, secret.reversePort,
           [deepseekRoute(), ...providerRoutes],
           options.hostAlias,
+          ...(options.manageHandlers ? [options.manageHandlers] : []),
         )
         : undefined;
 
@@ -328,6 +336,18 @@ export class RemoteSession {
         ...(options.onStageDone ? { onStageDone: options.onStageDone } : {}),
         ...(options.onStageSkip ? { onStageSkip: options.onStageSkip } : {}),
       });
+
+      // 5.5 handoff 组件（幂等）：合成 bundle 写进 profile 并登记 bundles，
+      //     远端窗口由此获得本机连接管理菜单；远端已装则一条 test -f 跳过。
+      //     老会话补装时若远端进程仍存活复用，菜单要等下次远端重启才出现。
+      //     安装失败不阻断会话（增强面非成立条件）
+      options.onStageStart?.('检查远端交接组件');
+      try {
+        const installed = await installHandoffBundle(transport, paths, sessionId);
+        options.onStageDone?.(installed ? '已安装交接组件（远端窗口获得管理菜单）' : '交接组件已就位');
+      } catch (error) {
+        options.onStageSkip?.(`交接组件安装失败（不影响会话）：${toErrorMessage(error)}`);
+      }
 
       // 6. settings 镜像：本机 settings 整体复制到会话 DSH_HOME（热重载，
       //    复用会话时同值重写无副作用），仅 pi-ai 供应商的 baseURL 重定向进

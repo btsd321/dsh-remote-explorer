@@ -12,7 +12,9 @@ export type RemoteExplorerLocaleKey =
   | 'advanced' | 'localPort' | 'forceRestart' | 'refreshMirrors'
   | 'nodeVersion' | 'dshVersion' | 'privateKey'
   | 'password' | 'passwordWarning'
-  | 'connect' | 'connecting'
+  | 'connect' | 'connecting' | 'connectCurrent' | 'connectNew'
+  | 'enterCurrent' | 'openNew' | 'countdown' | 'cancelCountdown'
+  | 'intentDisconnect' | 'intentStop' | 'intentExecute' | 'intentCancel'
   | 'sessions' | 'noSessions' | 'disconnect' | 'stopRemote' | 'open' | 'external'
   | 'stateIdle' | 'stateConnecting' | 'stateConnected' | 'stateHeartbeatMissed'
   | 'stateReconnecting' | 'stateReconnectFailed' | 'stateReconnectExhausted' | 'stateDisconnected'
@@ -39,6 +41,16 @@ export const zh: Record<RemoteExplorerLocaleKey, string> = {
   passwordWarning: '密码仅存宿主 dsh 进程内存，不落盘、不进日志；留空则要求主机已配置 IdentityFile',
   connect: '连接',
   connecting: '连接中…',
+  connectCurrent: '在当前标签页连接',
+  connectNew: '在新标签页连接',
+  enterCurrent: '进入（当前标签）',
+  openNew: '新标签打开',
+  countdown: '会话已就绪，切入远端窗口倒计时',
+  cancelCountdown: '取消',
+  intentDisconnect: '远端窗口请求关闭此远程连接（本机隧道与会话登记将解除，远端 dsh 保留）',
+  intentStop: '远端窗口请求停止远端 dsh 并关闭此远程连接',
+  intentExecute: '执行',
+  intentCancel: '取消',
   sessions: '会话',
   noSessions: '当前没有会话',
   disconnect: '断开',
@@ -81,6 +93,16 @@ export const en: Record<RemoteExplorerLocaleKey, string> = {
   passwordWarning: 'The password stays in the host dsh process memory only — never written to disk or logged; leave empty to require an IdentityFile on the host',
   connect: 'Connect',
   connecting: 'Connecting…',
+  connectCurrent: 'Connect in current tab',
+  connectNew: 'Connect in new tab',
+  enterCurrent: 'Enter (current tab)',
+  openNew: 'Open in new tab',
+  countdown: 'Session ready — entering remote window in',
+  cancelCountdown: 'Cancel',
+  intentDisconnect: 'The remote window asked to close this remote connection (local tunnel and session registration go away; remote dsh stays)',
+  intentStop: 'The remote window asked to stop the remote dsh and close this remote connection',
+  intentExecute: 'Execute',
+  intentCancel: 'Cancel',
   sessions: 'Sessions',
   noSessions: 'No sessions',
   disconnect: 'Disconnect',

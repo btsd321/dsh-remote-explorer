@@ -31,6 +31,9 @@ const SESSIONS_POLL_MS = 2_000;
 /** 选中会话的日志增量轮询间隔（毫秒） */
 const LOG_POLL_MS = 1_500;
 
+/** 当前标签形态就绪后的自动导航倒计时（秒，可取消） */
+const HANDOFF_COUNTDOWN_SECONDS = 3;
+
 /** localStorage 里「上次远端目录」的键前缀（按主机别名记忆） */
 const LAST_CWD_KEY_PREFIX = 'dsh-remote-explorer:lastCwd:';
 
@@ -108,6 +111,12 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
   const lastSeq = React.useRef(0);
   const logBoxRef = React.useRef<HTMLDivElement | null>(null);
 
+  // ---- 窗口形态交接（VS Code 双入口语义）----
+  /** 本次发起连接选择的窗口形态：current = 就绪后同标签自动切入远端 */
+  const pendingNav = React.useRef<{ sessionId: string; mode: 'current' | 'new' } | null>(null);
+  /** 同标签自动导航的倒计时（可取消）；null = 无待跳转 */
+  const [countdown, setCountdown] = React.useState<{ url: string; seconds: number } | null>(null);
+
   // 主机列表：挂载时拉一次；「刷新」按钮带 refresh=1 让宿主重读 ssh config
   const loadHosts = React.useCallback(async (refresh: boolean): Promise<void> => {
     try {
@@ -127,6 +136,22 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
         if (stopped) return;
         setSessions(next);
         setLoadError('');
+        // 交接：本次以「当前标签」形态发起的会话就绪 → 起同标签导航倒计时；
+        // 「新标签」形态不起（弹窗拦截不允许无手势开标签），会话行按钮接管
+        const pending = pendingNav.current;
+        if (pending !== null) {
+          const ready = next.find(item => item.sessionId === pending.sessionId
+            && !item.connecting && item.url !== undefined);
+          if (ready?.url !== undefined) {
+            pendingNav.current = null;
+            if (pending.mode === 'current') {
+              setCountdown({ url: ready.url, seconds: HANDOFF_COUNTDOWN_SECONDS });
+            }
+          } else if (next.some(item => item.sessionId === pending.sessionId
+            && item.connectError !== undefined)) {
+            pendingNav.current = null; // 失败不空等：错误已在表单区呈现
+          }
+        }
       } catch (error) {
         if (!stopped) setLoadError(messageOf(error));
       }
@@ -135,6 +160,19 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
     const timer = setInterval(() => { void tick(); }, SESSIONS_POLL_MS);
     return () => { stopped = true; clearInterval(timer); };
   }, []);
+
+  // 倒计时滴答：归零即同标签切入远端（VS Code Connect Current Window 的等价物）
+  React.useEffect(() => {
+    if (countdown === null) return;
+    if (countdown.seconds <= 0) {
+      window.location.href = countdown.url;
+      return;
+    }
+    const timer = setTimeout(() => {
+      setCountdown(previous => (previous === null ? null : { ...previous, seconds: previous.seconds - 1 }));
+    }, 1_000);
+    return () => { clearTimeout(timer); };
+  }, [countdown]);
 
   // 选中会话的日志增量轮询（1.5s，?since=seq 追加）
   React.useEffect(() => {
@@ -171,7 +209,14 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
     } catch { /* 隐私模式等场景 localStorage 不可用，跳过记忆 */ }
   };
 
-  const onConnect = async (): Promise<void> => {
+  /**
+   * 发起连接。
+   *
+   * @param mode - 窗口形态：current = 就绪后同标签自动切入远端（VS Code
+   *               Connect Current Window）；new = 就绪后会话行按钮开新标签
+   *               （VS Code New Window；浏览器弹窗拦截不允许无手势开标签）
+   */
+  const onConnect = async (mode: 'current' | 'new'): Promise<void> => {
     if (host.trim() === '' || busy) return;
     setBusy(true);
     setFormError('');
@@ -187,7 +232,10 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
         ...(dshVersion.trim() !== '' ? { dshVersion: dshVersion.trim() } : {}),
         forceRestart,
         refreshMirrors,
+        // 管理页 origin：远端 handoff 组件的「返回/并返回」动作依赖它
+        managerUrl: window.location.origin,
       });
+      pendingNav.current = { sessionId: session.sessionId, mode };
       try {
         localStorage.setItem(`${LAST_CWD_KEY_PREFIX}${host.trim()}`, cwd.trim());
       } catch { /* 记忆失败不影响连接 */ }
@@ -236,6 +284,19 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
     }}>
       <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>{t('nav')}</h2>
       <p style={{ margin: 0, opacity: 0.75, fontSize: 13 }}>{t('sectionIntro')}</p>
+
+      {/* ---- 同标签自动切入远端的倒计时（可取消） ---- */}
+      {countdown !== null
+        ? (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+            <span>{t('countdown')} {countdown.seconds}s</span>
+            <button type="button" style={buttonStyle}
+              onClick={() => { pendingNav.current = null; setCountdown(null); }}>
+              {t('cancelCountdown')}
+            </button>
+          </div>
+        )
+        : null}
 
       {/* ---- 连接表单 ---- */}
       <section style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -311,11 +372,17 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
           <span style={{ fontSize: 11, opacity: 0.6 }}>{t('passwordWarning')}</span>
         </label>
 
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* VS Code 双入口：当前标签 = 就绪后同标签切入；新标签 = 本页留守管理 */}
           <button type="button" style={{ ...buttonStyle, fontWeight: 600 }}
             disabled={busy || host.trim() === ''}
-            onClick={() => { void onConnect(); }}>
-            {busy ? t('connecting') : t('connect')}
+            onClick={() => { void onConnect('current'); }}>
+            {busy ? t('connecting') : t('connectCurrent')}
+          </button>
+          <button type="button" style={buttonStyle}
+            disabled={busy || host.trim() === ''}
+            onClick={() => { void onConnect('new'); }}>
+            {t('connectNew')}
           </button>
           {formError !== ''
             ? <span style={{ color: '#ef4444', fontSize: 13 }}>{t('connectError')}：{formError}</span>
@@ -438,11 +505,27 @@ function renderSessionRow(
       <span style={{ flex: 1 }} />
       {session.url !== undefined
         ? (
-          <a href={session.url} target="_blank" rel="noreferrer"
-            onClick={event => event.stopPropagation()}
-            style={{ fontSize: 13 }}>
-            {t('open')} ↗
-          </a>
+          <>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                window.location.href = session.url ?? '';
+              }}
+              style={{
+                background: 'transparent', color: 'inherit', fontSize: 12, fontWeight: 600,
+                border: '1px solid rgba(127,127,127,0.5)', borderRadius: 6,
+                padding: '2px 8px', cursor: 'pointer',
+              }}
+            >
+              {t('enterCurrent')}
+            </button>
+            <a href={session.url} target="_blank" rel="noreferrer"
+              onClick={event => event.stopPropagation()}
+              style={{ fontSize: 13 }}>
+              {t('openNew')} ↗
+            </a>
+          </>
         )
         : null}
       {session.external === true

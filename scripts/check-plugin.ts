@@ -25,6 +25,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bold, cyan, green, println, red } from '../src/cli/output.js';
+import { HANDOFF_PKG_NAME, HANDOFF_ROUTE_PREFIX } from '../src/handoff/protocol.js';
 
 /** 仓库根目录 */
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -184,6 +185,27 @@ function checkClientSide(pkgName: string, violations: Violation[]): void {
         message: `__ModuleLoader__ 注册 id '${idMatch[1]}' ≠ 包名 '${pkgName}'——浏览器半会静默失联`,
       });
     }
+  }
+
+  // 5b. handoff 浏览器半的注册 id 必须等于合成包名（远端 boot graph 以它键控）
+  const handoffBundle = readIfExists(join(REPO_ROOT, 'lib', 'handoff-client.js'));
+  if (handoffBundle !== undefined) {
+    const idMatch = /__ModuleLoader__\.load\(\{\s*id:\s*(?:'|")([^'"]+)/.exec(handoffBundle);
+    if (idMatch === null || idMatch[1] !== HANDOFF_PKG_NAME) {
+      violations.push({
+        file: 'lib/handoff-client.js',
+        message: `__ModuleLoader__ 注册 id '${idMatch?.[1] ?? '(缺失)'}' ≠ 合成包名 '${HANDOFF_PKG_NAME}'——远端浏览器半会静默失联`,
+      });
+    }
+  }
+
+  // 5c. handoff 宿主半路由前缀必须挂在约定前缀下（远端已鉴权通道，防命名漂移）
+  const protocol = readIfExists(join(REPO_ROOT, 'src', 'handoff', 'protocol.ts'));
+  if (protocol !== undefined && !protocol.includes(`'${HANDOFF_ROUTE_PREFIX}'`)) {
+    violations.push({
+      file: 'src/handoff/protocol.ts',
+      message: `HANDOFF_ROUTE_PREFIX 必须是 '${HANDOFF_ROUTE_PREFIX}'（远端路由与护栏都按此值判读）`,
+    });
   }
 }
 

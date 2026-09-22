@@ -18,6 +18,7 @@
  */
 
 import { openSession, type RemoteSession } from '../session/session-manager.js';
+import { HANDOFF_PROTOCOL_VERSION, type ManageHandlers } from '../handoff/protocol.js';
 import { listSessions } from '../session/session-registry.js';
 import { INITIAL_STATE, type SessionState } from '../session/lifecycle-state.js';
 import { computeSessionId } from '../util/session-id.js';
@@ -109,7 +110,15 @@ export interface ConnectRequest {
   privateKey?: string;
   /** 密码（面板表单；只存本进程内存，绝不进日志） */
   password?: string;
+  /**
+   * 本机管理页 origin（面板发起连接时带 location.origin）。
+   * 经 meta 路由交给远端 handoff 组件渲染「返回/并返回」动作；缺省则远端菜单只读
+   */
+  managerUrl?: string;
 }
+
+// 构建期注入（build-plugin.ts 的 define，ping 路由同款）；dev 流程不会调到 meta 闭包
+declare const __PLUGIN_VERSION__: string;
 
 /** 监督器错误的机器可读类别（agent 工具按 code 分支，不解析消息） */
 export type SupervisorErrorCode =
@@ -178,6 +187,8 @@ interface SupervisedSession {
   seq: number;
   /** 发起时间 */
   startedAt: string;
+  /** 本机管理页 origin（面板连接时带来；CLI/命令发起缺省） */
+  managerUrl: string | undefined;
 }
 
 /**
@@ -235,6 +246,7 @@ export class SessionSupervisor {
       log: [],
       seq: 0,
       startedAt: new Date().toISOString(),
+      managerUrl: request.managerUrl,
     };
     this.sessions.set(sessionId, record);
     this.push(record, 'info', `发起连接 ${request.hostAlias} → ${remoteCwd || '远端家目录'}`);
@@ -364,6 +376,9 @@ export class SessionSupervisor {
           this.push(record, 'state', description);
         },
         onForwardError: (message) => { this.push(record, 'error', message); },
+        // 远端 handoff 组件经反向隧道 /manage/* 回调的闭包：state/log 走本
+        // 监督器的登记项，meta 带管理页地址与协议版本（版本戳供远端判级）
+        manageHandlers: this.manageHandlersFor(record),
       });
       record.session = session;
       record.state = session.currentState;
@@ -445,5 +460,42 @@ export class SessionSupervisor {
       startedAt: record.startedAt,
       logTail: record.log.slice(-LOG_TAIL_SIZE),
     };
+  }
+
+  /**
+   * 构造一个会话的管理回调闭包（交给 openSession → 反向代理 /manage/*）。
+   *
+   * @param record - 登记项（meta 的管理页地址与版本戳从它取）
+   * @returns 管理回调集合
+   */
+  private manageHandlersFor(record: SupervisedSession): ManageHandlers {
+    return {
+      state: (sessionId) => {
+        const target = this.sessions.get(sessionId);
+        if (target === undefined) {
+          throw new SupervisorError('not_found', `没有会话 ${sessionId}`);
+        }
+        return this.manageSnapshot(target);
+      },
+      log: (sessionId, since) => this.getLog(sessionId, since) ?? [],
+      meta: () => ({
+        sessionId: record.sessionId,
+        ...(record.managerUrl !== undefined ? { managerUrl: record.managerUrl } : {}),
+        protocolVersion: HANDOFF_PROTOCOL_VERSION,
+        packageVersion: __PLUGIN_VERSION__,
+      }),
+    };
+  }
+
+  /**
+   * 管理通道的裁剪快照：去掉 logTail（日志走 log 操作增量拉）与 url
+   * （远端页面本身就持有自己的访问令牌，不需要经管理通道再给一次）。
+   *
+   * @param record - 登记项
+   * @returns 裁剪后的快照
+   */
+  private manageSnapshot(record: SupervisedSession): Omit<SessionSnapshot, 'logTail' | 'url'> {
+    const { logTail: _tail, url: _url, ...rest } = this.snapshotOf(record);
+    return rest;
   }
 }

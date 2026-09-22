@@ -30,6 +30,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client';
 import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client';
 import { en, zh, type RemoteExplorerLocaleKey } from './locales.js';
 import { RemoteSessionsIcon } from './icon.js';
+import { IntentBanner } from './intent-banner.js';
 import { SessionPanel } from './panel.js';
 
 // 把本插件的 locale 命名空间并进全局键表——ctx.locale.register/bind 的
@@ -87,4 +88,12 @@ export function apply(ctx: ClientContext): void {
     label: () => ctx.locale.bind(LOCALE_NS)('nav'),
     locale: LOCALE_NS,
   }, RemoteSessionsIcon));
+
+  // 远端窗口的交接意图横幅：全局浮层，与面板开合无关（导航回来时默认落在
+  // 主聊天视图，面板未必挂载）
+  ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+    name: 'shell.overlay',
+    id: 'dsh-remote-explorer-intent',
+    locale: LOCALE_NS,
+  }, IntentBanner));
 }

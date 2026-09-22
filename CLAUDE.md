@@ -87,6 +87,7 @@ npx tsx scripts/dev-plugin.ts --sync   # 产物同步进沙箱（宿主半重启
 能力层      provision/    装 Node 与 dsh、镜像测速、生成会话 profile
             tunnel/       端口分配、正向转发
             credential/   LLM 凭据代理（反向隧道，key 不出本机）
+            handoff/      远端窗口交接组件（宿主半跑在远端 dsh、浏览器半是状态 pill + 管理菜单）
 传输层      transport/    ssh2 连接、命令执行、池化 SFTP、开通道、反向转发、通道配额
 基础层      hosts/        ssh config 解析（主机配置唯一来源）
             util/         shell 转义、错误类型、会话 id、远端路径校验
@@ -162,6 +163,8 @@ npx tsx scripts/dev-plugin.ts --sync   # 产物同步进沙箱（宿主半重启
 - dev 沙箱（`scripts/dev-plugin.ts`）：Windows 上 pnpm 对 `file:` 依赖是**硬链接拷贝**（同 inode）——同步脚本按「同 inode 跳过」处理，别改成无脑 rm+cp（rm 会顺着链接删、cp 会因 src=dest 抛错）；组合脚本 URL 从 HTML 提取后要把 `&amp;` 还原成 `&`；带令牌首访首页是 **303 + set-cookie**（令牌换 Cookie），node fetch 要 `redirect:'manual'` 手动接力。
 
 **13. 内部文件传输走池化 SFTP（P2 起），printf-over-exec 只是回退。** `transport/ssh-transport.ts` 维护每连接一条的池化 SFTP 会话（占 1 个 admin 配额，会话内 4 路并发不新开通道），带每操作超时与「死连接作废重试一次」（错误特征见 `STALE_SFTP_PATTERN`）。文本写入统一走 `transport/write-text.ts` 的 `writeRemoteTextFile`（SFTP 主路径，远端没开 sftp 子系统时回退 printf；`tolerant` 区分尽力而为/严格语义）。**二进制内容（图像等资源）没有回退路径**——shell 重定向过不了二进制，只能 SFTP。凭据材料（proxy-token 600 权限）刻意保留 exec+umask 077 单命令原子写，不切换。
+
+**14. 远端窗口交接组件（handoff）是会话级合成包，按标记幂等安装。** 0.4.0 的「远端不装插件」红线经用户拍板解除——前提是每个会话的远端 dsh 跑在独立 `DSH_HOME`（`sessions/<id>/`），与远端他人的 `~/.dsh` 零交集。引导期把合成包 `dsh-remote-handoff`（宿主半 + 浏览器半 + 空 patch，产物经 define 内联进宿主半 bundle，单文件分发形态运行期没有相邻 lib/）写进会话 profile 的 node_modules 并登记 `dsh.profile.bundles`；远端已有包目录则一条 `test -f` 跳过。老会话补装时若远端进程仍存活复用，菜单要等下一次远端重启才出现（迟到但不缺席，降级期间远端页面零感知）。通道是三段鉴权链：远端页面 → 同源 `/api/dsh-remote-handoff/*`（远端 dsh Cookie 栅栏）→ 反向隧道 `127.0.0.1:<反向端口>/manage/*`（代理令牌闸门，与 LLM 路由同纪律）→ 本机监督器闭包。manage 响应只含状态/日志/元信息，不含凭据。**「关闭/停止并返回」必须是 navigate-then-act**：断开会立刻杀死经隧道服务的远端页面，所以远端菜单先同标签导航回管理页（带 `#handoff-disconnect=` / `#handoff-stop=` intent hash），由管理页加载后确认执行——VS Code「Close Remote Connection 后窗口重载回本地」的拓扑等价物。窗口形态对齐 VS Code 双入口：面板「在当前标签页连接」（就绪后 3 秒倒计时同标签切入，可取消）与「在新标签页连接」（弹窗拦截不允许无手势开标签，会话行按钮接管）。CLI 形态没有管理页，meta 的 managerUrl 缺省，远端菜单自动降级只读。
 
 ## 已知问题
 

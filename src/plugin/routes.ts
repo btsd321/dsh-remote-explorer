@@ -134,6 +134,9 @@ function buildRoutes(supervisor: SessionSupervisor): RouteDef[] {
             ...(booleanField(body, 'refreshMirrors') !== undefined ? { refreshMirrors: booleanField(body, 'refreshMirrors') } : {}),
             ...(stringField(body, 'nodeVersion') !== undefined ? { nodeVersion: stringField(body, 'nodeVersion') } : {}),
             ...(stringField(body, 'dshVersion') !== undefined ? { dshVersion: stringField(body, 'dshVersion') } : {}),
+            // 管理页 origin：面板带 location.origin，供远端 handoff 组件
+            // 渲染「返回/关闭并返回」动作；CLI/命令发起不带，远端菜单只读
+            ...(stringField(body, 'managerUrl') !== undefined ? { managerUrl: stringField(body, 'managerUrl') } : {}),
           };
           const snapshot = supervisor.startConnect(connectRequest);
           return Response.json({ ok: true, session: toPanelSession(snapshot) });

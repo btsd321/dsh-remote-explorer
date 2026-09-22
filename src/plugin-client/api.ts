@@ -110,6 +110,8 @@ export interface ConnectBody {
   nodeVersion?: string;
   /** dsh 版本覆盖 */
   dshVersion?: string;
+  /** 本机管理页 origin（location.origin）：远端 handoff 组件的返回动作依赖它 */
+  managerUrl?: string;
 }
 
 /**

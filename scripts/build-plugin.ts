@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { build } from 'esbuild';
 import { bold, cyan, dim, green, println, ProgressReporter, red } from '../src/cli/output.js';
+import { HANDOFF_PKG_NAME } from '../src/handoff/protocol.js';
 import { toErrorMessage } from '../src/util/errors.js';
 
 /** 仓库根目录（脚本在 scripts/ 下，上一级即根） */
@@ -88,6 +89,45 @@ export async function buildPlugin(options: BuildPluginOptions = {}): Promise<voi
   const define = { __PLUGIN_VERSION__: JSON.stringify(pkg.version) };
   const minify = options.minify === true;
 
+  // 0. handoff 双入口先构建：产物文本随后经 define 内联进宿主半（单文件
+  //    分发形态运行期没有相邻 lib/ 可读，见 src/handoff/payload.ts）
+  await build({
+    entryPoints: [join(REPO_ROOT, 'src', 'handoff', 'host.ts')],
+    outfile: join(LIB_DIR, 'handoff-host.js'),
+    format: 'esm',
+    platform: 'node',
+    target: 'node20',
+    bundle: true,
+    external: HOST_EXTERNAL,
+    define,
+    minify,
+  });
+  await build({
+    entryPoints: [join(REPO_ROOT, 'src', 'handoff', 'client.tsx')],
+    outfile: join(LIB_DIR, 'handoff-client.js'),
+    format: 'cjs',
+    platform: 'browser',
+    target: 'es2020',
+    bundle: true,
+    external: ['react'],
+    jsx: 'transform',
+    jsxFactory: 'React.createElement',
+    jsxFragment: 'React.Fragment',
+    define,
+    minify,
+    // 注册壳 id 是合成包名（不是本包名）：graph 行以它键控，check-plugin 盯守
+    banner: {
+      js: `window.__ModuleLoader__.load({ id: ${JSON.stringify(HANDOFF_PKG_NAME)}, factory: (require) => { `
+        + 'var module = { exports: {} }; var exports = module.exports;',
+    },
+    footer: { js: 'return module.exports; } });' },
+  });
+  const handoffDefine = {
+    ...define,
+    __HANDOFF_HOST_SRC__: JSON.stringify(readFileSync(join(LIB_DIR, 'handoff-host.js'), 'utf8')),
+    __HANDOFF_CLIENT_SRC__: JSON.stringify(readFileSync(join(LIB_DIR, 'handoff-client.js'), 'utf8')),
+  };
+
   // 1. 宿主半 → lib/index.js（ESM，理由见文件头：peer 裸导入必须走 ESM
   //    解析链才能命中 profile 的安装回退链接；CJS require(esm) 实测会崩）
   await build({
@@ -99,7 +139,8 @@ export async function buildPlugin(options: BuildPluginOptions = {}): Promise<voi
     bundle: true,
     external: HOST_EXTERNAL,
     banner: { js: HOST_BANNER },
-    define,
+    // handoff 产物文本随宿主半内联（引导期写进远端会话 profile）
+    define: handoffDefine,
     minify,
   });
 
@@ -152,7 +193,14 @@ async function main(): Promise<number> {
     const clientSize = existsSync(join(LIB_DIR, 'client.js'))
       ? statSync(join(LIB_DIR, 'client.js')).size
       : 0;
-    progress.done(`index.js ${(hostSize / 1000).toFixed(0)} KB，client.js ${(clientSize / 1000).toFixed(0)} KB`);
+    const handoffHostSize = existsSync(join(LIB_DIR, 'handoff-host.js'))
+      ? statSync(join(LIB_DIR, 'handoff-host.js')).size
+      : 0;
+    const handoffClientSize = existsSync(join(LIB_DIR, 'handoff-client.js'))
+      ? statSync(join(LIB_DIR, 'handoff-client.js')).size
+      : 0;
+    progress.done(`index.js ${(hostSize / 1000).toFixed(0)} KB，client.js ${(clientSize / 1000).toFixed(0)} KB，`
+      + `handoff ${(handoffHostSize + handoffClientSize) / 1000 | 0} KB`);
   } catch (error) {
     progress.fail('失败');
     println(red(`构建失败：${toErrorMessage(error)}`));
