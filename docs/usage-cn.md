@@ -481,7 +481,7 @@ npx tsx scripts/dev-plugin.ts --sync   # 只同步产物进沙箱
 - **本地管理页**：面板「远端插件」区——清单 / 安装（包名或 `包名@版本`，交给远端 pnpm）/ 启停 / 卸载。操作后**本机活会话立即经 hmr 热生效**，其他用户的活会话在其下次连接时同步
 - **远端窗口内**：远端 dsh 自带的 Settings 插件 UI（引导期已为远端装好 pnpm）
 
-安装/卸载对老于 hmr 的远端 dsh 回退为「重连或重启后生效」。并发安装由 pnpm 自身目录锁与引导临界区 flock 串行化。
+安装/卸载对老于 hmr 的远端 dsh 回退为「重连或重启后生效」。并发安装由 pnpm 自身目录锁与引导临界区 flock 串行化。会话 profile 里写有 `.npmrc`（`virtual-store-dir` 钉到 store 的 `.pnpm`）——profile 的 node_modules 是指向 store 的 symlink，不钉的话远端窗口原生 UI 在 profile 目录跑 pnpm 会报 `ERR_PNPM_UNEXPECTED_VIRTUAL_STORE`。
 
 ### 多用户与会话归属
 

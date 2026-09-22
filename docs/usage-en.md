@@ -482,7 +482,7 @@ The remote plugin store is **user-level** (one per remote OS account: `~/.dsh-re
 - **Local manager page**: the panel's "Remote plugins" section — list / install (package name or `name@version`, handed to remote pnpm) / enable / disable / uninstall. Changes hot-apply to **your own live session via hmr** immediately; other users' live sessions pick them up at their next connect
 - **Inside the remote window**: the remote dsh's own Settings plugin UI (provisioning installs pnpm on the remote)
 
-Install/uninstall fall back to "effective after reconnect/restart" on remote dsh versions without hmr. Concurrent installs are serialized by pnpm's own directory lock plus a flock around provisioning critical sections.
+Install/uninstall fall back to "effective after reconnect/restart" on remote dsh versions without hmr. Concurrent installs are serialized by pnpm's own directory lock plus a flock around provisioning critical sections. Each session profile carries an `.npmrc` pinning `virtual-store-dir` to the store's `.pnpm` — without it, pnpm run in the profile directory (the remote window's native UI does) rejects the symlinked node_modules with `ERR_PNPM_UNEXPECTED_VIRTUAL_STORE`.
 
 ### Multi-user and session ownership
 
