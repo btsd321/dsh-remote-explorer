@@ -74,7 +74,7 @@ npx tsx src/cli/bin.ts doctor myhost --refresh-mirrors   # 强制重测镜像
 
 # 主命令：引导 → 起远端 dsh → 建隧道 → 开浏览器（进程常驻）
 # 用哪个供应商就把哪个 key 放进本机环境（供应商清单来自 ~/.dsh/settings.yaml）
-DEEPSEEK_API_KEY=sk-xxx ASTUDIO_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect myhost --cwd //home/youruser
+DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect myhost --cwd //home/youruser
 
 # 查看本机维持的所有会话
 npx tsx src/cli/bin.ts status

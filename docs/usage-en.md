@@ -31,7 +31,7 @@ This document provides a detailed walkthrough of every `dsh-remote-explorer` com
 - **Node.js** v20.19+ or v22+ on the local machine (for running tsx).
 - A reachable remote host: either a `Host` entry in `~/.ssh/config`, or an ad-hoc `user@host[:port]` target (IPv6 must go through the config). Authentication supports private keys (`IdentityFile`, overridable with `--private-key`); with no key configured and an interactive terminal, you will be prompted for a password (no echo; kept in memory only, never written to disk). You can also pass `--password <password>` — **this leaks**: the plaintext is visible in the process list and shell history. The CLI prints a warning; treat it as a stopgap.
 - The remote host must be **Linux or macOS** (POSIX). The local client supports Windows, Linux, and macOS.
-- **API keys** for whichever LLM providers you use (e.g. `DEEPSEEK_API_KEY`, `ASTUDIO_API_KEY`), set as environment variables in the shell where you run `dsh-remote-explorer connect`.
+- **API keys** for whichever LLM providers you use (e.g. `DEEPSEEK_API_KEY`), set as environment variables in the shell where you run `dsh-remote-explorer connect`.
 
 ## Authentication and host targeting
 
@@ -172,8 +172,7 @@ npx tsx src/cli/bin.ts provision <alias> --cwd //home/user
 The main command. Orchestrates the entire flow: provision → start remote dsh → build forward tunnel → open browser → maintain session (long-running).
 
 ```bash
-DEEPSEEK_API_KEY=sk-xxx ASTUDIO_API_KEY=sk-xxx \
-  npx tsx src/cli/bin.ts connect <alias> --cwd //home/user
+DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect <alias> --cwd //home/user
 ```
 
 **Options:**

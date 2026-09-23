@@ -74,7 +74,7 @@ npx tsx src/cli/bin.ts doctor myhost --refresh-mirrors   # force re-benchmark mi
 
 # Main command: provision → start remote dsh → build tunnel → open browser (long-running)
 # Export the API key for whichever provider you use (provider list comes from ~/.dsh/settings.yaml)
-DEEPSEEK_API_KEY=sk-xxx ASTUDIO_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect myhost --cwd //home/youruser
+DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect myhost --cwd //home/youruser
 
 # Show all sessions maintained on this machine
 npx tsx src/cli/bin.ts status

@@ -16,7 +16,7 @@
  * 为什么需要这一层（P5 后多供应商支持的依据）：
  *
  * - dsh 的模型供应商有两套通道：`llm-deepseek` 原生适配器（P4 已覆盖，走 patch）
- *   和 `llm-pi-ai` 多供应商适配器。用户的默认模型可能配置在后者（如 AStudio），
+ *   和 `llm-pi-ai` 多供应商适配器。用户的默认模型可能配置在后者，
  *   P4 的单上游代理覆盖不到。
  * - `llm-pi-ai` 在 base bundle 里（远端 web 组合自带），其 settings 段热重载，
  *   `apiKeyEnv` 每次请求经 `ctx.credentials` 从**继承环境**解析——所以远端

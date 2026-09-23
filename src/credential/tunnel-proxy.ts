@@ -8,8 +8,7 @@
  *
  * ```
  * 远端 dsh → 远端 127.0.0.1:<反向端口>/r/<供应商> → SSH 反向通道 → 本代理
- *            （占位令牌随请求头）                      ├─ 前缀 /anthropic → api.deepseek.com
- *                                                   └─ 前缀 /r/astudio → maas-api.cn-huabei-1.xf-yun.com
+ *            （占位令牌随请求头）                      └─ 前缀 /anthropic → api.deepseek.com
  *                                                      （按路由换成对应真实 key）
  * ```
  *
@@ -29,7 +28,7 @@
  *
  * 3. **路由按路径前缀匹配，前缀换上游路径。** 远端 baseURL 的路径部分
  *    标识供应商（`/anthropic` 或 `/r/<名>`），转发时把前缀替换成上游
- *    自己的路径（如 `/r/astudio/...` → maas 上游的 `/v1/...`），
+ *    自己的路径，
  *    剩余子路径原样保留。
  */
 

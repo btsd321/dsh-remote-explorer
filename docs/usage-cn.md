@@ -31,7 +31,7 @@
 - **Node.js** v20.19+ 或 v22+（本机运行 tsx 用）。
 - 一台可 SSH 登录的远端主机：写进 `~/.ssh/config` 的 `Host` 条目，或用 `user@host[:port]` 直连（IPv6 需写进 config）。认证支持私钥（`IdentityFile`，可用 `--private-key` 覆盖）；未配置私钥且在交互式终端时，会提示输入密码（不回显，只存内存不落盘）；也可用 `--password <密码>` 明文传入——**有泄露风险**（命令行、进程列表与 shell 历史都能看到），CLI 会打印警告，建议仅作临时手段。
 - 远端主机必须是 **Linux 或 macOS**（POSIX）。本机客户端支持 Windows、Linux 和 macOS。
-- 使用哪个 LLM 供应商，就将其 **API key** 作为环境变量导出（如 `DEEPSEEK_API_KEY`、`ASTUDIO_API_KEY`），在运行 `dsh-remote-explorer connect` 的 shell 中设置。
+- 使用哪个 LLM 供应商，就将其 **API key** 作为环境变量导出（如 `DEEPSEEK_API_KEY`），在运行 `dsh-remote-explorer connect` 的 shell 中设置。
 
 ## 认证与主机指定
 
@@ -172,8 +172,7 @@ npx tsx src/cli/bin.ts provision <别名> --cwd //home/user
 主命令。编排完整流程：引导 → 起远端 dsh → 建正向隧道 → 开浏览器 → 维持会话（常驻）。
 
 ```bash
-DEEPSEEK_API_KEY=sk-xxx ASTUDIO_API_KEY=sk-xxx \
-  npx tsx src/cli/bin.ts connect <别名> --cwd //home/user
+DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect <别名> --cwd //home/user
 ```
 
 **参数：**
