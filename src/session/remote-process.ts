@@ -19,12 +19,17 @@
  *    真正的 HTTP 探活要等 `dsh-remote-guard`（P5）。
  */
 
+import { execFile } from 'node:child_process';
 import { RemoteError } from '../util/errors.js';
 import { quote } from '../util/shell-quote.js';
+import { createLogger } from '../util/logger.js';
+import { getWslExePath } from '../hosts/wsl-distro-parser.js';
 import { isRemotePortListening } from '../tunnel/port-allocator.js';
 import { buildStartCommand } from '../provision/profile-writer.js';
 import type { RemotePaths } from '../provision/remote-paths.js';
 import type { RemoteTransport } from '../transport/types.js';
+
+const log = createLogger('remote-process');
 
 /** 等待启动输出出现令牌的超时（毫秒） */
 const STARTUP_TIMEOUT_MS = 120_000;
@@ -110,6 +115,14 @@ export async function startRemoteDsh(
   // exec 保留原进程号，所以文件里记的就是 dsh 的 pid。
   // 若改成 `cmd & echo $!`，拿到的是包装 shell 的 pid，dsh 退出后
   // 那个 pid 可能已被系统复用给别的进程，据此 kill 极其危险。
+  // detach 策略按传输类型分流（提前判断，runner 脚本生成依赖它）：
+  // - SSH：setsid nohup ... & 即可，SSH 通道关闭不影响已 detach 的进程
+  // - WSL：wsl.exe -e 退出时会杀掉所有子进程（WSL 实例随之关闭），
+  //   不能用 & 后台化。改用 Node.js spawn + unref 启动 wsl.exe，
+  //   让 wsl.exe 作为独立进程运行（不受本机 Node 进程生命周期影响），
+  //   runner 脚本内部 exec 替换自身为 dsh，wsl.exe 等待 dsh 退出才返回
+  const isWsl = transport.hostAlias.startsWith('wsl:');
+
   const envAssignments = [
     `DSH_HOME=${quote(options.dshHome)}`,
     // skill 目录随会话隔离：dsh 的 skill-filesystem 默认读机器全局 ~/.agents
@@ -121,28 +134,74 @@ export async function startRemoteDsh(
     // PATH 特殊处理："$PATH" 必须留在引号外由 shell 展开，见 shell-quote 的说明
     `PATH=${quote(options.nodeBinDir)}:"$PATH"`,
   ];
-  const runner = [
+  // runner 脚本：写 pid → exec 替换为 dsh。
+  // WSL 模式下额外加重定向（spawn 的 stdio 是 ignore，dsh 输出必须自己写到 logFile）
+  const runnerLines = [
     '#!/bin/sh',
     `echo $$ > ${quote(pidFile)}`,
-    `exec env ${envAssignments.join(' ')} ${startCommand}`,
-    '',
-  ].join('\n');
+  ];
+  if (isWsl) {
+    // WSL spawn 的 stdio 是 ignore，dsh 的 stdout/stderr 需要显式重定向到 logFile
+    runnerLines.push(`exec env ${envAssignments.join(' ')} ${startCommand} > ${quote(logFile)} 2>&1`);
+  } else {
+    // SSH detach 命令已做了 > logFile 2>&1 重定向，runner 不需要重复
+    runnerLines.push(`exec env ${envAssignments.join(' ')} ${startCommand}`);
+  }
+  runnerLines.push('');
+  const runner = runnerLines.join('\n');
 
-  const launch = [
+  // 1. 写 runner 脚本 + 清理旧文件（同步 exec，快速返回）
+  const prepareLaunch = [
     `printf '%s' ${quote(runner)} > ${quote(runnerFile)}`,
     `rm -f ${quote(logFile)} ${quote(pidFile)}`,
-    // detach：脱离 SSH 通道的进程组与终端，否则通道关闭即被杀
-    `setsid nohup sh ${quote(runnerFile)} > ${quote(logFile)} 2>&1 < /dev/null &`,
   ].join('\n');
+  await transport.exec(prepareLaunch, { ...(signal ? { signal } : {}) });
 
-  await transport.exec(launch, { ...(signal ? { signal } : {}) });
+  if (isWsl) {
+    // WSL：通过 PowerShell Start-Process -WindowStyle Hidden 启动 wsl.exe。
+    // Node.js spawn 的 windowsHide (CREATE_NO_WINDOW) 对控制台子系统程序
+    // （wsl.exe/conhost.exe）无效——Windows 仍会创建 conhost 窗口。
+    // PowerShell 的 -WindowStyle Hidden 内部使用 SW_HIDE + STARTF_USESHOWWINDOW
+    // 组合，能正确抑制控制台窗口。PowerShell 启动 wsl.exe 后立即退出，
+    // wsl.exe 作为独立进程运行（不需要 unref）。
+    const distroName = transport.hostAlias.slice(4); // 去掉 'wsl:' 前缀
+    const wslArgStr = `-d ${distroName} -e sh ${runnerFile}`;
+    const psCommand = `Start-Process -FilePath '${getWslExePath()}' -ArgumentList '${wslArgStr}' -WindowStyle Hidden`;
+    log.info('WSL 通过 PowerShell 无窗口启动 dsh', { distroName, runnerFile });
+
+    await new Promise<void>((resolve, reject) => {
+      execFile('powershell.exe', [
+        '-NoProfile', '-NonInteractive', '-Command', psCommand,
+      ], { timeout: 15_000, windowsHide: true }, (error, _stdout, stderr) => {
+        if (error) {
+          reject(new RemoteError(
+            'EXEC_FAILED',
+            `WSL ${distroName} 启动 dsh 失败: ${error.message}\n${stderr}`,
+            { hostAlias: transport.hostAlias },
+          ));
+        } else {
+          resolve();
+        }
+      });
+    });
+    log.info('WSL PowerShell 启动完成');
+  } else {
+    // SSH：传统 setsid nohup & detach
+    const detachCmd = `setsid nohup sh ${quote(runnerFile)} > ${quote(logFile)} 2>&1 < /dev/null &`;
+    await transport.exec(detachCmd, { ...(signal ? { signal } : {}) });
+    log.info('SSH detach 命令已执行');
+  }
+
+  log.info('启动命令已执行，开始轮询日志等待令牌');
 
   // 轮询日志等令牌出现
   const deadline = Date.now() + STARTUP_TIMEOUT_MS;
   let lastLog = '';
+  let pollCount = 0;
   while (Date.now() < deadline) {
     signal?.throwIfAborted();
     await delay(POLL_INTERVAL_MS, signal);
+    pollCount += 1;
 
     const read = await transport.exec(`cat ${quote(logFile)} 2>/dev/null || true`, {
       allowNonZeroExit: true,
@@ -150,8 +209,18 @@ export async function startRemoteDsh(
     });
     lastLog = read.stdout;
 
+    // 轮询诊断仅 debug 级别，避免占用日志窗口
+    if (pollCount % 10 === 1) {
+      log.debug('轮询启动日志', {
+        pollCount,
+        logLength: lastLog.length,
+        elapsed: `${((Date.now() - (deadline - STARTUP_TIMEOUT_MS)) / 1000).toFixed(1)}s`,
+      });
+    }
+
     const token = TOKEN_PATTERN.exec(lastLog)?.[1];
     if (token) {
+      log.info('令牌匹配成功', { tokenPrefix: token.slice(0, 8) });
       const pid = await readPid(transport, pidFile, signal);
       if (pid === undefined) {
         throw new RemoteError(

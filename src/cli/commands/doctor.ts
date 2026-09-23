@@ -11,7 +11,9 @@
  */
 
 import { SshTransport } from '../../transport/ssh-transport.js';
+import { WslTransport } from '../../transport/wsl-transport.js';
 import type { RemoteTransport } from '../../transport/types.js';
+import type { TransportType } from '../../session/session-manager.js';
 import {
   checkNodeStability,
   probeRemote,
@@ -19,6 +21,7 @@ import {
 } from '../../provision/probe.js';
 import { selectMirror, type MirrorProbeResult } from '../../provision/mirror-selector.js';
 import { createRemotePaths, type RemotePaths } from '../../provision/remote-paths.js';
+import { isWslAvailable, listWslDistros } from '../../hosts/wsl-distro-parser.js';
 import { toErrorMessage } from '../../util/errors.js';
 import { quote } from '../../util/shell-quote.js';
 import { prepareHostAuth } from '../host-auth.js';
@@ -26,10 +29,16 @@ import { bold, cyan, dim, green, println, printTable, red, yellow, ProgressRepor
 
 /** doctor 命令选项 */
 export interface DoctorOptions {
-  /** 主机别名或 user@host[:port] 直连语法 */
+  /** 主机别名或 user@host[:port] 直连语法（WSL 模式时为 wsl:<发行版>） */
   alias: string;
   /** 强制重测镜像，忽略缓存 */
   refreshMirrors: boolean;
+  /** 传输类型；默认 'ssh' */
+  transportType?: TransportType;
+  /** WSL 发行版名称（transportType='wsl' 时必需） */
+  distroName?: string;
+  /** WSL 用户名（transportType='wsl' 时可选） */
+  wslUser?: string;
   /** 私钥文件路径覆盖（--private-key） */
   privateKey?: string;
   /** 固定密码（--password）：显式走密码认证 */
@@ -58,25 +67,75 @@ interface Finding {
 export async function runDoctor(options: DoctorOptions): Promise<number> {
   const progress = new ProgressReporter();
   const findings: Finding[] = [];
+  const targetLabel = options.transportType === 'wsl' ? 'WSL 发行版' : '主机';
 
-  // 1. 解析 ssh config 并应用认证覆盖（纯本地，失败直接退出）
-  const { resolved, passwords } = prepareHostAuth(options.alias, options);
-  findings.push({
-    item: 'ssh config',
-    verdict: 'ok',
-    detail: `${resolved.target.username}@${resolved.target.host}:${resolved.target.port}`
-      + (resolved.jumpHosts.length > 0 ? `，${resolved.jumpHosts.length} 级跳板机` : '，直连'),
-  });
-
-  println(bold(`诊断主机 ${cyan(options.alias)}`));
+  println(bold(`诊断${targetLabel} ${cyan(options.alias)}`));
   println();
 
-  const transport = new SshTransport(options.alias, resolved, {
-    getPassword: (hostKey, label, attempt) => passwords.get(hostKey, label, attempt),
-  });
+  let transport: RemoteTransport;
+  /** SSH 模式的密码提供器清理回调；WSL 模式为 undefined */
+  let clearPasswords: (() => void) | undefined;
+
+  switch (options.transportType ?? 'ssh') {
+    case 'wsl': {
+    // WSL 模式：检查 WSL 可用性与发行版存在性
+    progress.start('检查 WSL 可用性');
+    const wslOk = await isWslAvailable();
+    if (!wslOk) {
+      progress.fail('WSL 不可用');
+      findings.push({ item: 'WSL 可用性', verdict: 'fail', detail: 'wsl.exe 不存在或无法响应；请确认 WSL 已安装并启用' });
+      report(findings);
+      return 1;
+    }
+    progress.done('WSL 可用');
+    findings.push({ item: 'WSL 可用性', verdict: 'ok', detail: 'wsl.exe 正常响应' });
+
+    // 检查指定发行版是否存在
+    const distroName = options.distroName ?? '';
+    progress.start(`检查发行版 ${distroName}`);
+    const distros = await listWslDistros();
+    const found = distros.find(d => d.name === distroName);
+    if (!found) {
+      progress.fail(`发行版 ${distroName} 不存在`);
+      const available = distros.map(d => d.name).join('、') || '无';
+      findings.push({ item: '发行版存在性', verdict: 'fail', detail: `未找到 ${distroName}；可用：${available}` });
+      report(findings);
+      return 1;
+    }
+    progress.done(`${found.state}（WSL ${found.version}）`);
+    findings.push({
+      item: '发行版存在性',
+      verdict: 'ok',
+      detail: `${found.name} ${found.state}（WSL ${found.version}${found.isDefault ? '，默认' : ''}）`,
+    });
+
+    transport = new WslTransport({
+      distroName,
+      ...(options.wslUser ? { user: options.wslUser } : {}),
+    });
+      break;
+    }
+    case 'ssh': {
+      // SSH 模式：解析主机配置、构建传输
+      const { resolved, passwords } = prepareHostAuth(options.alias, options);
+      findings.push({
+        item: 'ssh config',
+        verdict: 'ok',
+        detail: `${resolved.target.username}@${resolved.target.host}:${resolved.target.port}`
+          + (resolved.jumpHosts.length > 0 ? `，${resolved.jumpHosts.length} 级跳板机` : '，直连'),
+      });
+
+      transport = new SshTransport(options.alias, resolved, {
+        getPassword: (hostKey, label, attempt) => passwords.get(hostKey, label, attempt),
+      });
+      clearPasswords = () => passwords.clear();
+      break;
+    }
+  }
+
   try {
     // 2. 建立连接
-    progress.start('建立 SSH 连接');
+    progress.start(options.transportType === 'wsl' ? '连接 WSL 发行版' : '建立 SSH 连接');
     try {
       await transport.connect();
       progress.done(`${transport.platform.rawOs} ${transport.platform.rawArch}`);
@@ -219,13 +278,15 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
       }
     }
 
-    // 6. 通道配额
-    const usage = transport.channelUsage;
-    findings.push({
-      item: 'SSH 通道',
-      verdict: 'ok',
-      detail: `管理类已用 ${usage.admin}，转发类已用 ${usage.forward}，无等待`,
-    });
+    // 6. 通道配额（仅 SSH 传输有通道配额概念）
+    if (transport instanceof SshTransport) {
+      const usage = transport.channelUsage;
+      findings.push({
+        item: 'SSH 通道',
+        verdict: 'ok',
+        detail: `管理类已用 ${usage.admin}，转发类已用 ${usage.forward}，无等待`,
+      });
+    }
 
     // 7. SFTP 子系统：内部文件传输的主路径（settings 镜像、patch 落盘走它，
     //    比 printf-over-exec 快且二进制安全）。不可用不阻断会话——文本写入
@@ -261,7 +322,7 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
   } finally {
     await transport.dispose();
     // 短命进程，清空是仪式性 hygiene，但与 session 路径保持一致
-    passwords.clear();
+    clearPasswords?.();
   }
 }
 

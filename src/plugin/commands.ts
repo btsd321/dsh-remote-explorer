@@ -1,10 +1,11 @@
 /**
  * @file slash 命令注册
- * @description 用户侧入口：`/remote-ssh <子动作>` 单命令多子动作，
+ * @description 用户侧入口：`/remote <子动作>` 单命令多子动作，
  *              在 dsh 聊天输入框里管理远程会话。
  *
  * 子动作：
  * - `hosts`                          列出 ~/.ssh/config 的主机别名
+ * - `wsl`                            列出本机已安装的 WSL 发行版
  * - `connect <别名> [远端目录]`       后台发起连接（立即返回，进度看 status）
  * - `status`                         会话表（含其他本机进程的 external 视图）
  * - `disconnect <别名|会话id> [--keep-remote]`
@@ -12,8 +13,8 @@
  *
  * 命名纪律（scripts/check-plugin.ts 强制）：命令名必须匹配
  * /^[a-z][a-z0-9_-]*$/——非法字符会让整个 dsh 启动失败（参考插件踩过：
- * 带点号的命令名掀翻了 Desktop）。`remote-ssh` 与内置命令（compact/feedback/goal）
- * 及第三方 dsh-remote 插件（remote/remote-*）都不冲突。
+ * 带点号的命令名掀翻了 Desktop）。`remote` 与内置命令（compact/feedback/goal）
+ * 不冲突；同时保留 `remote-ssh` 作为别名指向同一处理器，兼容旧用法。
  *
  * commands 是可选服务（headless 组合可能没有）：ctx.get 取不到就静默跳过，
  * 绝不属性直取——那会在缺服务的组合里直接抛错。
@@ -23,11 +24,14 @@ import type { Context } from '@deepseek-ai/cordis';
 // 激活 ctx.commands 的类型增广（CommandsHost.register）
 import type {} from '@deepseek-ai/dsh-commands';
 import { listHosts, refreshConfig } from '../hosts/ssh-config-parser.js';
+import { listWslDistros, refreshWslCache } from '../hosts/wsl-distro-parser.js';
 import { toErrorMessage } from '../util/errors.js';
 import { SessionSupervisor, SupervisorError, type SessionSnapshot } from './supervisor.js';
 
 /**
- * 注册 /remote-ssh 命令。
+ * 注册 /remote 命令及 /remote-ssh 别名。
+ *
+ * cordis 不支持命令别名机制，因此注册两个命令指向同一处理器。
  *
  * @param ctx - 插件上下文
  * @param supervisor - 会话监督器
@@ -37,41 +41,61 @@ export function registerCommands(ctx: Context, supervisor: SessionSupervisor): (
   const commands = ctx.get('commands');
   if (commands === undefined) return () => { /* 该组合没有命令服务，跳过 */ };
 
-  return commands.register({
-    name: 'remote-ssh',
-    description: '管理远程 dsh 会话：hosts | connect <别名> [远端目录] | status | disconnect <别名|会话id> [--keep-remote]',
-    input: { hint: '<hosts|connect|status|disconnect> …' },
-    handler: async ({ rawInput }) => {
-      const args = rawInput.trim().split(/\s+/).filter(part => part !== '');
-      const action = args[0] ?? 'help';
-      try {
-        switch (action) {
-          case 'hosts':
-            return { kind: 'success', text: renderHosts() };
-          case 'connect':
-            return { kind: 'success', text: doConnect(supervisor, args.slice(1)) };
-          case 'status':
-            return { kind: 'success', text: renderStatus(supervisor) };
-          case 'disconnect':
-            return { kind: 'success', text: await doDisconnect(supervisor, args.slice(1)) };
-          default:
-            return { kind: 'success', text: USAGE };
-        }
-      } catch (error) {
-        return { kind: 'error', text: toErrorMessage(error) };
+  // 共享处理器：/remote 与 /remote-ssh 行为完全一致
+  const handler = async ({ rawInput }: { rawInput: string }): Promise<{ kind: 'success' | 'error'; text: string }> => {
+    const args = rawInput.trim().split(/\s+/).filter(part => part !== '');
+    const action = args[0] ?? 'help';
+    try {
+      switch (action) {
+        case 'hosts':
+          return { kind: 'success', text: renderHosts() };
+        case 'wsl':
+          return { kind: 'success', text: await renderWslDistros() };
+        case 'connect':
+          return { kind: 'success', text: doConnect(supervisor, args.slice(1)) };
+        case 'status':
+          return { kind: 'success', text: renderStatus(supervisor) };
+        case 'disconnect':
+          return { kind: 'success', text: await doDisconnect(supervisor, args.slice(1)) };
+        default:
+          return { kind: 'success', text: USAGE };
       }
-    },
-  });
+    } catch (error) {
+      return { kind: 'error', text: toErrorMessage(error) };
+    }
+  };
+
+  const disposers = [
+    // 主命令
+    commands.register({
+      name: 'remote',
+      description: '管理远程 dsh 会话：hosts | wsl | connect <别名> [远端目录] | status | disconnect <别名|会话id> [--keep-remote]',
+      input: { hint: '<hosts|wsl|connect|status|disconnect> …' },
+      handler,
+    }),
+    // 向后兼容别名：旧文档与肌肉记忆仍可用 /remote-ssh
+    commands.register({
+      name: 'remote-ssh',
+      description: '/remote 的别名（向后兼容）',
+      input: { hint: '<hosts|wsl|connect|status|disconnect> …' },
+      handler,
+    }),
+  ];
+  return () => {
+    for (const dispose of disposers) dispose();
+  };
 }
 
 /** 用法文本（无参数或未知子动作时返回） */
 const USAGE = [
-  '/remote-ssh — 管理远程 dsh 会话',
+  '/remote — 管理远程 dsh 会话',
   '  hosts                             列出 ~/.ssh/config 的主机别名',
+  '  wsl                               列出本机已安装的 WSL 发行版',
   '  connect <别名> [远端目录]          后台连接并启动远端 dsh（进度看 status）',
   '  status                            会话列表与状态',
   '  disconnect <别名|会话id> [--keep-remote]   断开（默认连远端一起停）',
   '远端目录示例：/home/youruser（Git Bash 里用双斜杠 //home/youruser）',
+  '注：/remote-ssh 是 /remote 的向后兼容别名',
 ].join('\n');
 
 /**
@@ -91,6 +115,20 @@ function renderHosts(): string {
 }
 
 /**
+ * 渲染 WSL 发行版列表。
+ *
+ * @returns 文本
+ */
+async function renderWslDistros(): Promise<string> {
+  refreshWslCache();
+  const distros = await listWslDistros();
+  if (distros.length === 0) return '未检测到 WSL 发行版（WSL 可能未安装或未启用）';
+  const lines = distros.map(d =>
+    `  ${d.name}  ${d.state}  WSL${d.version}${d.isDefault ? '（默认）' : ''}`);
+  return `WSL 发行版（${distros.length} 个）：\n${lines.join('\n')}`;
+}
+
+/**
  * 发起连接子动作。
  *
  * @param supervisor - 监督器
@@ -100,14 +138,14 @@ function renderHosts(): string {
 function doConnect(supervisor: SessionSupervisor, args: string[]): string {
   const alias = args[0];
   if (alias === undefined) {
-    throw new SupervisorError('bad_usage', '用法：/remote-ssh connect <别名> [远端目录]（hosts 子命令可列别名）');
+    throw new SupervisorError('bad_usage', '用法：/remote connect <别名> [远端目录]（hosts 子命令可列别名）');
   }
   const snapshot = supervisor.startConnect({
     hostAlias: alias,
     ...(args[1] !== undefined ? { cwd: args[1] } : {}),
   });
   return `已在后台发起连接 ${snapshot.hostAlias}（会话 ${snapshot.sessionId.slice(0, 12)}…）。\n`
-    + '用 /remote-ssh status 查看进度；就绪后浏览器打开会话 URL（Web 面板 Settings → 远程 SSH 会话 亦可）。';
+    + '用 /remote status 查看进度；就绪后浏览器打开会话 URL（Web 面板亦可）。';
 }
 
 /**
@@ -119,7 +157,7 @@ function doConnect(supervisor: SessionSupervisor, args: string[]): string {
 function renderStatus(supervisor: SessionSupervisor): string {
   const snapshots = supervisor.list();
   if (snapshots.length === 0) {
-    return '当前没有会话。用 /remote-ssh connect <别名> [远端目录] 发起连接';
+    return '当前没有会话。用 /remote connect <别名> [远端目录] 发起连接';
   }
   const lines = snapshots.map(snapshot => {
     const state = describeSnapshot(snapshot);
@@ -142,7 +180,7 @@ function renderStatus(supervisor: SessionSupervisor): string {
 async function doDisconnect(supervisor: SessionSupervisor, args: string[]): Promise<string> {
   const target = args[0];
   if (target === undefined) {
-    throw new SupervisorError('bad_usage', '用法：/remote-ssh disconnect <别名|会话id> [--keep-remote]');
+    throw new SupervisorError('bad_usage', '用法：/remote disconnect <别名|会话id> [--keep-remote]');
   }
   const keepRemote = args.includes('--keep-remote');
   const sessionId = await supervisor.disconnect(target, !keepRemote);

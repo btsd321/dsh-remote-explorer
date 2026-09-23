@@ -367,6 +367,21 @@ get currentTransport(): RemoteTransport | undefined {
 8. **新增面板能力同步三处**：`src/plugin/routes.ts` 的 RouteDef、`src/plugin-client/api.ts` 的客户端函数、面板组件；快照形状经 `import type` 从 `supervisor.ts` 共享，编译期强制同步。远端执行的脚本片段（如 plugin-store 的扫描脚本）里所有动态值必须过 `quote()`。
 9. **前端脚本无框架无构建**：`client/` 下是原生 JS，保持零依赖，不要引入打包器。
 10. **改动传输或引导逻辑后跑一次真实验证**：插件形态 `npx tsx scripts/dev-plugin.ts --smoke`，CLI 形态真实 `doctor`/`connect`（行为脚本 `tests/stop-remote-on-close.ts`、`tests/sftp-roundtrip.ts`）。类型检查通过不等于连得上。
+11. **日志统一使用 `src/util/logger.ts` 的 `createLogger`**。不直接调用 `console.*`。
+    每个模块在文件顶部创建日志器：`const log = createLogger('模块名');`，模块名用
+    kebab-case 取自文件名。级别语义：debug（开发排查）、info（关键流程节点）、
+    warn（可恢复异常/降级）、error（不可恢复失败）。输出格式固定为
+    `[时间戳] [级别] [模块] 内容`，便于跨模块日志检索与过滤。
+    supervisor 的 `this.push()` 是面板业务日志，不受此约束。
+
+    **后端日志级别约束**：supervisor 面板日志只允许 `info | warn | error | state`
+    四种级别，不使用 stage-start/stage-done/stage-skip 等非标准级别。阶段进度
+    统一用 info 级别 + `[开始]/[完成]/[跳过]` 文本前缀区分。
+
+    **高频路径日志纪律**：轮询、心跳、定时器等周期性代码路径中，只在状态变化时
+    输出 info 日志；重复性诊断信息用 debug 级别（生产环境默认不显示）。避免每轮
+    都输出的 info 日志占用日志窗口。一次性事件（连接发起、会话就绪、错误）正常
+    使用 info/error。
 
 ---
 

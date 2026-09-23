@@ -1,37 +1,31 @@
 /**
- * @file 远程会话管理面板（全局面板内容，main 槽 keyed 注册）
- * @description 单页三区：连接表单、会话表、进度日志。数据全部来自宿主
+ * @file WSL 远程会话管理面板
+ * @description 专管 WSL（Windows Subsystem for Linux）传输类型的连接表单、
+ *              会话表与进度日志。布局与 SSH 面板类似但简化：无密码/私钥字段，
+ *              以发行版下拉选择替代主机别名输入。数据全部来自宿主
  *              /api/dsh-remote-explorer/* 路由（同源 fetch 自动带 dsh 会话
  *              Cookie），列表 2s 轮询、选中会话的日志 1.5s 增量轮询。
  *
- * 窗口形态按环境分流（桌面壳单 OS 窗口，跨 origin 导航全被甩给系统浏览器）：
- * - 桌面端：单按钮「在新窗口连接」；就绪后开整窗浮动桌面（remote-window.tsx
- *   的 body 级 webview 覆盖浮层，远程页面铺满整窗、无自建顶栏）。managerUrl 传
- *   假意图 origin，让远端 handoff pill 的返回/关闭/停止变成可被浮层拦截的意图信号
- * - 浏览器端：双入口原样——「当前标签」就绪后 3 秒倒计时同标签切入；
- *   「新标签」target=_blank 弹新页（session.url = 隧道转发后的**远端 dsh
- *   界面**，含远端访问令牌，语义等同 CLI 把 URL 打进终端后用户点开）
+ * 窗口形态分流逻辑与 SSH 面板一致（桌面端整窗浮层、浏览器端双入口）。
+ * 连接时 postConnect 传 transportType='wsl' + distroName + wslUser。
  *
- * 样式纪律：不猜 dsh 设计令牌名（错名 = 文字不可见，参考插件踩过 *-fill
- * 当文字色的坑）——中性色一律 inherit/rgba 半透明灰，仅状态点用语义色；
- * 深浅主题都成立。
- *
- * 凭据纪律：密码框旁明示「仅存宿主进程内存」；提交成功或失败后立即清掉
- * 本地 state 引用（宿主侧同样不落盘不进日志）。
+ * 样式纪律同 ssh-panel.tsx：inherit/rgba 半透明灰，不猜设计令牌名。
  */
 
 import * as React from 'react';
 import type { ReactNode } from 'react';
-import type { SshHostSummary } from '../hosts/ssh-config-parser.js';
 import type { LogEntry } from '../plugin/supervisor.js';
 import type { RemoteExplorerLocaleKey } from './locales.js';
 import {
-  ApiError, fetchHosts, fetchSessionLog, fetchSessions, postConnect, postDisconnect,
-  type PanelSession,
+  ApiError, fetchSessionLog, fetchSessions, fetchWslDistros, postConnect, postDisconnect,
+  type PanelSession, type WslDistroSummary,
 } from './api.js';
 import { isDesktopShell } from './desktop-bridge.js';
 import { openRemoteWindow, OVERLAY_INTENT_ORIGIN } from './remote-window.js';
-import { RemotePluginsSection } from './panel-plugins.js';
+import { renderSessionRow } from './ssh-panel.js';
+import { createLogger } from '../util/logger.js';
+
+const logger = createLogger('wsl-panel');
 
 /** 会话列表轮询间隔（毫秒） */
 const SESSIONS_POLL_MS = 2_000;
@@ -42,38 +36,14 @@ const LOG_POLL_MS = 1_500;
 /** 当前标签形态就绪后的自动导航倒计时（秒，可取消） */
 const HANDOFF_COUNTDOWN_SECONDS = 3;
 
-/** localStorage 里「上次远端目录」的键前缀（按主机别名记忆） */
-const LAST_CWD_KEY_PREFIX = 'dsh-remote-explorer:lastCwd:';
+/** localStorage 里「上次远端目录」的键前缀（按发行版记忆） */
+const LAST_CWD_KEY_PREFIX = 'dsh-remote-explorer:wsl:lastCwd:';
 
 /** 是否桌面壳（preload 注入先于一切脚本，页面生命周期内不变，模块级算一次） */
 const DESKTOP = isDesktopShell();
 
-/** 状态标签 → 语义色（状态点用；文案走 locale） */
-const STATE_COLORS: Record<string, string> = {
-  connected: '#22c55e',
-  connecting: '#3b82f6',
-  idle: '#9ca3af',
-  'heartbeat-missed': '#f59e0b',
-  reconnecting: '#f59e0b',
-  'reconnect-failed': '#f97316',
-  'reconnect-exhausted': '#ef4444',
-  disconnected: '#9ca3af',
-};
-
-/** 状态标签 → locale 键 */
-const STATE_LABEL_KEYS: Record<string, RemoteExplorerLocaleKey> = {
-  idle: 'stateIdle',
-  connecting: 'stateConnecting',
-  connected: 'stateConnected',
-  'heartbeat-missed': 'stateHeartbeatMissed',
-  reconnecting: 'stateReconnecting',
-  'reconnect-failed': 'stateReconnectFailed',
-  'reconnect-exhausted': 'stateReconnectExhausted',
-  disconnected: 'stateDisconnected',
-};
-
-/** 面板 props：locale 面由 slots 框架注入（注册时声明了 locale 命名空间） */
-export interface SessionPanelProps {
+/** 面板 props：locale 面由 slots 框架注入 */
+export interface WslSessionPanelProps {
   /** 命名空间绑定的翻译函数 */
   t: (key: RemoteExplorerLocaleKey) => string;
 }
@@ -91,29 +61,27 @@ function messageOf(error: unknown): string {
 }
 
 /**
- * 远程会话管理面板。
+ * WSL 远程会话管理面板。
  *
  * @param props - locale 注入面
  * @returns 面板内容
  */
-export function SessionPanel(props: SessionPanelProps): ReactNode {
+export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
   const { t } = props;
 
   // ---- 连接表单状态 ----
-  const [host, setHost] = React.useState('');
+  const [distroName, setDistroName] = React.useState('');
   const [cwd, setCwd] = React.useState('');
-  const [password, setPassword] = React.useState('');
-  const [privateKey, setPrivateKey] = React.useState('');
+  const [wslUser, setWslUser] = React.useState('');
   const [localPort, setLocalPort] = React.useState('');
   const [nodeVersion, setNodeVersion] = React.useState('');
   const [dshVersion, setDshVersion] = React.useState('');
   const [forceRestart, setForceRestart] = React.useState(false);
-  const [refreshMirrors, setRefreshMirrors] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [formError, setFormError] = React.useState('');
 
   // ---- 数据状态 ----
-  const [hosts, setHosts] = React.useState<SshHostSummary[]>([]);
+  const [distros, setDistros] = React.useState<WslDistroSummary[]>([]);
   const [sessions, setSessions] = React.useState<PanelSession[]>([]);
   const [loadError, setLoadError] = React.useState('');
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
@@ -123,25 +91,18 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
   const logBoxRef = React.useRef<HTMLDivElement | null>(null);
 
   // ---- 窗口形态交接 ----
-  /**
-   * 本次发起连接选择的窗口形态：
-   * - current = 就绪后同标签自动切入远端（浏览器端，VS Code Connect Current Window）
-   * - new = 就绪后会话行按钮开新标签（浏览器端，弹窗拦截不允许无手势开标签）
-   * - window = 就绪后开整窗浮动桌面（桌面端，remote-window.tsx 的覆盖浮层）
-   */
   const pendingNav = React.useRef<{ sessionId: string; mode: 'current' | 'new' | 'window' } | null>(null);
-  /** 同标签自动导航的倒计时（可取消）；null = 无待跳转 */
   const [countdown, setCountdown] = React.useState<{ url: string; seconds: number } | null>(null);
 
-  // 主机列表：挂载时拉一次；「刷新」按钮带 refresh=1 让宿主重读 ssh config
-  const loadHosts = React.useCallback(async (refresh: boolean): Promise<void> => {
+  // 发行版列表：挂载时拉一次；「刷新」按钮带 refresh=1
+  const loadDistros = React.useCallback(async (refresh: boolean): Promise<void> => {
     try {
-      setHosts(await fetchHosts(refresh));
+      setDistros(await fetchWslDistros(refresh));
     } catch (error) {
       setLoadError(messageOf(error));
     }
   }, []);
-  React.useEffect(() => { void loadHosts(false); }, [loadHosts]);
+  React.useEffect(() => { void loadDistros(false); }, [loadDistros]);
 
   // 会话列表轮询（挂载期 2s 一次）
   React.useEffect(() => {
@@ -152,14 +113,14 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
         if (stopped) return;
         setSessions(next);
         setLoadError('');
-        // 交接：会话就绪后按形态分流——桌面端直接开整窗浮层（无倒计时，
-        // 浮层展开即盖住本面板）；浏览器端「当前标签」起倒计时，「新标签」
-        // 不起（弹窗拦截不允许无手势开标签），会话行按钮接管
+        // 交接：会话就绪后按形态分流
         const pending = pendingNav.current;
         if (pending !== null) {
           const ready = next.find(item => item.sessionId === pending.sessionId
             && !item.connecting && item.url !== undefined);
           if (ready?.url !== undefined) {
+            // 会话就绪：一次性日志 + 触发窗口交接
+            logger.info('会话就绪，触发窗口交接', { mode: pending.mode, url: ready.url, sessionId: ready.sessionId });
             pendingNav.current = null;
             if (pending.mode === 'window') {
               openRemoteWindow({
@@ -172,8 +133,10 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
             }
           } else if (next.some(item => item.sessionId === pending.sessionId
             && item.connectError !== undefined)) {
-            pendingNav.current = null; // 失败不空等：错误已在表单区呈现
+            logger.info('会话连接失败', { sessionId: pending.sessionId });
+            pendingNav.current = null;
           }
+          // 连接中状态不输出日志（每 2s 轮询，避免刷屏）
         }
       } catch (error) {
         if (!stopped) setLoadError(messageOf(error));
@@ -184,7 +147,7 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
     return () => { stopped = true; clearInterval(timer); };
   }, []);
 
-  // 倒计时滴答：归零即同标签切入远端（VS Code Connect Current Window 的等价物）
+  // 倒计时滴答
   React.useEffect(() => {
     if (countdown === null) return;
     if (countdown.seconds <= 0) {
@@ -197,7 +160,7 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
     return () => { clearTimeout(timer); };
   }, [countdown]);
 
-  // 选中会话的日志增量轮询（1.5s，?since=seq 追加）
+  // 选中会话的日志增量轮询
   React.useEffect(() => {
     if (selectedId === null) { setLog([]); lastSeq.current = 0; return; }
     let stopped = false;
@@ -224,52 +187,48 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
     if (box !== null) box.scrollTop = box.scrollHeight;
   }, [log]);
 
-  // 换主机时带出上次用过的远端目录（localStorage 记忆）
-  const onHostChange = (value: string): void => {
-    setHost(value);
+  // 换发行版时带出上次用过的远端目录
+  const onDistroChange = (value: string): void => {
+    setDistroName(value);
     try {
       setCwd(localStorage.getItem(`${LAST_CWD_KEY_PREFIX}${value}`) ?? '');
     } catch { /* 隐私模式等场景 localStorage 不可用，跳过记忆 */ }
   };
 
   /**
-   * 发起连接。
+   * 发起 WSL 连接。
    *
-   * @param mode - 窗口形态：current/new = 浏览器端双入口（同标签倒计时 / 会话行
-   *               开新标签）；window = 桌面端整窗浮动桌面
+   * @param mode - 窗口形态
    */
   const onConnect = async (mode: 'current' | 'new' | 'window'): Promise<void> => {
-    if (host.trim() === '' || busy) return;
+    if (distroName.trim() === '' || busy) return;
     setBusy(true);
     setFormError('');
     try {
       const port = Number.parseInt(localPort, 10);
+      logger.info('postConnect 请求', { distroName: distroName.trim(), mode, desktop: DESKTOP });
       const session = await postConnect({
-        hostAlias: host.trim(),
+        // WSL 模式下 hostAlias 带 wsl: 前缀，与 CLI 和 WslTransport.hostAlias 保持一致
+        hostAlias: `wsl:${distroName.trim()}`,
+        transportType: 'wsl',
+        distroName: distroName.trim(),
+        ...(wslUser.trim() !== '' ? { wslUser: wslUser.trim() } : {}),
         ...(cwd.trim() !== '' ? { cwd: cwd.trim() } : {}),
-        ...(password !== '' ? { password } : {}),
-        ...(privateKey.trim() !== '' ? { privateKey: privateKey.trim() } : {}),
         ...(Number.isFinite(port) && port > 0 ? { localPort: port } : {}),
         ...(nodeVersion.trim() !== '' ? { nodeVersion: nodeVersion.trim() } : {}),
         ...(dshVersion.trim() !== '' ? { dshVersion: dshVersion.trim() } : {}),
         forceRestart,
-        refreshMirrors,
-        // 管理页 origin：浏览器端给真实 origin（handoff「返回」同标签导航回管理页）；
-        // 桌面端给假意图 origin——webview 策略拒绝导航回应用 origin，改用这个 origin
-        // 让 handoff 三个动作变成可被整窗浮层拦截的意图信号（window.open / will-navigate），
-        // handoff 代码零改动、菜单不再只读（见 remote-window.tsx 文件头）
         managerUrl: DESKTOP ? OVERLAY_INTENT_ORIGIN : window.location.origin,
       });
+      logger.info('postConnect 返回', { sessionId: session.sessionId, connecting: session.connecting, url: session.url });
       pendingNav.current = { sessionId: session.sessionId, mode };
       try {
-        localStorage.setItem(`${LAST_CWD_KEY_PREFIX}${host.trim()}`, cwd.trim());
+        localStorage.setItem(`${LAST_CWD_KEY_PREFIX}${distroName.trim()}`, cwd.trim());
       } catch { /* 记忆失败不影响连接 */ }
       setSelectedId(session.sessionId);
     } catch (error) {
       setFormError(messageOf(error));
     } finally {
-      // 无论成败立即丢弃密码引用（宿主侧也只存内存）
-      setPassword('');
       setBusy(false);
     }
   };
@@ -300,15 +259,21 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
     cursor: 'pointer',
   };
 
-  // 全局面板自带页头（settings 弹窗时代标题由设置壳显示，迁出后自己给）；
-  // 根容器全高滚动：中央列高度由 layout 决定，内容超长时面板内滚动
+  /** 格式化发行版状态文案 */
+  const formatState = (state: string): string => {
+    const lower = state.toLowerCase();
+    if (lower === 'running') return t('wslStateRunning');
+    if (lower === 'stopped') return t('wslStateStopped');
+    return state;
+  };
+
   return (
     <div style={{
       display: 'flex', flexDirection: 'column', gap: 16,
       padding: '16px 20px', height: '100%', overflowY: 'auto', boxSizing: 'border-box',
     }}>
       <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>{t('nav')}</h2>
-      <p style={{ margin: 0, opacity: 0.75, fontSize: 13 }}>{t('sectionIntro')}</p>
+      <p style={{ margin: 0, opacity: 0.75, fontSize: 13 }}>{t('wslSectionIntro')}</p>
 
       {/* ---- 同标签自动切入远端的倒计时（可取消） ---- */}
       {countdown !== null
@@ -327,23 +292,23 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
       <section style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: '1 1 220px' }}>
-            <span style={{ fontSize: 12, opacity: 0.75 }}>{t('host')}</span>
+            <span style={{ fontSize: 12, opacity: 0.75 }}>{t('wslDistro')}</span>
             <span style={{ display: 'flex', gap: 4 }}>
               <input
-                list="dsh-remote-explorer-hosts"
-                value={host}
-                placeholder={t('hostPlaceholder')}
+                list="dsh-remote-explorer-wsl-distros"
+                value={distroName}
+                placeholder={t('wslDistroPlaceholder')}
                 style={{ ...inputStyle, flex: 1 }}
-                onChange={event => onHostChange(event.target.value)}
+                onChange={event => onDistroChange(event.target.value)}
               />
-              <button type="button" style={buttonStyle} title={t('refreshHosts')}
-                onClick={() => { void loadHosts(true); }}>↻</button>
+              <button type="button" style={buttonStyle} title={t('refreshDistros')}
+                onClick={() => { void loadDistros(true); }}>↻</button>
             </span>
           </label>
-          <datalist id="dsh-remote-explorer-hosts">
-            {hosts.map(item => (
-              <option key={item.alias} value={item.alias}>
-                {`${item.user === '' ? '' : `${item.user}@`}${item.hostName}:${item.port}`}
+          <datalist id="dsh-remote-explorer-wsl-distros">
+            {distros.map(distro => (
+              <option key={distro.name} value={distro.name}>
+                {`${distro.name} (${t('wslVersion')} ${distro.version}, ${formatState(distro.state)}${distro.isDefault ? `, ${t('wslDefault')}` : ''})`}
               </option>
             ))}
           </datalist>
@@ -354,6 +319,16 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
           </label>
         </div>
 
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 2, maxWidth: 320 }}>
+          <span style={{ fontSize: 12, opacity: 0.75 }}>{t('wslUser')}</span>
+          <input value={wslUser} placeholder={t('wslUserPlaceholder')} style={inputStyle}
+            onChange={event => setWslUser(event.target.value)} />
+        </label>
+
+        {distros.length === 0 && loadError === ''
+          ? <div style={{ fontSize: 13, opacity: 0.6 }}>{t('wslNoDistros')}</div>
+          : null}
+
         <details>
           <summary style={{ cursor: 'pointer', fontSize: 13, opacity: 0.75 }}>{t('advanced')}</summary>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 8, marginTop: 8 }}>
@@ -361,11 +336,6 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
               <span style={{ fontSize: 12, opacity: 0.75 }}>{t('localPort')}</span>
               <input value={localPort} inputMode="numeric" style={inputStyle}
                 onChange={event => setLocalPort(event.target.value)} />
-            </label>
-            <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              <span style={{ fontSize: 12, opacity: 0.75 }}>{t('privateKey')}</span>
-              <input value={privateKey} style={inputStyle}
-                onChange={event => setPrivateKey(event.target.value)} />
             </label>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               <span style={{ fontSize: 12, opacity: 0.75 }}>{t('nodeVersion')}</span>
@@ -382,41 +352,27 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
                 onChange={event => setForceRestart(event.target.checked)} />
               {t('forceRestart')}
             </label>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
-              <input type="checkbox" checked={refreshMirrors}
-                onChange={event => setRefreshMirrors(event.target.checked)} />
-              {t('refreshMirrors')}
-            </label>
           </div>
         </details>
-
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 2, maxWidth: 420 }}>
-          <span style={{ fontSize: 12, opacity: 0.75 }}>{t('password')}</span>
-          <input type="password" value={password} autoComplete="off" style={inputStyle}
-            onChange={event => setPassword(event.target.value)} />
-          <span style={{ fontSize: 11, opacity: 0.6 }}>{t('passwordWarning')}</span>
-        </label>
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           {DESKTOP
             ? (
-              // 桌面端单入口：就绪后开整窗浮动桌面（桌面壳无跨 origin 导航能力）
               <button type="button" style={{ ...buttonStyle, fontWeight: 600 }}
-                disabled={busy || host.trim() === ''}
+                disabled={busy || distroName.trim() === ''}
                 onClick={() => { void onConnect('window'); }}>
                 {busy ? t('connecting') : t('connectWindow')}
               </button>
             )
             : (
-              // 浏览器端双入口（VS Code 语义）：当前标签 = 就绪后同标签切入；新标签 = 本页留守管理
               <>
                 <button type="button" style={{ ...buttonStyle, fontWeight: 600 }}
-                  disabled={busy || host.trim() === ''}
+                  disabled={busy || distroName.trim() === ''}
                   onClick={() => { void onConnect('current'); }}>
                   {busy ? t('connecting') : t('connectCurrent')}
                 </button>
                 <button type="button" style={buttonStyle}
-                  disabled={busy || host.trim() === ''}
+                  disabled={busy || distroName.trim() === ''}
                   onClick={() => { void onConnect('new'); }}>
                   {t('connectNew')}
                 </button>
@@ -453,9 +409,6 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
           )}
       </section>
 
-      {/* ---- 远端插件管理（VS Code「本地视图管远端」表面） ---- */}
-      <RemotePluginsSection sessionId={selectedId} t={t} />
-
       {/* ---- 进度日志 ---- */}
       <section>
         <strong style={{ fontSize: 14 }}>{t('log')}</strong>
@@ -478,142 +431,6 @@ export function SessionPanel(props: SessionPanelProps): ReactNode {
             ))}
         </div>
       </section>
-    </div>
-  );
-}
-
-/** 行回调集合 */
-interface RowActions {
-  /** 选中看日志 */
-  onSelect: (sessionId: string) => void;
-  /** 断开 */
-  onDisconnect: (target: string) => void;
-}
-
-/**
- * 渲染一行会话。
- *
- * @param session - 面板会话对象
- * @param selectedId - 当前选中（高亮）
- * @param t - 翻译函数
- * @param isDesktop - 是否桌面壳（决定行内入口按钮形态）
- * @param actions - 行回调
- * @returns 行内容
- */
-function renderSessionRow(
-  session: PanelSession,
-  selectedId: string | null,
-  t: (key: RemoteExplorerLocaleKey) => string,
-  isDesktop: boolean,
-  actions: RowActions,
-): ReactNode {
-  const stateTag = session.connecting ? 'connecting' : session.state.tag;
-  const stateLabel = t(STATE_LABEL_KEYS[stateTag] ?? 'stateIdle');
-  const stateColor = STATE_COLORS[stateTag] ?? '#9ca3af';
-  const missingKeys = session.missingKeyEnvs ?? [];
-  return (
-    <div
-      key={session.sessionId}
-      onClick={() => actions.onSelect(session.sessionId)}
-      style={{
-        display: 'flex', alignItems: 'center', gap: 10, padding: '6px 8px',
-        border: '1px solid rgba(127,127,127,0.3)', borderRadius: 6, cursor: 'pointer',
-        background: session.sessionId === selectedId ? 'rgba(127,127,127,0.12)' : 'transparent',
-        flexWrap: 'wrap',
-      }}
-    >
-      <span title={stateLabel} style={{
-        width: 9, height: 9, borderRadius: '50%', flexShrink: 0,
-        backgroundColor: stateColor, display: 'inline-block',
-      }} />
-      <span style={{ fontWeight: 600, fontSize: 13 }}>{session.hostAlias}</span>
-      <span style={{ fontSize: 12, opacity: 0.7 }}>
-        {session.remoteCwd === '' ? '~' : session.remoteCwd}
-      </span>
-      <span style={{ fontSize: 12, opacity: 0.7 }}>{stateLabel}</span>
-      {session.localPort !== undefined
-        ? <span style={{ fontSize: 12, opacity: 0.7 }}>127.0.0.1:{session.localPort}</span>
-        : null}
-      {session.external === true
-        ? <span style={{ fontSize: 11, opacity: 0.6 }}>{t('external')}</span>
-        : null}
-      {session.connectError !== undefined
-        ? <span style={{ fontSize: 12, color: '#ef4444' }}>{session.connectError}</span>
-        : null}
-      {missingKeys.length > 0
-        ? <span style={{ fontSize: 11, color: '#f59e0b' }} title={missingKeys.join(', ')}>
-          {t('missingKeys')}: {missingKeys.join(', ')}
-        </span>
-        : null}
-      <span style={{ flex: 1 }} />
-      {session.url !== undefined
-        ? (
-          isDesktop
-            ? (
-              // 桌面端单入口：开整窗浮动桌面（跨 origin 导航会被桌面壳甩给系统浏览器）
-              <button
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  openRemoteWindow({
-                    sessionId: session.sessionId,
-                    url: session.url ?? '',
-                    hostAlias: session.hostAlias,
-                  });
-                }}
-                style={{
-                  background: 'transparent', color: 'inherit', fontSize: 12, fontWeight: 600,
-                  border: '1px solid rgba(127,127,127,0.5)', borderRadius: 6,
-                  padding: '2px 8px', cursor: 'pointer',
-                }}
-              >
-                {t('openWindow')}
-              </button>
-            )
-            : (
-              // 浏览器端双入口：同标签切入 / 新标签
-              <>
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    window.location.href = session.url ?? '';
-                  }}
-                  style={{
-                    background: 'transparent', color: 'inherit', fontSize: 12, fontWeight: 600,
-                    border: '1px solid rgba(127,127,127,0.5)', borderRadius: 6,
-                    padding: '2px 8px', cursor: 'pointer',
-                  }}
-                >
-                  {t('enterCurrent')}
-                </button>
-                <a href={session.url} target="_blank" rel="noreferrer"
-                  onClick={event => event.stopPropagation()}
-                  style={{ fontSize: 13 }}>
-                  {t('openNew')} ↗
-                </a>
-              </>
-            )
-        )
-        : null}
-      {session.external === true
-        ? null
-        : (
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              actions.onDisconnect(session.sessionId);
-            }}
-            style={{
-              background: 'transparent', color: 'inherit', fontSize: 12,
-              border: '1px solid rgba(127,127,127,0.5)', borderRadius: 6,
-              padding: '2px 8px', cursor: 'pointer',
-            }}
-          >
-            {t('disconnect')}
-          </button>
-        )}
     </div>
   );
 }

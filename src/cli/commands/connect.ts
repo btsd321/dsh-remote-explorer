@@ -11,7 +11,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { openSession, type RemoteSession } from '../../session/session-manager.js';
+import { openSession, type RemoteSession, type TransportType } from '../../session/session-manager.js';
 import { describeState, type SessionState } from '../../session/lifecycle-state.js';
 import { toErrorMessage } from '../../util/errors.js';
 import {
@@ -20,7 +20,7 @@ import {
 
 /** connect 命令选项 */
 export interface ConnectCommandOptions {
-  /** 主机别名或 user@host[:port] 直连语法 */
+  /** 主机别名或 user@host[:port] 直连语法（WSL 模式时为 wsl:<发行版>） */
   alias: string;
   /** 远端工作目录 */
   cwd: string;
@@ -38,6 +38,12 @@ export interface ConnectCommandOptions {
   keepRemote: boolean;
   /** 强制重测镜像 */
   refreshMirrors: boolean;
+  /** 传输类型；默认 'ssh'（向后兼容） */
+  transportType?: TransportType;
+  /** WSL 发行版名称（transportType='wsl' 时必需） */
+  distroName?: string;
+  /** WSL 用户名（transportType='wsl' 时可选） */
+  wslUser?: string;
   /** 私钥文件路径覆盖（--private-key）：优先于 config 的 IdentityFile */
   privateKey?: string;
   /** 固定密码（--password）：显式走密码认证；只存内存不落盘 */
@@ -74,6 +80,9 @@ export async function runConnect(options: ConnectCommandOptions): Promise<number
       hostAlias: options.alias,
       remoteCwd: options.cwd,
       localPort: options.localPort,
+      ...(options.transportType ? { transportType: options.transportType } : {}),
+      ...(options.distroName ? { distroName: options.distroName } : {}),
+      ...(options.wslUser ? { wslUser: options.wslUser } : {}),
       ...(options.nodeVersion ? { nodeVersion: options.nodeVersion } : {}),
       ...(options.dshVersion ? { dshVersion: options.dshVersion } : {}),
       ...(options.forceRestart ? { forceRestart: true } : {}),

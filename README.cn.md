@@ -10,6 +10,7 @@
 
 - **本机（客户端）**：Windows / Linux / macOS。Node.js v20.19+ 或 v22+ 仅**源码运行方式**需要；release 包自带 Node 运行时。
 - **远端主机**：Linux 或 macOS（POSIX）；aarch64（arm64）与 x86_64 均可。远端无需预装 Node——工具会自动安装并自检。
+- **WSL（Windows Subsystem for Linux）**：Windows 平台额外支持 WSL2 发行版作为远程目标。在 WSL 内自动安装 dsh，通过 localhost forwarding 建立隧道，无需 SSH 配置。点击面板中的「WSL 会话」卡片即可使用；非 Windows 平台自动隐藏此入口。
 - **SSH 认证**：私钥（`IdentityFile`，推荐）；无私钥时在交互式终端提示输入密码（不回显）；也可 `--password` 明文传入（有泄露风险，CLI 会警告）。
 - 主机来自 `~/.ssh/config` 的 `Host` 条目，或 `user@host[:port]` 直连（IPv6 需写进 config）。
 

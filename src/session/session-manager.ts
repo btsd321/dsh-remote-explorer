@@ -32,6 +32,7 @@
 
 import { assertConnectable, resolveHostWithAuth, type AuthOverrides } from '../hosts/ssh-config-parser.js';
 import { SshTransport, isAuthFailure } from '../transport/ssh-transport.js';
+import { WslTransport } from '../transport/wsl-transport.js';
 import { writeRemoteTextFile } from '../transport/write-text.js';
 import { provision, type ProvisionResult } from '../provision/provisioner.js';
 import { installHandoffBundle } from '../provision/handoff-installer.js';
@@ -63,6 +64,12 @@ import {
 } from '../credential/provider-routes.js';
 import type { ManageHandlers } from '../handoff/protocol.js';
 import type { ReverseHandle, RemoteTransport } from '../transport/types.js';
+import { createLogger } from '../util/logger.js';
+
+const log = createLogger('session-manager');
+
+/** 传输类型标识 */
+export type TransportType = 'ssh' | 'wsl';
 
 /** 会话打开选项 */
 export interface OpenSessionOptions {
@@ -70,6 +77,12 @@ export interface OpenSessionOptions {
   hostAlias: string;
   /** 远端工作目录；参与会话 id 计算 */
   remoteCwd: string;
+  /** 传输类型；默认 'ssh'（向后兼容） */
+  transportType?: TransportType;
+  /** WSL 发行版名称（transportType='wsl' 时必需） */
+  distroName?: string;
+  /** WSL 用户名（transportType='wsl' 时可选） */
+  wslUser?: string;
   /** 目标 Node 版本 */
   nodeVersion?: string;
   /** 目标 dsh 版本或 dist-tag */
@@ -143,6 +156,92 @@ function authOverridesOf(options: OpenSessionOptions): AuthOverrides {
   };
 }
 
+/** SSH 传输准备上下文（仅 SSH 路径需要） */
+interface SshPrepareContext {
+  /** SSH 主机解析结果（含跳板机链、认证配置） */
+  resolved: ReturnType<typeof resolveHostWithAuth>;
+  /** 密码获取回调 */
+  getPassword: (hostKey: string, label: string, attempt: number) => Promise<string | undefined>;
+}
+
+/**
+ * 解析 SSH 主机配置并校验可连接性。
+ *
+ * 只做主机解析，不涉及密码提供器的生命周期管理（密码提供器由调用方持有，
+ * 需要在会话关闭时清理引用）。
+ *
+ * @param options - 会话打开选项
+ * @returns SSH 主机解析结果
+ */
+function resolveSshHost(options: OpenSessionOptions): ReturnType<typeof resolveHostWithAuth> {
+  const auth = authOverridesOf(options);
+  const resolved = resolveHostWithAuth(options.hostAlias, auth);
+  assertConnectable(resolved, options.hostAlias, {
+    passwordAuth: auth.password !== undefined,
+  });
+  return resolved;
+}
+
+/**
+ * 根据会话选项创建对应的传输实例。
+ *
+ * 每种传输类型的准备逻辑由各自的 prepare* 函数完成，本函数只做分发。
+ * 新增传输类型时：添加对应的 case 分支 + prepare 函数，不影响已有分支。
+ *
+ * @param options - 会话打开选项
+ * @param sshCtx - SSH 准备上下文（仅 transportType='ssh' 时使用）
+ * @returns 传输实例（尚未 connect）
+ */
+function createTransport(
+  options: OpenSessionOptions,
+  sshCtx: SshPrepareContext,
+): RemoteTransport {
+  const type: TransportType = options.transportType ?? 'ssh';
+  switch (type) {
+    case 'wsl': {
+      if (!options.distroName) {
+        throw new RemoteError(
+          'CONNECT_FAILED',
+          'transportType=wsl 时必须指定 distroName（WSL 发行版名称）',
+          { hostAlias: options.hostAlias },
+        );
+      }
+      return new WslTransport({
+        distroName: options.distroName,
+        ...(options.wslUser ? { user: options.wslUser } : {}),
+      });
+    }
+    case 'ssh': {
+      return new SshTransport(options.hostAlias, sshCtx.resolved, {
+        getPassword: sshCtx.getPassword,
+      });
+    }
+    default: {
+      // 编译期穷尽检查：新增 TransportType 成员时此处报错提醒补充分支
+      const _exhaustive: never = type;
+      throw new RemoteError(
+        'CONNECT_FAILED',
+        `不支持的传输类型: ${_exhaustive as string}`,
+        { hostAlias: options.hostAlias },
+      );
+    }
+  }
+}
+
+/**
+ * 获取传输类型的阶段描述文案。
+ *
+ * @param transportType - 传输类型
+ * @returns 中文阶段描述
+ */
+function transportStageLabel(transportType: TransportType | undefined): string {
+  switch (transportType ?? 'ssh') {
+    case 'wsl': return '连接 WSL 发行版';
+    case 'ssh': return '建立 SSH 连接';
+    default: return '建立连接';
+  }
+}
+
 /** 随会话固定的凭据材料（远端 `.runtime/` 落盘的那组值） */
 interface ProxySecret {
   /** 代理令牌（远端占位凭据） */
@@ -191,7 +290,7 @@ export class RemoteSession {
     private reverseHandle: ReverseHandle | undefined,
     private readonly reconnectConfig: ReconnectConfig,
     private readonly lifecycleConfig: LifecycleConfig,
-    private readonly passwords: PasswordProvider,
+    private readonly passwords: PasswordProvider | undefined,
   ) {}
 
   /** 浏览器访问地址（含令牌） */
@@ -285,33 +384,48 @@ export class RemoteSession {
    * @returns 已就绪的会话
    */
   static async open(options: OpenSessionOptions): Promise<RemoteSession> {
-    const auth = authOverridesOf(options);
-    const resolved = resolveHostWithAuth(options.hostAlias, auth);
-    assertConnectable(resolved, options.hostAlias, {
-      passwordAuth: auth.password !== undefined,
-    });
     const sessionId = computeSessionId(options.hostAlias, options.remoteCwd);
 
     const reconnectConfig = { ...DEFAULT_RECONNECT_CONFIG, ...options.reconnect };
     const lifecycleConfig = { ...DEFAULT_LIFECYCLE_CONFIG, ...options.lifecycle };
 
-    // 密码提供器：--password 走固定值，promptPassword 走注入途径（插件形态），
-    // 否则首次连接交互提示并缓存；重连（reconnectOnce）走静默 peek，不弹提示
-    const passwords = new PasswordProvider({
-      ...(auth.password !== undefined ? { fixed: auth.password } : {}),
-      ...(options.promptPassword ? { prompt: options.promptPassword } : {}),
-    });
-    options.onStageStart?.('建立 SSH 连接');
-    const transport = new SshTransport(options.hostAlias, resolved, {
-      getPassword: (hostKey, label, attempt) => passwords.get(hostKey, label, attempt),
-    });
+    // 按传输类型各自准备上下文：SSH 需要主机解析+密码提供器，WSL 不需要。
+    // 新增传输类型时在此添加对应 case，不影响已有分支
+    let sshCtx: SshPrepareContext;
+    let passwords: PasswordProvider | undefined;
+    switch (options.transportType ?? 'ssh') {
+      case 'ssh': {
+        const resolved = resolveSshHost(options);
+        const auth = authOverridesOf(options);
+        passwords = new PasswordProvider({
+          ...(auth.password !== undefined ? { fixed: auth.password } : {}),
+          ...(options.promptPassword ? { prompt: options.promptPassword } : {}),
+        });
+        sshCtx = {
+          resolved,
+          getPassword: (hostKey, label, attempt) => passwords!.get(hostKey, label, attempt),
+        };
+        break;
+      }
+      case 'wsl': {
+        // WSL 无需 SSH 主机解析与密码提供器；createTransport 内部校验 distroName
+        sshCtx = { resolved: undefined as never, getPassword: async () => undefined };
+        break;
+      }
+    }
+
+    options.onStageStart?.(transportStageLabel(options.transportType));
+    const transport = createTransport(options, sshCtx);
+    log.info(`transport 创建完成: type=${options.transportType ?? 'ssh'}, hostAlias=${transport.hostAlias}`);
     await transport.connect();
+    log.info(`transport 连接成功: platform=${transport.platform.rawOs}/${transport.platform.rawArch}`);
     options.onStageDone?.(`${transport.platform.rawOs} ${transport.platform.rawArch}`);
 
     let session: RemoteSession | undefined;
     try {
       // 家目录要先拿到：既有会话探测与凭据材料读取都需要路径
       const probe = await probeRemote(transport);
+      log.info(`远端探测完成: homeDir=${probe.homeDir}`);
       const paths = createRemotePaths(probe.homeDir);
 
       // 1. 凭据材料：读回已有的，没有则生成新的。
@@ -429,13 +543,18 @@ export class RemoteSession {
 
       // 8. 启动远端进程（占位凭据进环境——每条路由的 keyEnv 都是同一个令牌）
       if (!processInfo) {
+        log.info('步骤8: 启动远端 dsh 进程');
         processInfo = await RemoteSession.launch(
           transport, provisioned, sessionId, options, webPort!, credential,
         );
+        log.info('步骤8完成: 远端 dsh 已启动', { port: processInfo.port, pid: processInfo.pid });
+      } else {
+        log.info('步骤8: 复用既有远端进程', { port: processInfo.port, pid: processInfo.pid });
       }
 
       // 8.5 owner 指纹落盘：kill/clean 的跨用户 scope 化凭据（非秘密）。
       //     容忍模式——写失败不阻断会话（最坏退化为「无 owner 的老目录」语义）
+      log.info('步骤8.5: owner 指纹落盘');
       await writeRemoteTextFile(
         transport,
         paths.sessionOwnerFile(sessionId),
@@ -447,9 +566,12 @@ export class RemoteSession {
       // 9. 起本机 LLM 代理并挂反向转发
       let reverseHandle: ReverseHandle | undefined;
       if (credential) {
+        log.info('步骤9: 启动密钥代理');
         options.onStageStart?.('启动密钥代理');
         await credential.start();
+        log.info('步骤9: 代理已启动，开始挂反向转发', { reversePort: credential.reversePort });
         reverseHandle = await attachReverseForward(transport, credential, options);
+        log.info('步骤9完成: 反向转发已挂载');
         const missing = credential.missingKeyEnvs;
         if (missing.length === 0) {
           options.onStageDone?.(
@@ -465,11 +587,13 @@ export class RemoteSession {
 
       // 10. 建正向隧道。监听器跨重连存活，端口从此不再变化；
       //     转发失败告警经钩子上抛（插件形态接日志缓冲；CLI 缺省直写 stderr）
+      log.info('步骤10: 建立正向隧道');
       options.onStageStart?.('建立正向隧道');
       const forward = new LocalForward(transport, '127.0.0.1', processInfo.port, {
         ...(options.onForwardError ? { onForwardError: options.onForwardError } : {}),
       });
       const localPort = await forward.listen(options.localPort ?? 0);
+      log.info('步骤10完成: 正向隧道就绪', { localPort, remotePort: processInfo.port });
       options.onStageDone?.(`127.0.0.1:${localPort} → 远端 ${processInfo.port}`);
 
       session = new RemoteSession(
@@ -480,6 +604,7 @@ export class RemoteSession {
       session.apply({ type: 'connect-ready' });
       session.register();
       session.startHeartbeat();
+      log.info(`会话完全就绪: sessionId=${sessionId}, url=${session.url}`);
       return session;
     } catch (error) {
       // 打开失败要释放已建立的资源，否则 SSH 连接与代理会泄漏
@@ -502,7 +627,7 @@ export class RemoteSession {
     await this.detachReverseForward();
     await this.credential?.stop();
     // 会话结束即丢弃缓存密码的引用（字符串不可清零，只能靠 GC 回收）
-    this.passwords.clear();
+    this.passwords?.clear();
     removeSession(this.sessionId, process.pid);
 
     if (options.stopRemote === true) {
@@ -676,13 +801,27 @@ export class RemoteSession {
    * 只有确认它已退出才重新启动。
    */
   private async reconnectOnce(): Promise<void> {
-    // 认证覆盖与首次连接一致（--private-key 跨重连生效）
-    const resolved = resolveHostWithAuth(this.options.hostAlias, authOverridesOf(this.options));
-    // 无人值守：只复用已缓存的密码（peek），绝不弹交互提示——没有人会回应
-    const next = new SshTransport(this.options.hostAlias, resolved, {
-      getPassword: (hostKey, label, attempt) =>
-        Promise.resolve(this.passwords.peek(hostKey, label, attempt)),
-    });
+    // 按传输类型各自准备重连上下文。
+    // 新增传输类型时在此添加对应 case，不影响已有分支
+    let sshCtx: SshPrepareContext;
+    switch (this.options.transportType ?? 'ssh') {
+      case 'ssh': {
+        // 无人值守：只复用已缓存的密码（peek），绝不弹交互提示
+        const resolved = resolveSshHost(this.options);
+        sshCtx = {
+          resolved,
+          getPassword: (hostKey, label, attempt) =>
+            Promise.resolve(this.passwords?.peek(hostKey, label, attempt)),
+        };
+        break;
+      }
+      case 'wsl': {
+        // WSL 重连无需重新解析主机或提供密码
+        sshCtx = { resolved: undefined as never, getPassword: async () => undefined };
+        break;
+      }
+    }
+    const next = createTransport(this.options, sshCtx);
 
     try {
       await next.connect();

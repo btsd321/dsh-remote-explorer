@@ -17,7 +17,7 @@
  * openSession 的 fixed 模式），绝不进日志缓冲、快照与错误消息。
  */
 
-import { openSession, type RemoteSession } from '../session/session-manager.js';
+import { openSession, type RemoteSession, type TransportType } from '../session/session-manager.js';
 import { HANDOFF_PROTOCOL_VERSION, type ManageHandlers } from '../handoff/protocol.js';
 import { listSessions } from '../session/session-registry.js';
 import { INITIAL_STATE, type SessionState } from '../session/lifecycle-state.js';
@@ -39,19 +39,15 @@ const LOG_TAIL_SIZE = 20;
 /** 远端插件 pnpm 操作超时（毫秒）。装一个中型包分钟级足够 */
 const REMOTE_PLUGIN_TIMEOUT_MS = 600_000;
 
-/** 日志条目类别 */
+/** 日志条目类别（只允许 info/warn/error + state 生命周期） */
 export type LogKind =
-  /** openSession 阶段开始 */
-  | 'stage-start'
-  /** 阶段完成 */
-  | 'stage-done'
-  /** 阶段跳过 */
-  | 'stage-skip'
   /** 生命周期状态变化 */
   | 'state'
   /** 错误（连接失败、转发失败等） */
   | 'error'
-  /** 监督器自身的信息（发起、断开等） */
+  /** 警告 */
+  | 'warn'
+  /** 一般信息（含阶段进度，以 [开始]/[完成]/[跳过] 前缀区分） */
   | 'info';
 
 /** 一条面板/命令可读的日志 */
@@ -74,6 +70,8 @@ export interface SessionSnapshot {
   hostAlias: string;
   /** 远端工作目录；空串 = 远端家目录 */
   remoteCwd: string;
+  /** 传输类型 */
+  transportType: TransportType;
   /** 生命周期状态 */
   state: SessionState;
   /** 是否正在后台连接中（openSession 尚未返回） */
@@ -104,6 +102,12 @@ export interface ConnectRequest {
   hostAlias: string;
   /** 远端工作目录；缺省用插件配置的 cwd */
   cwd?: string;
+  /** 传输类型；默认 'ssh' */
+  transportType?: TransportType;
+  /** WSL 发行版名称（transportType='wsl' 时必需） */
+  distroName?: string;
+  /** WSL 用户名 */
+  wslUser?: string;
   /** 本机端口；0/缺省 = 插件配置或 OS 分配 */
   localPort?: number;
   /** 强制重启远端 dsh */
@@ -195,6 +199,8 @@ interface SupervisedSession {
   hostAlias: string;
   /** 归一化后的远端目录 */
   remoteCwd: string;
+  /** 传输类型 */
+  transportType: TransportType;
   /** 生命周期状态（回调驱动更新） */
   state: SessionState;
   /** 是否正在连接 */
@@ -257,10 +263,12 @@ export class SessionSupervisor {
     }
 
     // 3. 登记 + 后台打开
+    const transportType: TransportType = request.transportType ?? 'ssh';
     const record: SupervisedSession = {
       sessionId,
       hostAlias: request.hostAlias,
       remoteCwd,
+      transportType,
       state: INITIAL_STATE,
       connecting: true,
       connectError: undefined,
@@ -325,6 +333,8 @@ export class SessionSupervisor {
         sessionId: record.sessionId,
         hostAlias: record.hostAlias,
         remoteCwd: record.remoteCwd,
+        // 外部视图来自会话表，目前只有 SSH 会话会登记（WSL 暂不走 registry）
+        transportType: 'ssh',
         state: { tag: 'connected', missedHeartbeats: 0, reconnectAttempts: 0 },
         connecting: false,
         localPort: record.localPort,
@@ -375,10 +385,15 @@ export class SessionSupervisor {
    * @param request - 连接请求
    */
   private async runOpen(record: SupervisedSession, request: ConnectRequest): Promise<void> {
+    this.push(record, 'info', `runOpen 开始: transportType=${record.transportType}, hostAlias=${request.hostAlias}, distroName=${request.distroName ?? '(无)'}`);
     try {
       const session = await openSession({
         hostAlias: request.hostAlias,
         remoteCwd: record.remoteCwd,
+        // 传输类型与 WSL 参数透传；缺省 'ssh' 保持向后兼容
+        transportType: record.transportType,
+        ...(request.distroName ? { distroName: request.distroName } : {}),
+        ...(request.wslUser ? { wslUser: request.wslUser } : {}),
         // 端口：请求覆盖 > 插件配置 > 0（OS 分配）——openSession 对 0 的语义
         // 就是自动分配，直接透传
         localPort: request.localPort ?? this.defaults.localPort,
@@ -388,11 +403,11 @@ export class SessionSupervisor {
         ...(this.defaults.dshVersion ? { dshVersion: this.defaults.dshVersion } : {}),
         ...(request.privateKey ? { privateKey: request.privateKey } : {}),
         ...(request.password !== undefined ? { password: request.password } : {}),
-        onStageStart: (stage) => { this.push(record, 'stage-start', stage); },
+        onStageStart: (stage) => { this.push(record, 'info', `[开始] ${stage}`); },
         onStageDone: (detail) => {
-          this.push(record, 'stage-done', detail ?? '');
+          this.push(record, 'info', `[完成] ${detail ?? ''}`);
         },
-        onStageSkip: (reason) => { this.push(record, 'stage-skip', reason); },
+        onStageSkip: (reason) => { this.push(record, 'info', `[跳过] ${reason}`); },
         onStateChange: (state, description) => {
           record.state = state;
           this.push(record, 'state', description);
@@ -467,6 +482,7 @@ export class SessionSupervisor {
       sessionId: record.sessionId,
       hostAlias: record.hostAlias,
       remoteCwd: record.remoteCwd,
+      transportType: record.transportType,
       state: record.state,
       connecting: record.connecting,
       ...(record.connectError !== undefined ? { connectError: record.connectError } : {}),

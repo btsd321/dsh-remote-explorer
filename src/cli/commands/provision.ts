@@ -10,6 +10,9 @@
  */
 
 import { SshTransport } from '../../transport/ssh-transport.js';
+import { WslTransport } from '../../transport/wsl-transport.js';
+import type { RemoteTransport } from '../../transport/types.js';
+import type { TransportType } from '../../session/session-manager.js';
 import { provision, DEFAULT_DSH_VERSION } from '../../provision/provisioner.js';
 import { DEFAULT_NODE_VERSION } from '../../provision/node-installer.js';
 import { computeSessionId } from '../../util/session-id.js';
@@ -18,7 +21,7 @@ import { bold, cyan, dim, green, println, printTable, ProgressReporter } from '.
 
 /** provision 命令选项 */
 export interface ProvisionCommandOptions {
-  /** 主机别名或 user@host[:port] 直连语法 */
+  /** 主机别名或 user@host[:port] 直连语法（WSL 模式时为 wsl:<发行版>） */
   alias: string;
   /** 远端工作目录；参与会话 id 计算 */
   cwd: string;
@@ -28,6 +31,12 @@ export interface ProvisionCommandOptions {
   dshVersion?: string;
   /** 强制重测镜像 */
   refreshMirrors: boolean;
+  /** 传输类型；默认 'ssh' */
+  transportType?: TransportType;
+  /** WSL 发行版名称（transportType='wsl' 时必需） */
+  distroName?: string;
+  /** WSL 用户名（transportType='wsl' 时可选） */
+  wslUser?: string;
   /** 私钥文件路径覆盖（--private-key） */
   privateKey?: string;
   /** 固定密码（--password）：显式走密码认证 */
@@ -41,21 +50,40 @@ export interface ProvisionCommandOptions {
  * @returns 进程退出码
  */
 export async function runProvision(options: ProvisionCommandOptions): Promise<number> {
-  const { resolved, passwords } = prepareHostAuth(options.alias, options);
-
   const sessionId = computeSessionId(options.alias, options.cwd);
-  println(bold(`引导主机 ${cyan(options.alias)}`));
+  const targetLabel = options.transportType === 'wsl' ? 'WSL 发行版' : '主机';
+  println(bold(`引导${targetLabel} ${cyan(options.alias)}`));
   println(dim(`会话 id：${sessionId}`));
   println();
 
   const progress = new ProgressReporter();
-  const transport = new SshTransport(options.alias, resolved, {
-    getPassword: (hostKey, label, attempt) => passwords.get(hostKey, label, attempt),
-  });
+  let transport: RemoteTransport;
+  /** SSH 模式的密码提供器清理回调；其他传输类型为 undefined */
+  let clearPasswords: (() => void) | undefined;
+
+  switch (options.transportType ?? 'ssh') {
+    case 'wsl': {
+      const distroName = options.distroName ?? '';
+      transport = new WslTransport({
+        distroName,
+        ...(options.wslUser ? { user: options.wslUser } : {}),
+      });
+      break;
+    }
+    case 'ssh': {
+      const { resolved, passwords } = prepareHostAuth(options.alias, options);
+      transport = new SshTransport(options.alias, resolved, {
+        getPassword: (hostKey, label, attempt) => passwords.get(hostKey, label, attempt),
+      });
+      clearPasswords = () => passwords.clear();
+      break;
+    }
+  }
+
   const startedAt = Date.now();
 
   try {
-    progress.start('建立 SSH 连接');
+    progress.start(options.transportType === 'wsl' ? '连接 WSL 发行版' : '建立 SSH 连接');
     await transport.connect();
     progress.done(`${transport.platform.rawOs} ${transport.platform.rawArch}`);
 
@@ -89,7 +117,7 @@ export async function runProvision(options: ProvisionCommandOptions): Promise<nu
   } finally {
     await transport.dispose();
     // 短命进程，清空是仪式性 hygiene，但与 session 路径保持一致
-    passwords.clear();
+    clearPasswords?.();
   }
 }
 

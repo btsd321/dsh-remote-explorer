@@ -1,6 +1,6 @@
 /**
  * @file agent 工具注册
- * @description 给模型用的四个 remote_* 工具：列主机、发起连接、查状态、断开会话。
+ * @description 给模型用的五个 remote_* 工具：列主机、列 WSL 发行版、发起连接、查状态、断开会话。
  *              全部是**非阻塞语义**：connect 立即返回（引导与启动在后台跑，
  *              进度用 remote_status 轮询），避免模型的一次工具调用挂住几分钟。
  *
@@ -18,6 +18,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { listHosts, refreshConfig } from '../hosts/ssh-config-parser.js';
+import { listWslDistros, refreshWslCache } from '../hosts/wsl-distro-parser.js';
 import { toErrorMessage } from '../util/errors.js';
 import { SessionSupervisor, SupervisorError, type SessionSnapshot } from './supervisor.js';
 
@@ -49,7 +50,7 @@ export function registerTools(ctx: Context, supervisor: SessionSupervisor): () =
   const disposers = [
     ctx.tools.register(defineTool({
       name: 'remote_hosts_list',
-      description: '列出本机 ~/.ssh/config 里可用的 SSH 主机别名（含地址、用户、端口、是否经跳板机）。连接远程主机前先用它确认别名。',
+      description: '列出可用的远程主机（SSH 别名来自 ~/.ssh/config，含地址、用户、端口、是否经跳板机）。连接远程主机前先用它确认别名。',
       parameters: {},
       output: {
         schema: {
@@ -101,12 +102,63 @@ export function registerTools(ctx: Context, supervisor: SessionSupervisor): () =
     })),
 
     ctx.tools.register(defineTool({
+      name: 'remote_wsl_list',
+      description: '列出本机已安装的 WSL 发行版（名称、状态、版本、是否默认）。WSL 不可用时返回空列表。',
+      parameters: {},
+      output: {
+        schema: {
+          oneOf: [
+            {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                distros: {
+                  type: 'array',
+                  description: 'WSL 发行版列表',
+                  items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      name: { type: 'string', description: '发行版名称（如 Ubuntu-22.04）' },
+                      state: { type: 'string', description: '运行状态：Running / Stopped / Installing / Converting' },
+                      version: { type: 'integer', description: 'WSL 版本（1 或 2）' },
+                      is_default: { type: 'boolean', description: '是否为默认发行版' },
+                    },
+                  },
+                },
+              },
+            },
+            ERROR_SCHEMA,
+          ],
+        },
+        render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+      },
+      isConcurrencySafe: () => true,
+      async execute() {
+        try {
+          refreshWslCache();
+          const distros = await listWslDistros();
+          return {
+            distros: distros.map(d => ({
+              name: d.name,
+              state: d.state,
+              version: d.version,
+              is_default: d.isDefault,
+            })),
+          };
+        } catch (error) {
+          return errorResult(error);
+        }
+      },
+    })),
+
+    ctx.tools.register(defineTool({
       name: 'remote_connect',
-      description: '后台连接一台 SSH 主机并在其上启动远端 dsh 会话（装 Node 与 dsh、建 SSH 隧道、起凭据代理）。立即返回会话 id，'
+      description: '后台连接一台远程主机并启动远端 dsh 会话（装 Node 与 dsh、建隧道、起凭据代理）。立即返回会话 id，'
         + '引导进度用 remote_status 轮询；就绪后会给出浏览器可打开的会话 URL。'
         + '注意：不接受密码参数——需要密码认证的主机请让用户走 Web 面板或 CLI。',
       parameters: {
-        host_alias: { type: 'string', required: true, description: 'SSH 别名（remote_hosts_list 可查）或 user@host[:port] 直连语法' },
+        host_alias: { type: 'string', required: true, description: 'SSH 别名（来自 ~/.ssh/config，remote_hosts_list 可查）或 user@host[:port] 直连语法' },
         cwd: { type: 'string', description: '远端工作目录（POSIX 绝对路径，如 /home/user/project）；缺省用插件配置或远端家目录' },
         local_port: { type: 'integer', description: '本机转发端口；缺省自动分配' },
         force_restart: { type: 'boolean', description: '探测到既有远端会话时强制重启它' },

@@ -7,6 +7,8 @@
 /** 面板文案键集（LocaleNamespaceMap 增广用它做类型） */
 export type RemoteExplorerLocaleKey =
   | 'nav' | 'sectionIntro'
+  | 'sshSectionIntro' | 'wslSectionIntro'
+  | 'menuSsh' | 'menuWsl'
   | 'host' | 'hostPlaceholder' | 'refreshHosts'
   | 'cwd' | 'cwdPlaceholder'
   | 'advanced' | 'localPort' | 'forceRestart' | 'refreshMirrors'
@@ -23,12 +25,21 @@ export type RemoteExplorerLocaleKey =
   | 'stateIdle' | 'stateConnecting' | 'stateConnected' | 'stateHeartbeatMissed'
   | 'stateReconnecting' | 'stateReconnectFailed' | 'stateReconnectExhausted' | 'stateDisconnected'
   | 'log' | 'logEmpty' | 'connectError' | 'loadError' | 'retry'
-  | 'missingKeys';
+  | 'missingKeys'
+  | 'wslDistro' | 'wslDistroPlaceholder' | 'wslUser' | 'wslUserPlaceholder'
+  | 'wslNoDistros' | 'wslVersion' | 'wslState'
+  | 'wslStateRunning' | 'wslStateStopped' | 'wslDefault'
+  | 'refreshDistros'
+  | 'wslNotInstalledTitle' | 'wslNotInstalledHint';
 
 /** 中文字典 */
 export const zh: Record<RemoteExplorerLocaleKey, string> = {
-  nav: '远程 SSH 会话',
-  sectionIntro: '把 dsh 装到远程主机上运行，本机只留浏览器；LLM 凭据不离开本机。会话维持在本 dsh 进程里——退出 dsh 会按配置断开或保留远端。',
+  nav: '远程会话',
+  sectionIntro: '管理 SSH 与 WSL 远程会话：把 dsh 装到远程环境上运行，本机只留浏览器；LLM 凭据不离开本机。',
+  sshSectionIntro: '通过 SSH 连接远程主机，把 dsh 装到远端运行；会话维持在本 dsh 进程里——退出 dsh 会按配置断开或保留远端。',
+  wslSectionIntro: '通过 WSL（Windows Subsystem for Linux）连接本地 Linux 发行版，把 dsh 装到发行版内运行；无需 SSH 配置。',
+  menuSsh: 'SSH 会话',
+  menuWsl: 'WSL 会话',
   host: '主机',
   hostPlaceholder: 'ssh config 别名，或 user@host[:port]',
   refreshHosts: '刷新主机列表',
@@ -90,12 +101,29 @@ export const zh: Record<RemoteExplorerLocaleKey, string> = {
   loadError: '加载失败',
   retry: '重试',
   missingKeys: '本机缺少的 LLM key 环境变量',
+  wslDistro: '发行版',
+  wslDistroPlaceholder: '选择 WSL 发行版',
+  wslUser: '用户名',
+  wslUserPlaceholder: '留空 = 默认用户',
+  wslNoDistros: '未检测到 WSL 发行版',
+  wslVersion: '版本',
+  wslState: '状态',
+  wslStateRunning: '运行中',
+  wslStateStopped: '已停止',
+  wslDefault: '默认',
+  refreshDistros: '刷新发行版列表',
+  wslNotInstalledTitle: 'WSL 未安装或无可用发行版',
+  wslNotInstalledHint: '请先安装 WSL 并添加 Linux 发行版。在 PowerShell（管理员）中运行：wsl --install -d Ubuntu，然后重启应用再试。',
 };
 
 /** 英文字典（键集与 zh 一致） */
 export const en: Record<RemoteExplorerLocaleKey, string> = {
-  nav: 'Remote SSH Sessions',
-  sectionIntro: 'Installs dsh on a remote host and serves its UI to this browser; LLM credentials never leave this machine. Sessions live in this dsh process — quitting dsh disconnects or keeps the remote per config.',
+  nav: 'Remote Sessions',
+  sectionIntro: 'Manage SSH and WSL remote sessions: installs dsh on a remote environment and serves its UI to this browser; LLM credentials never leave this machine.',
+  sshSectionIntro: 'Connect to a remote host via SSH and run dsh there; sessions live in this dsh process — quitting dsh disconnects or keeps the remote per config.',
+  wslSectionIntro: 'Connect to a local WSL (Windows Subsystem for Linux) distribution and run dsh inside it; no SSH configuration needed.',
+  menuSsh: 'SSH Sessions',
+  menuWsl: 'WSL Sessions',
   host: 'Host',
   hostPlaceholder: 'ssh config alias, or user@host[:port]',
   refreshHosts: 'Refresh host list',
@@ -157,4 +185,17 @@ export const en: Record<RemoteExplorerLocaleKey, string> = {
   loadError: 'Load failed',
   retry: 'Retry',
   missingKeys: 'LLM key env vars missing on this machine',
+  wslDistro: 'Distribution',
+  wslDistroPlaceholder: 'Select a WSL distribution',
+  wslUser: 'Username',
+  wslUserPlaceholder: 'empty = default user',
+  wslNoDistros: 'No WSL distributions found',
+  wslVersion: 'Version',
+  wslState: 'State',
+  wslStateRunning: 'Running',
+  wslStateStopped: 'Stopped',
+  wslDefault: 'Default',
+  refreshDistros: 'Refresh distributions',
+  wslNotInstalledTitle: 'WSL not installed or no distributions available',
+  wslNotInstalledHint: 'Please install WSL and add a Linux distribution. Run in PowerShell (Admin): wsl --install -d Ubuntu, then restart the app.',
 };

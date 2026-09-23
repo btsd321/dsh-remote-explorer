@@ -10,6 +10,7 @@ Inspired by VS Code Remote-SSH, Zed, and JetBrains Gateway — **code and sessio
 
 - **Local (client)**: Windows / Linux / macOS. Node.js v20.19+ or v22+ is only needed for the **source-run** mode; release packages bundle their own Node runtime.
 - **Remote host**: Linux or macOS (POSIX); aarch64 (arm64) and x86_64 both work. No Node preinstalled required — the tool installs and self-checks it.
+- **WSL (Windows Subsystem for Linux)**: On Windows, WSL2 distributions are supported as remote targets. dsh is auto-installed inside WSL, tunneled via localhost forwarding — no SSH setup needed. Click the "WSL Sessions" card in the panel to use; the entry is hidden on non-Windows platforms.
 - **SSH authentication**: private key (`IdentityFile`, recommended); with no key configured, an interactive terminal prompts for a password (no echo); `--password` also works (leaks via process list / shell history — the CLI warns).
 - Hosts come from `Host` entries in `~/.ssh/config`, or ad-hoc `user@host[:port]` (IPv6 must go through the config).
 

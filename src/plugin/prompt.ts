@@ -41,7 +41,7 @@ export function registerPromptSection(ctx: Context, supervisor: SessionSuperviso
         const url = snapshot.url !== undefined ? `，浏览器地址 ${snapshot.url}` : '';
         return `- ${target}（${state}，会话 ${snapshot.sessionId.slice(0, 12)}…${url}）`;
       });
-      return '## 远程 SSH 会话\n本进程维持的远端 dsh 会话：\n'
+      return '## 远程会话\n本进程维持的远端 dsh 会话：\n'
         + `${lines.join('\n')}\n`
         + '用 remote_status 查进度、remote_kill 断开；url 是隧道转发后的远端 dsh 界面，用户浏览器可直接打开。';
     },

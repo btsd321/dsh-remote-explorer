@@ -19,6 +19,7 @@ import type { Context } from '@deepseek-ai/cordis';
 // 仅为激活 ctx.connection 的模块类型增广（HostConnectionHandle），不产生运行时代码
 import type {} from '@deepseek-ai/dsh-client-connection';
 import { listHosts, refreshConfig } from '../hosts/ssh-config-parser.js';
+import { listWslDistros, refreshWslCache } from '../hosts/wsl-distro-parser.js';
 import { toErrorMessage } from '../util/errors.js';
 import { SessionSupervisor, SupervisorError, type ConnectRequest, type SessionSnapshot } from './supervisor.js';
 
@@ -85,6 +86,21 @@ function buildRoutes(supervisor: SessionSupervisor): RouteDef[] {
           // 面板的「刷新」按钮带 ?refresh=1；长驻进程里 config 可能随时被改
           if (new URL(request.url).searchParams.get('refresh') === '1') refreshConfig();
           return Response.json({ hosts: listHosts() });
+        } catch (error) {
+          return internalError(error);
+        }
+      },
+    },
+    {
+      // WSL 发行版列表：面板「新建 WSL 连接」下拉框的数据源
+      path: `${ROUTE_PREFIX}/wsl-distros`,
+      methods: ['GET'],
+      fetch: async (request) => {
+        try {
+          // ?refresh=1 时刷新缓存（安装/卸载发行版后）
+          if (new URL(request.url).searchParams.get('refresh') === '1') refreshWslCache();
+          const distros = await listWslDistros();
+          return Response.json({ distros });
         } catch (error) {
           return internalError(error);
         }
@@ -169,8 +185,31 @@ function buildRoutes(supervisor: SessionSupervisor): RouteDef[] {
           if (hostAlias === undefined) {
             return Response.json({ code: 'bad_usage', message: '缺少 hostAlias 字段' }, { status: 400 });
           }
+          // 传输类型校验：只接受已知值，未知值返回 400。
+          // 新增传输类型时在此添加 case
+          const transportTypeRaw = stringField(body, 'transportType');
+          let transportType: 'ssh' | 'wsl';
+          switch (transportTypeRaw) {
+            case 'wsl': transportType = 'wsl'; break;
+            case 'ssh': case undefined: transportType = 'ssh'; break;
+            default:
+              return Response.json(
+                { code: 'bad_usage', message: `transportType 必须是 'ssh' 或 'wsl'，收到 '${transportTypeRaw}'` },
+                { status: 400 },
+              );
+          }
+          const distroName = stringField(body, 'distroName');
+          if (transportType === 'wsl' && distroName === undefined) {
+            return Response.json(
+              { code: 'bad_usage', message: 'transportType=wsl 时 distroName 必填' },
+              { status: 400 },
+            );
+          }
           const connectRequest: ConnectRequest = {
             hostAlias,
+            transportType,
+            ...(distroName !== undefined ? { distroName } : {}),
+            ...(stringField(body, 'wslUser') !== undefined ? { wslUser: stringField(body, 'wslUser') } : {}),
             ...(stringField(body, 'cwd') !== undefined ? { cwd: stringField(body, 'cwd') } : {}),
             ...(stringField(body, 'password') !== undefined ? { password: stringField(body, 'password') } : {}),
             ...(stringField(body, 'privateKey') !== undefined ? { privateKey: stringField(body, 'privateKey') } : {}),

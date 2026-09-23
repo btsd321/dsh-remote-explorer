@@ -72,6 +72,8 @@ function printHelp(): void {
   println(`  --node-version <版本>     Node 版本（默认 ${versions.node}）`);
   println(`  --dsh-version <版本>      dsh 版本或 dist-tag（默认 ${versions.dsh}）`);
   println('  --refresh-mirrors         强制重测镜像延迟，忽略缓存');
+  println('  --wsl <发行版>            连接 WSL 发行版（与主机别名互斥）');
+  println('  --wsl-user <用户>         WSL 用户名（仅 --wsl 时有效）');
   println();
   println(bold('kill 参数'));
   println('  --cwd <远端路径>          指定要停止的会话');
@@ -92,12 +94,16 @@ function printHelp(): void {
   println('  --private-key <路径>      私钥路径，优先于 config 中的 IdentityFile');
   println('  --password <密码>         明文密码认证（有泄露风险，慎用；见下方说明）');
   println();
+  println(bold('list 参数'));
+  println('  --wsl                     列出 WSL 发行版而非 SSH 主机');
+  println();
   println(bold('说明'));
   println(dim('  主机列表直接来自 ssh config，本工具不维护自己的主机档案；'));
   println(dim('  不在 config 里的主机可用 user@host[:port] 直连（IPv6 需写进 config）。'));
   println(dim('  认证支持私钥（IdentityFile / --private-key）；未配置私钥且在交互式终端时'));
   println(dim('  会提示输入密码（不回显，只存内存不落盘）。--password 以明文暴露在命令行、'));
   println(dim('  进程列表与 shell 历史中，有泄露风险，建议仅作临时手段。'));
+  println(dim('  WSL 模式不需要 SSH 认证（--private-key/--password 与 --wsl 互斥）。'));
   println(dim(`  远端 Node 默认锁定 ${versions.node}：v22 在 aarch64 上起进程崩溃率高，会导致安装失败。`));
 }
 
@@ -132,7 +138,23 @@ export async function main(argv: readonly string[]): Promise<number> {
     return 0;
   }
 
-  // 参数解析放在 list 分派之前：--ssh-config 对所有命令都有效，
+  // list --wsl 提前处理：parseArgs 把 --wsl 定义为 string（connect 需要值），
+  // 但 list 只把它当布尔标志。strict 模式下无值的 string 选项会报错，
+  // 所以在 parseArgs 之前拦截这个特殊情形
+  if (command === 'list') {
+    const listWsl = rest.some(arg => arg === '--wsl' || arg.startsWith('--wsl='));
+    // list 只需要 --ssh-config 和 --wsl，其余参数忽略
+    const sshConfigArg = rest.find(arg => arg.startsWith('--ssh-config'));
+    if (sshConfigArg !== undefined) {
+      const configPath = sshConfigArg.includes('=')
+        ? sshConfigArg.split('=', 2)[1]
+        : rest[rest.indexOf(sshConfigArg) + 1];
+      if (configPath !== undefined) setConfigPath(configPath);
+    }
+    return runList({ listWsl });
+  }
+
+  // 参数解析放在 list 分派之后：--ssh-config 对所有命令都有效，
   // 而它必须在任何主机解析发生前生效（解析结果带模块级缓存）
   const { positionals, values } = parseArgs({
     args: [...rest],
@@ -151,6 +173,8 @@ export async function main(argv: readonly string[]): Promise<number> {
       keep: { type: 'string' },
       'private-key': { type: 'string' },
       password: { type: 'string' },
+      wsl: { type: 'string' },
+      'wsl-user': { type: 'string' },
     },
     allowPositionals: true,
     strict: true,
@@ -177,19 +201,39 @@ export async function main(argv: readonly string[]): Promise<number> {
     }
   }
 
-  // 不需要主机别名的命令
-  if (command === 'list') {
-    return runList();
+  // WSL 相关参数提取
+  const wslDistro = values.wsl;
+  const wslUser = values['wsl-user'];
+
+  // --wsl 与 --private-key/--password 互斥（WSL 不需要 SSH 认证）
+  if (wslDistro !== undefined && (privateKey !== undefined || password !== undefined)) {
+    printErr(red('--wsl 与 --private-key/--password 互斥（WSL 不需要 SSH 认证）'));
+    return 64;
   }
+
+  // --wsl-user 仅在 --wsl 时有效
+  if (wslUser !== undefined && wslDistro === undefined) {
+    printErr(red('--wsl-user 仅在指定 --wsl 时有效'));
+    return 64;
+  }
+
+  // 不需要主机别名的命令（list 已在 parseArgs 之前处理）
   if (command === 'status') {
     return runStatus();
   }
 
-  // 其余命令都需要主机别名（或 user@host[:port] 直连语法）
-  const alias = positionals[0];
+  // 其余命令都需要主机别名（或 user@host[:port] 直连语法，或 --wsl <发行版>）
+  let alias = positionals[0];
+
+  // 按传输类型确定别名与公共选项：WSL 以 wsl:<distro> 为别名，SSH 用位置参数
+  if (wslDistro !== undefined) {
+    alias = `wsl:${wslDistro}`;
+  }
+
   if (alias === undefined) {
     printErr(red(`${command} 需要主机别名`));
     printErr(dim(`用法：dsh-remote-explorer ${command} <别名 | user@host[:port]>。用 dsh-remote-explorer list 查看可用别名`));
+    printErr(dim('  或使用 --wsl <发行版> 连接 WSL（用 list --wsl 查看可用发行版）'));
     return 64;
   }
 
@@ -208,12 +252,29 @@ export async function main(argv: readonly string[]): Promise<number> {
   }
   const cwd = normalizeRemoteCwd(rawCwd);
 
+  // 按传输类型构建认证选项：各类型的专属字段互不干扰，
+  // 新增传输类型时添加对应 case 即可
+  type TransportOpts = Record<string, unknown>;
+  const transportOpts: TransportOpts = (() => {
+    if (wslDistro !== undefined) {
+      return {
+        transportType: 'wsl' as const,
+        distroName: wslDistro,
+        ...(wslUser ? { wslUser } : {}),
+      };
+    }
+    // SSH（默认）
+    return {
+      ...(privateKey ? { privateKey } : {}),
+      ...(effectivePassword !== undefined ? { password: effectivePassword } : {}),
+    };
+  })();
+
   if (command === 'doctor') {
     return runDoctor({
       alias,
       refreshMirrors,
-      ...(privateKey ? { privateKey } : {}),
-      ...(effectivePassword !== undefined ? { password: effectivePassword } : {}),
+      ...transportOpts,
     });
   }
 
@@ -260,8 +321,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       forceRestart: values['force-restart'] === true,
       keepRemote: values['keep-remote'] === true,
       refreshMirrors,
-      ...(privateKey ? { privateKey } : {}),
-      ...(effectivePassword !== undefined ? { password: effectivePassword } : {}),
+      ...transportOpts,
     });
   }
 
@@ -271,8 +331,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     ...(values['node-version'] ? { nodeVersion: values['node-version'] } : {}),
     ...(values['dsh-version'] ? { dshVersion: values['dsh-version'] } : {}),
     refreshMirrors,
-    ...(privateKey ? { privateKey } : {}),
-    ...(effectivePassword !== undefined ? { password: effectivePassword } : {}),
+    ...transportOpts,
   });
 }
 

@@ -12,7 +12,8 @@
  *
  * 注册面（复刻第一方 ui-plugin-manager 的全局面板模式）：
  * - locale 命名空间 'dshRemoteExplorer'（zh/en 字典，en 兜底）
- * - slots.inject('main')：keyed root 槽注册整块远程会话面板（key = PANEL_ID）
+ * - slots.inject('main')：keyed root 槽注册 RemoteSessionRouter 路由容器
+ *   （内部按 activeView 状态切换 SSH / WSL 子面板）
  * - slots.inject('sidebar.panellist')：左导航图标按钮（与「插件」按钮平级），
  *   点击切换由 sidebar 壳调 layout.selectPanel 完成，本插件零 onClick 逻辑
  *
@@ -20,6 +21,8 @@
  * 常驻工作流（主机管理/实时会话），故整体迁出，设置里不再留入口。
  */
 
+import * as React from 'react';
+import type { ReactNode } from 'react';
 import type { Context as ClientContext } from '@deepseek-ai/cordis';
 // 以下 type-only 导入只为激活 Context/SlotMap 的模块类型增广，
 // esbuild 打包时整体擦除，浏览器 bundle 不含任何框架运行时代码
@@ -32,7 +35,10 @@ import { en, zh, type RemoteExplorerLocaleKey } from './locales.js';
 import { RemoteSessionsIcon } from './icon.js';
 import { IntentBanner } from './intent-banner.js';
 import { RemoteWindowOverlay } from './remote-window.js';
-import { SessionPanel } from './panel.js';
+import { SshSessionPanel } from './ssh-panel.js';
+import { WslSessionPanel } from './wsl-panel.js';
+import { fetchWslDistros } from './api.js';
+import type { RemoteType } from './dropdown-menu.js';
 
 // 把本插件的 locale 命名空间并进全局键表——ctx.locale.register/bind 的
 // 类型化重载靠它把键集收窄到 RemoteExplorerLocaleKey
@@ -61,6 +67,173 @@ export const name = 'dsh-remote-explorer';
 /** 依赖的浏览器侧服务：slots（typed Slots 注册）与 locale（zh/en 字典） */
 export const inject = ['slots', 'locale'];
 
+/** 路由容器的视图状态 */
+type ActiveView = 'menu' | RemoteType;
+
+/** 路由容器 props（locale 面由 slots 框架注入） */
+interface RemoteSessionRouterProps {
+  /** 命名空间绑定的翻译函数 */
+  t: (key: RemoteExplorerLocaleKey) => string;
+}
+
+/**
+ * 检测当前是否运行在 Windows 平台（WSL 仅在 Windows 上可用）。
+ *
+ * navigator.platform 在 Electron/浏览器中返回 Win32/Win64 等值；
+ * Linux/macOS 返回 Linux/x86_64 等。
+ */
+function isWindowsPlatform(): boolean {
+  try {
+    return /win/i.test(navigator.platform ?? '');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 远程会话路由容器：main 槽的入口组件。
+ *
+ * 初始显示类型选择卡片列表（SSH / WSL），点击后进入对应子面板。
+ * 仅 Windows 平台显示 WSL 卡片；点击 WSL 卡片时先检测 WSL 是否安装，
+ * 未安装则显示安装引导提示。
+ *
+ * @param props - locale 注入面
+ * @returns 路由容器内容
+ */
+function RemoteSessionRouter(props: RemoteSessionRouterProps): ReactNode {
+  const { t } = props;
+  const [activeView, setActiveView] = React.useState<ActiveView>('menu');
+  /** WSL 可用性检测结果：null = 未检测，true = 可用，false = 不可用 */
+  const [wslAvailable, setWslAvailable] = React.useState<boolean | null>(null);
+  /** WSL 检测中状态 */
+  const [wslChecking, setWslChecking] = React.useState(false);
+
+  const buttonStyle: React.CSSProperties = {
+    background: 'transparent',
+    color: 'inherit',
+    border: '1px solid rgba(127,127,127,0.5)',
+    borderRadius: 6,
+    padding: '4px 12px',
+    cursor: 'pointer',
+    fontSize: 13,
+  };
+
+  const cardStyle: React.CSSProperties = {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+    padding: '12px 16px',
+    border: '1px solid rgba(127,127,127,0.4)',
+    borderRadius: 8,
+    cursor: 'pointer',
+    background: 'transparent',
+    color: 'inherit',
+    textAlign: 'left',
+    width: '100%',
+    transition: 'background 0.15s',
+  };
+
+  /**
+   * 点击 WSL 卡片时检测 WSL 可用性。
+   * 通过后端 /wsl-distros API 判断：返回空列表 = WSL 未安装或无发行版。
+   */
+  const onWslCardClick = async (): Promise<void> => {
+    setWslChecking(true);
+    try {
+      const distros = await fetchWslDistros(true);
+      if (distros.length > 0) {
+        setWslAvailable(true);
+        setActiveView('wsl');
+      } else {
+        setWslAvailable(false);
+      }
+    } catch {
+      setWslAvailable(false);
+    } finally {
+      setWslChecking(false);
+    }
+  };
+
+  // 菜单视图：标题 + 类型选择卡片列表
+  if (activeView === 'menu') {
+    const showWsl = isWindowsPlatform();
+    return (
+      <div style={{
+        display: 'flex', flexDirection: 'column', gap: 16,
+        padding: '16px 20px', height: '100%', boxSizing: 'border-box',
+      }}>
+        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>{t('nav')}</h2>
+        <p style={{ margin: 0, opacity: 0.75, fontSize: 13 }}>{t('sectionIntro')}</p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8, maxWidth: 400 }}>
+          <button
+            type="button"
+            style={cardStyle}
+            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(127,127,127,0.1)'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+            onClick={() => { setActiveView('ssh'); }}
+          >
+            <span style={{ fontWeight: 600, fontSize: 14 }}>{t('menuSsh')}</span>
+            <span style={{ fontSize: 12, opacity: 0.7 }}>{t('sshSectionIntro')}</span>
+          </button>
+          {showWsl && (
+            <button
+              type="button"
+              style={cardStyle}
+              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(127,127,127,0.1)'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+              onClick={() => { void onWslCardClick(); }}
+              disabled={wslChecking}
+            >
+              <span style={{ fontWeight: 600, fontSize: 14 }}>
+                {wslChecking ? `${t('menuWsl')}…` : t('menuWsl')}
+              </span>
+              <span style={{ fontSize: 12, opacity: 0.7 }}>{t('wslSectionIntro')}</span>
+            </button>
+          )}
+        </div>
+        {/* WSL 未安装提示 */}
+        {wslAvailable === false && (
+          <div style={{
+            marginTop: 8, padding: '12px 16px', maxWidth: 400,
+            border: '1px solid rgba(239,68,68,0.4)', borderRadius: 8,
+            fontSize: 13, lineHeight: 1.6,
+          }}>
+            <strong style={{ color: '#ef4444' }}>{t('wslNotInstalledTitle')}</strong>
+            <p style={{ margin: '6px 0 0', opacity: 0.85 }}>{t('wslNotInstalledHint')}</p>
+            <button
+              type="button"
+              style={{ ...buttonStyle, marginTop: 8, fontSize: 12 }}
+              onClick={() => { setWslAvailable(null); }}
+            >
+              {t('retry')}
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // 子面板视图：顶部返回按钮 + 对应面板
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <div style={{ padding: '8px 20px 0', flexShrink: 0 }}>
+        <button
+          type="button"
+          style={buttonStyle}
+          onClick={() => { setActiveView('menu'); }}
+        >
+          ← {t('nav')}
+        </button>
+      </div>
+      <div style={{ flex: 1, minHeight: 0 }}>
+        {activeView === 'ssh'
+          ? <SshSessionPanel t={t} />
+          : <WslSessionPanel t={t} />}
+      </div>
+    </div>
+  );
+}
+
 /**
  * 浏览器半激活入口。
  *
@@ -72,13 +245,13 @@ export function apply(ctx: ClientContext): void {
     'dsh-remote-explorer: locales',
   );
 
-  // 中央整块面板：keyed root 槽，无 Session 绑定——数据由面板组件同源
-  // fetch 自取（/api/dsh-remote-explorer/*，Cookie 自动鉴权）
+  // 中央整块面板：keyed root 槽，注册路由容器（内部按 activeView 切换子面板）；
+  // 数据由面板组件同源 fetch 自取（/api/dsh-remote-explorer/*，Cookie 自动鉴权）
   ctx.slots.inject('main', () => ctx.slots.register({
     name: 'main',
     key: PANEL_ID,
     locale: LOCALE_NS,
-  }, SessionPanel));
+  }, RemoteSessionRouter));
 
   // 左导航图标按钮：注册组件即图标本体（只收 { size, active }）；
   // label 由注册方本地化并随 locale 切换重注册（框架契约：shell 不订阅 locale）

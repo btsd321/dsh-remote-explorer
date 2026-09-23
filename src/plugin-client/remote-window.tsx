@@ -28,6 +28,9 @@
 import * as React from 'react';
 import type { ReactNode } from 'react';
 import { desktopBrowser } from './desktop-bridge.js';
+import { createLogger } from '../util/logger.js';
+
+const log = createLogger('remote-window');
 import { postDisconnect } from './api.js';
 import type { RemoteExplorerLocaleKey } from './locales.js';
 
@@ -86,6 +89,7 @@ function getTarget(): RemoteWindowTarget | null {
  * @param next - 目标会话；重复打开同一会话幂等，换会话则整体替换
  */
 export function openRemoteWindow(next: RemoteWindowTarget): void {
+  log.info('打开远程窗口', { sessionId: next.sessionId, hostAlias: next.hostAlias });
   currentTarget = next;
   publish();
 }
@@ -117,10 +121,13 @@ function messageOf(error: unknown): string {
  */
 export function RemoteWindowOverlay(props: RemoteWindowOverlayProps): ReactNode {
   const { t } = props;
+
+  // 诊断标记：确认组件是否被 React 挂载（绕过 console 限制）
   const target = React.useSyncExternalStore(subscribe, getTarget);
 
   React.useEffect(() => {
     if (target === null) return;
+    log.info('远程窗口浮层启动', { sessionId: target.sessionId });
     const bridge = desktopBrowser();
     let disposed = false;
     let lease: string | undefined;
@@ -189,11 +196,14 @@ export function RemoteWindowOverlay(props: RemoteWindowOverlayProps): ReactNode 
 
     if (bridge === undefined) {
       // 防御性兜底：浏览器端不会调 openRemoteWindow，这里只保证不崩、可 Esc 退出
+      log.warn('bridge 不可用，显示错误状态');
       showStatus(`${t('overlayLeaseFailed')}\n${t('overlayReturnHint')}`);
     } else {
       // 1. 预约 lease（workspace id 按会话隔离 → 远端 cookie 各会话独立）
+      log.info('开始 acquire lease...');
       void bridge.acquire(`dsh-remote-explorer:${target.sessionId}`)
         .then((result) => {
+          log.info('lease 获取成功', { lease: result.lease, partition: result.partition });
           if (disposed) { void bridge.release(result.lease).catch(() => {}); return; }
           lease = result.lease;
           // 2. handoff「返回」经 window.open 被桌面壳转发到这里
@@ -209,9 +219,14 @@ export function RemoteWindowOverlay(props: RemoteWindowOverlayProps): ReactNode 
           element.addEventListener('dom-ready', () => {
             if (element.dataset.loaded === '1') return;
             element.dataset.loaded = '1';
+            log.info('webview dom-ready，开始 loadURL', target.url);
             element.loadURL(target.url)
-              .then(() => { if (!disposed) showWebview(); })
+              .then(() => {
+                log.info('loadURL 成功，显示 webview');
+                if (!disposed) showWebview();
+              })
               .catch((error: unknown) => {
+                log.error('loadURL 失败', messageOf(error));
                 if (!disposed) showStatus(`${t('overlayLeaseFailed')}：${messageOf(error)}\n${t('overlayReturnHint')}`);
               });
           });
@@ -223,6 +238,7 @@ export function RemoteWindowOverlay(props: RemoteWindowOverlayProps): ReactNode 
           container.appendChild(element);
         })
         .catch((error: unknown) => {
+          log.error('acquire 失败', messageOf(error));
           if (!disposed) showStatus(`${t('overlayLeaseFailed')}：${messageOf(error)}\n${t('overlayReturnHint')}`);
         });
     }

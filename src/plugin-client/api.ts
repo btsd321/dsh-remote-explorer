@@ -90,9 +90,21 @@ export async function fetchSessionLog(
   return request<{ session?: PanelSession; log: LogEntry[] }>(`/session?${params.toString()}`);
 }
 
+/** WSL 发行版摘要（宿主半从 wsl --list --verbose 解析） */
+export interface WslDistroSummary {
+  /** 发行版名称（如 Ubuntu-24.04） */
+  name: string;
+  /** 运行状态（Running / Stopped 等原始值） */
+  state: string;
+  /** WSL 版本号（1 或 2） */
+  version: number;
+  /** 是否默认发行版 */
+  isDefault: boolean;
+}
+
 /** 面板连接请求体（与宿主 /connect 的字段一致） */
 export interface ConnectBody {
-  /** 主机别名或 user@host[:port] */
+  /** 主机别名或 user@host[:port]（SSH 传输时必填） */
   hostAlias: string;
   /** 远端目录；空串 = 家目录 */
   cwd?: string;
@@ -112,6 +124,12 @@ export interface ConnectBody {
   dshVersion?: string;
   /** 本机管理页 origin（location.origin）：远端 handoff 组件的返回动作依赖它 */
   managerUrl?: string;
+  /** 传输类型：ssh（默认）或 wsl */
+  transportType?: 'ssh' | 'wsl';
+  /** WSL 发行版名称（transportType='wsl' 时必填） */
+  distroName?: string;
+  /** WSL 用户名（留空 = 发行版默认用户） */
+  wslUser?: string;
 }
 
 /**
@@ -193,4 +211,17 @@ export async function postRemotePluginAction(
     body: JSON.stringify({ session: sessionId, ...op }),
   });
   return result.plugins;
+}
+
+/**
+ * 拉 WSL 发行版列表。
+ *
+ * @param refresh - true 时让宿主重新执行 wsl --list --verbose
+ * @returns 发行版摘要列表
+ */
+export async function fetchWslDistros(refresh = false): Promise<WslDistroSummary[]> {
+  const result = await request<{ distros: WslDistroSummary[] }>(
+    `/wsl-distros${refresh ? '?refresh=1' : ''}`,
+  );
+  return result.distros;
 }
