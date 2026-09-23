@@ -10,6 +10,9 @@
  * 分层约束：本文件属入口层，只做分派与错误呈现，不含业务逻辑。
  */
 
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { setConfigPath } from '../hosts/ssh-config-parser.js';
 import { runList } from './commands/list.js';
@@ -121,8 +124,10 @@ export async function main(argv: readonly string[]): Promise<number> {
     return 0;
   }
   if (rawCommand === '--version' || rawCommand === '-V') {
-    // 版本号由 package.json 承载，这里避免读文件带来的路径耦合
-    println('dsh-remote-explorer 0.7.0');
+    // 版本号唯一来源：package.json。tsx 直跑与打包产物都能正确定位
+    const here = dirname(fileURLToPath(import.meta.url));
+    const pkg = JSON.parse(readFileSync(join(here, '..', '..', 'package.json'), 'utf8')) as { version: string };
+    println(`dsh-remote-explorer ${pkg.version}`);
     return 0;
   }
 

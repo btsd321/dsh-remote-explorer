@@ -216,22 +216,7 @@ function checkClientSide(pkgName: string, violations: Violation[]): void {
  * @param violations - 违规收集器
  */
 function checkManifests(pkg: { name: string; version: string }, violations: Violation[]): void {
-  // 7. 版本串一致
-  const main = readIfExists(join(REPO_ROOT, 'src', 'cli', 'main.ts'));
-  if (main !== undefined) {
-    const versionLine = /println\('dsh-remote-explorer ([^']+)'\)/.exec(main);
-    if (versionLine === null) {
-      violations.push({
-        file: 'src/cli/main.ts',
-        message: "找不到 --version 输出串（期望形如 println('dsh-remote-explorer x.y.z')）",
-      });
-    } else if (versionLine[1] !== pkg.version) {
-      violations.push({
-        file: 'src/cli/main.ts',
-        message: `--version 输出 ${versionLine[1]} ≠ package.json 版本 ${pkg.version}`,
-      });
-    }
-  }
+  // 7. 版本号唯一来源为 package.json，cli/main.ts 运行时动态读取，无需静态校验
 
   // 8. cordis.patch.yml 的 entry id 与 name
   const patch = readIfExists(join(REPO_ROOT, 'cordis.patch.yml'));
