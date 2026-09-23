@@ -28,6 +28,7 @@ import { registerCommands } from './commands.js';
 import { registerTools } from './tools.js';
 import { registerPromptSection } from './prompt.js';
 import { registerPanelRoutes } from './routes.js';
+import { setProfilePatchPath } from '../credential/provider-routes.js';
 
 /** 插件名（cordis 显示名与 logger 名；与 cordis.patch.yml 的 entry id 一致） */
 export const name = 'dsh-remote-explorer';
@@ -49,6 +50,15 @@ export type { PluginConfig };
  */
 export function apply(ctx: Context, config: PluginConfig): void {
   const logger = ctx.logger(name);
+
+  // 设置当前 profile 的 cordis.patch.yml 路径，使供应商配置读取精确匹配宿主形态：
+  // 桌面版读 profiles/desktop/cordis.patch.yml，网页版读 profiles/web/cordis.patch.yml
+  const profileCtx = ctx.get('profileContext');
+  if (profileCtx !== undefined) {
+    setProfilePatchPath(profileCtx.patchPath);
+    logger.info(`供应商配置源：${profileCtx.name} profile（${profileCtx.patchPath}）`);
+  }
+
   logger.info(`插件已加载（panel=${config.panel ? '开' : '关'}）`);
 
   // 会话监督器：命令、工具、面板路由三个消费面共享同一份簿记

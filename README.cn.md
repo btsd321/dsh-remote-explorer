@@ -99,17 +99,18 @@ npx tsx src/cli/bin.ts list --ssh-config /path/to/config
 
 ## 凭据如何工作
 
-模型调用不经公网直连，而是走反向隧道。**多供应商**：代理按路径前缀路由——DeepSeek 原生通道用 `/anthropic`，`~/.dsh/settings.yaml` 里 `llm-pi-ai.providers` 段配置的供应商（如 AStudio、qwen、iflytek）各自走 `/r/<供应商名>`，路由自动提取，无需手动配置：
+模型调用不经公网直连，而是走反向隧道。**多供应商**：代理按路径前缀路由——DeepSeek 原生通道用 `/anthropic`，本机配置的其他供应商各自走 `/r/<供应商名>`，路由自动提取，无需手动配置：
 
 ```
 远端 dsh ──(占位令牌)──▶ 远端 127.0.0.1:<反向端口>/r/<供应商> ──SSH 反向通道──▶ 本机代理
                                                                      ├─ /anthropic → api.deepseek.com
-                                                                     └─ /r/astudio → maas-api.cn-huabei-1.xf-yun.com
+                                                                     └─ /r/<供应商> → 对应上游地址
                                                                         （按路由注入对应真实 key）
 ```
 
-- 各供应商的真实 key（`DEEPSEEK_API_KEY`、`ASTUDIO_API_KEY` 等）**只存在于本机进程**，不落远端磁盘、不进远端环境。远端进程环境里放的是代理令牌（随机值）。
-- 本机 `~/.dsh/settings.yaml` 会**整体镜像**到会话的 `DSH_HOME/settings.yaml`（`agent-default-model` 等键随之镜像，远端默认模型与本机一致），仅供应商的 `baseURL` 重定向进隧道。**只镜像 settings（凭据引用，无密钥），绝不镜像 `.credentials.yaml`**（可能含真实密钥）。
+- 各供应商的真实 key（`DEEPSEEK_API_KEY` 等）**只存在于本机进程**，不落远端磁盘、不进远端环境。远端进程环境里放的是代理令牌（随机值）。
+- **真实 key 来源**：优先读环境变量（`process.env`），回退读本机 `$DSH_HOME/.credentials.yaml` 的 `refs` 段——对齐 dsh 自身的凭据解析优先级。用户通过 dsh Models 页面存储的密钥自动生效，无需手动导出为环境变量。
+- **供应商配置来源**：按运行形态精确读取——桌面版 dsh 读 `profiles/desktop/cordis.patch.yml`，网页版读 `profiles/web/cordis.patch.yml`，CLI 读 `$DSH_HOME/settings.yaml`。配置会**整体镜像**到远端会话（`agent-default-model` 等键随之镜像，远端默认模型与本机一致），仅供应商的 `baseURL` 重定向进隧道。**只镜像配置（凭据引用，无密钥），绝不镜像 `.credentials.yaml`**（可能含真实密钥）。
 - 缺哪个供应商的 key 只影响该供应商（502 带明确指引），其余照常。
 - 代理令牌与反向端口随会话固定，落盘远端 `.runtime/`（令牌 600 权限），重连与复用读回同一组值。
 - 同一会话的多个本机 CLI 共享凭据路径（反向端口先到先得，后来的视图自动让位）。
@@ -196,7 +197,8 @@ npx tsx src/cli/bin.ts list --ssh-config /path/to/config
 | [src/session/session-registry.ts](src/session/session-registry.ts) | 本机会话表，锁文件 + 原子替换 |
 | [src/session/session-manager.ts](src/session/session-manager.ts) | 会话编排：打开、凭据接线、重连、关闭 |
 | [src/credential/tunnel-proxy.ts](src/credential/tunnel-proxy.ts) | 反向隧道 LLM 代理（多供应商路由），注入真实 key |
-| [src/credential/provider-routes.ts](src/credential/provider-routes.ts) | 从本机 settings.yaml 提取供应商路由，产出远端镜像 |
+| [src/credential/provider-routes.ts](src/credential/provider-routes.ts) | 从本机配置（settings.yaml / profile patch）提取供应商路由，产出远端镜像 |
+| [src/credential/local-credentials.ts](src/credential/local-credentials.ts) | 读取本机 `.credentials.yaml` 的 refs 段，作为环境变量的凭据回退源 |
 | [src/credential/token.ts](src/credential/token.ts) | 代理令牌：生成与常数时间比较 |
 | [src/cli/](src/cli/) | 命令分派、参数解析、终端输出、命令级认证装配 |
 

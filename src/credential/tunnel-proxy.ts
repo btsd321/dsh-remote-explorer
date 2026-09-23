@@ -82,6 +82,8 @@ export class TunnelProxyCredential implements CredentialStrategy {
    * @param reversePort - 反向隧道在远端占用的端口
    * @param routes - 供应商路由表（含 DeepSeek 原生通道与 pi-ai 供应商）
    * @param hostAlias - 主机别名（诊断与日志用）
+   * @param localCredentials - 本机 `.credentials.yaml` 的 refs 映射（环境变量名 → 密钥值）；
+   *                           作为 `process.env` 的回退源，对齐 dsh 自身的凭据解析优先级
    * @param manage - 远端 handoff 组件的管理回调（监督器闭包）；缺省时
    *                 `/manage/*` 返回 404——CLI 形态不传，行为不变
    */
@@ -90,6 +92,7 @@ export class TunnelProxyCredential implements CredentialStrategy {
     readonly reversePort: number,
     private readonly routes: readonly ProxyRoute[],
     private readonly hostAlias: string,
+    private readonly localCredentials: Map<string, string>,
     private readonly manage?: ManageHandlers,
   ) {
     this.server = http.createServer((req, res) => { void this.handle(req, res); });
@@ -105,12 +108,31 @@ export class TunnelProxyCredential implements CredentialStrategy {
   /**
    * 本机缺失真实 key 的路由的环境变量名列表。
    *
-   * 对应供应商的请求会得到明确的 502，其余供应商不受影响。
+   * 解析优先级：`process.env[keyEnv]` > `.credentials.yaml` refs[keyEnv]。
+   * 两处都缺才算 missing——对应供应商的请求会得到明确的 502，其余不受影响。
    */
   get missingKeyEnvs(): string[] {
     return this.routes
       .map(route => route.keyEnv)
-      .filter(keyEnv => (process.env[keyEnv] ?? '').length === 0);
+      .filter(keyEnv => !this.resolveApiKey(keyEnv));
+  }
+
+  /**
+   * 按优先级解析一条路由的真实 key。
+   *
+   * 优先级：`process.env[keyEnv]` > `.credentials.yaml` refs[keyEnv]。
+   * 对齐 dsh 自身的凭据解析顺序（环境变量 > 文件存储），确保本机代理
+   * 与远端 dsh 使用同一把 key。
+   *
+   * @param keyEnv - 环境变量名
+   * @returns 密钥值；两处都缺时 undefined
+   */
+  private resolveApiKey(keyEnv: string): string | undefined {
+    const fromEnv = process.env[keyEnv];
+    if (fromEnv !== undefined && fromEnv.length > 0) return fromEnv;
+    const fromFile = this.localCredentials.get(keyEnv);
+    if (fromFile !== undefined && fromFile.length > 0) return fromFile;
+    return undefined;
   }
 
   /** 注入远端进程的环境变量：每条路由的 keyEnv 都放占位令牌 */
@@ -247,11 +269,12 @@ export class TunnelProxyCredential implements CredentialStrategy {
       }
 
       // 3. 该路由的真实 key 必须就位——缺 key 时给出能定位到本机的明确错误
-      const apiKey = process.env[route.keyEnv];
-      if (apiKey === undefined || apiKey.length === 0) {
+      //    resolveApiKey 按优先级查找：process.env > .credentials.yaml
+      const apiKey = this.resolveApiKey(route.keyEnv);
+      if (apiKey === undefined) {
         res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
         res.end(`dsh-remote-explorer proxy: 本机未设置 ${route.keyEnv}（供应商 ${route.label}），`
-          + '无法代理该供应商的调用。请在启动 dsh-remote-explorer 的环境中导出该变量后重连');
+          + '无法代理该供应商的调用。请在环境变量或 ~/.dsh/.credentials.yaml 中配置后重连');
         return;
       }
 

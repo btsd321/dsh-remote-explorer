@@ -62,6 +62,7 @@ import {
   deepseekRoute, extractProviderRoutes, mirrorSettingsForTunnel,
   readLocalSettings, renderProviderTunnelPatch,
 } from '../credential/provider-routes.js';
+import { readLocalCredentials } from '../credential/local-credentials.js';
 import type { ManageHandlers } from '../handoff/protocol.js';
 import type { ReverseHandle, RemoteTransport } from '../transport/types.js';
 import { createLogger } from '../util/logger.js';
@@ -466,13 +467,17 @@ export class RemoteSession {
       //    环境注入、patch 条目与 settings 镜像都从它取，编排层不重复拼细节。
       //    路由表 = DeepSeek 原生通道 + 本机 settings.yaml 里的 pi-ai 供应商
       //    （用户的默认模型可能配置在后者，如 AStudio）
+      //    本机凭据从 .credentials.yaml 读取，作为 process.env 的回退源——
+      //    对齐 dsh 自身的凭据解析优先级（文件存储 > 环境变量缺失时兜底）
       const localSettings = readLocalSettings();
       const providerRoutes = localSettings ? extractProviderRoutes(localSettings) : [];
+      const localCredentials = readLocalCredentials();
       const credential = secret
         ? new TunnelProxyCredential(
           secret.token, secret.reversePort,
           [deepseekRoute(), ...providerRoutes],
           options.hostAlias,
+          localCredentials,
           ...(options.manageHandlers ? [options.manageHandlers] : []),
         )
         : undefined;

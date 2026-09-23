@@ -99,17 +99,18 @@ For a detailed walkthrough of every command and option, see [docs/usage-en.md](d
 
 ## How credentials work
 
-Model calls do not go directly to the public internet. Instead, they traverse a reverse SSH tunnel. **Multi-provider support**: the proxy routes by path prefix — DeepSeek's native channel uses `/anthropic`, and providers configured in `~/.dsh/settings.yaml` under `llm-pi-ai.providers` (e.g. AStudio, qwen, iflytek) each use `/r/<provider-name>`. Routing is extracted automatically — no manual configuration needed.
+Model calls do not go directly to the public internet. Instead, they traverse a reverse SSH tunnel. **Multi-provider support**: the proxy routes by path prefix — DeepSeek's native channel uses `/anthropic`, and other locally configured providers each use `/r/<provider-name>`. Routing is extracted automatically — no manual configuration needed.
 
 ```
 Remote dsh ──(placeholder token)──▶ Remote 127.0.0.1:<reverse-port>/r/<provider> ──SSH reverse tunnel──▶ Local proxy
                                                                          ├─ /anthropic → api.deepseek.com
-                                                                         └─ /r/astudio → maas-api.cn-huabei-1.xf-yun.com
+                                                                         └─ /r/<provider> → corresponding upstream
                                                                             (real key injected per route)
 ```
 
-- Each provider's real key (`DEEPSEEK_API_KEY`, `ASTUDIO_API_KEY`, etc.) **exists only in the local process** — never written to remote disk, never placed in the remote environment. The remote process environment contains proxy tokens (random values).
-- The local `~/.dsh/settings.yaml` is **mirrored** into the session's `DSH_HOME/settings.yaml` (settings keys like `agent-default-model` are mirrored so the remote default model matches local). Only provider `baseURL` is redirected into the tunnel. **Only settings are mirrored (credential references, no secrets); `.credentials.yaml` is never mirrored** (it may contain real keys).
+- Each provider's real key (`DEEPSEEK_API_KEY`, etc.) **exists only in the local process** — never written to remote disk, never placed in the remote environment. The remote process environment contains proxy tokens (random values).
+- **Real key resolution**: reads `process.env` first, falls back to `$DSH_HOME/.credentials.yaml` refs — aligned with dsh's own credential resolution priority. Keys stored via the dsh Models page work automatically without exporting to environment variables.
+- **Provider configuration source**: read precisely per runtime form — Desktop dsh reads `profiles/desktop/cordis.patch.yml`, Web dsh reads `profiles/web/cordis.patch.yml`, CLI reads `$DSH_HOME/settings.yaml`. Configuration is **mirrored** into the remote session (keys like `agent-default-model` are mirrored so the remote default model matches local). Only provider `baseURL` is redirected into the tunnel. **Only configuration is mirrored (credential references, no secrets); `.credentials.yaml` is never mirrored** (it may contain real keys).
 - Missing a provider's key only affects that provider (502 with clear guidance); others continue normally.
 - The proxy token and reverse port are fixed per session, persisted to remote `.runtime/` (token at permission 600), and read back on reconnect and reuse.
 - Multiple local CLIs sharing the same session share the credential path (reverse port is first-come-first-served; later views automatically yield).
@@ -196,7 +197,8 @@ Foundation   hosts/   util/
 | [src/session/session-registry.ts](src/session/session-registry.ts) | Local session table, lock file + atomic replacement |
 | [src/session/session-manager.ts](src/session/session-manager.ts) | Session orchestration: open, credential wiring, reconnect, close |
 | [src/credential/tunnel-proxy.ts](src/credential/tunnel-proxy.ts) | Reverse tunnel LLM proxy (multi-provider routing), injects real keys |
-| [src/credential/provider-routes.ts](src/credential/provider-routes.ts) | Extract provider routes from local settings.yaml, produce remote mirror |
+| [src/credential/provider-routes.ts](src/credential/provider-routes.ts) | Extract provider routes from local config (settings.yaml / profile patch), produce remote mirror |
+| [src/credential/local-credentials.ts](src/credential/local-credentials.ts) | Read local `.credentials.yaml` refs as env-var credential fallback |
 | [src/credential/token.ts](src/credential/token.ts) | Proxy token: generation and constant-time comparison |
 | [src/cli/](src/cli/) | Command dispatch, argument parsing, terminal output, per-command auth wiring |
 

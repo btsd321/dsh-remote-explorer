@@ -1,21 +1,30 @@
 /**
- * @file 本机 settings.yaml 的供应商路由提取与远端镜像
- * @description 读本机 `~/.dsh/settings.yaml`，抽出 `llm-pi-ai.providers` 里所有
- *              带凭据引用的供应商，构建代理路由表；同时产出一份「远端镜像」
- *              settings——内容与本机一致，仅把供应商的 `baseURL` 重定向进反向隧道。
+ * @file 本机供应商配置的提取与远端镜像
+ * @description 读本机的 `llm-pi-ai` 供应商配置，抽出所有带凭据引用的供应商，
+ *              构建代理路由表；同时产出一份「远端镜像」settings——内容与本机一致，
+ *              仅把供应商的 `baseURL` 重定向进反向隧道。
+ *
+ * 配置来源自适应（按优先级）：
+ *
+ * 1. `$DSH_HOME/settings.yaml`（CLI 形态 / 旧版 dsh）
+ * 2. `$DSH_HOME/profiles/desktop/cordis.patch.yml` 中的 `llm-pi-ai` patch 条目
+ *    （桌面版 dsh 把供应商配置写在 profile patch 里，没有 settings.yaml）
+ *
+ * 两种来源最终都归一化为 `{ 'llm-pi-ai': { providers: {...} } }` 格式，
+ * 下游的路由提取、镜像、patch 渲染无需感知来源差异。
  *
  * 为什么需要这一层（P5 后多供应商支持的依据）：
  *
  * - dsh 的模型供应商有两套通道：`llm-deepseek` 原生适配器（P4 已覆盖，走 patch）
- *   和 `llm-pi-ai` 多供应商适配器（走 settings.yaml 的 `llm-pi-ai:` 段）。
- *   用户的默认模型可能配置在后者（如 AStudio），P4 的单上游代理覆盖不到。
+ *   和 `llm-pi-ai` 多供应商适配器。用户的默认模型可能配置在后者（如 AStudio），
+ *   P4 的单上游代理覆盖不到。
  * - `llm-pi-ai` 在 base bundle 里（远端 web 组合自带），其 settings 段热重载，
  *   `apiKeyEnv` 每次请求经 `ctx.credentials` 从**继承环境**解析——所以远端
  *   进程环境里放占位令牌即可生效，与 DeepSeek 的机制一致。
- * - settings.yaml 只含**凭据引用**（环境变量名），不含明文密钥；真正的密钥在
- *   `$DSH_HOME/.credentials.yaml`（凭据库）或环境变量里。**我们只镜像 settings，
- *   绝不镜像 .credentials.yaml**——后者可能含真实密钥，落远端就违背了
- *   「key 不出本机」的整个设计。
+ * - settings.yaml / cordis.patch.yml 只含**凭据引用**（环境变量名），不含明文密钥；
+ *   真正的密钥在 `$DSH_HOME/.credentials.yaml`（凭据库）或环境变量里。
+ *   **我们只镜像配置，绝不镜像 .credentials.yaml**——后者可能含真实密钥，
+ *   落远端就违背了「key 不出本机」的整个设计。
  *
  * 路由前缀约定：
  *
@@ -45,18 +54,79 @@ export interface ProxyRoute {
   label: string;
 }
 
+/** 解析后的 DSH_HOME（$DSH_HOME > ~/.dsh） */
+function resolvedDshHome(): string {
+  const dshHome = process.env.DSH_HOME;
+  return dshHome !== undefined && dshHome.trim().length > 0 ? dshHome : join(homedir(), '.dsh');
+}
+
 /**
  * 本机 settings.yaml 的默认路径。
  *
- * 优先 `$DSH_HOME/settings.yaml`：以 dsh 插件形态运行时，本进程就是宿主 dsh，
- * 它的家由 DSH_HOME 决定（桌面版指向 userData 而非 ~/.dsh）——镜像必须复制
- * **宿主真正在用的**那份 settings。CLI 形态通常没有 DSH_HOME，回落 ~/.dsh。
+ * `$DSH_HOME/settings.yaml`：CLI 形态 / 旧版 dsh 使用此文件。
  * 做成函数而非常量：DSH_HOME 是进程环境，读取时机应在调用点而非模块加载点。
  */
 function defaultLocalSettingsPath(): string {
-  const dshHome = process.env.DSH_HOME;
   // 本机路径，node:path 的 join 是正确工具（远端路径才禁用 join）
-  return join(dshHome !== undefined && dshHome !== '' ? dshHome : join(homedir(), '.dsh'), 'settings.yaml');
+  return join(resolvedDshHome(), 'settings.yaml');
+}
+
+/**
+ * 当前宿主 profile 的 cordis.patch.yml 路径。
+ *
+ * 由插件入口（`apply`）通过 {@link setProfilePatchPath} 设置。
+ * 桌面版指向 `profiles/desktop/cordis.patch.yml`，网页版指向 `profiles/web/cordis.patch.yml`。
+ * CLI 形态不设置，保持 undefined。
+ */
+let _profilePatchPath: string | undefined;
+
+/**
+ * 设置当前宿主 profile 的 cordis.patch.yml 路径。
+ *
+ * 插件入口在 `apply` 中从 `ctx.profileContext.patchPath` 获取路径后调用。
+ * 桌面版和网页版各自设置自己的路径，确保读到的是当前 profile 的配置。
+ *
+ * @param path - profile 的 cordis.patch.yml 绝对路径
+ */
+export function setProfilePatchPath(path: string): void {
+  _profilePatchPath = path;
+}
+
+/**
+ * 从 profile 的 cordis.patch.yml 中提取 llm-pi-ai 配置并转换为 settings 格式。
+ *
+ * dsh 新版（0.1.7+）把供应商配置写在 profile 的 `cordis.patch.yml` 的
+ * `- id: llm-pi-ai` patch 条目中，而不是 settings.yaml。本函数找到该条目，
+ * 提取其 `config` 段（即 `{ providers: {...} }`），包装成等效的
+ * `{ 'llm-pi-ai': { providers: {...} } }` settings 文档返回。
+ *
+ * @param patchPath - profile 的 cordis.patch.yml 绝对路径
+ * @returns 等效 settings YAML 文本；找不到或解析失败时 undefined
+ */
+function readProfilePatchProviders(patchPath: string): string | undefined {
+  let text: string;
+  try {
+    text = readFileSync(patchPath, 'utf8');
+  } catch { /* 文件不存在或不可读 */ return undefined; }
+
+  let patchEntries: unknown;
+  try {
+    patchEntries = parse(text);
+  } catch { /* YAML 解析失败 */ return undefined; }
+
+  if (!Array.isArray(patchEntries)) return undefined;
+
+  // 找 id === 'llm-pi-ai' 的条目
+  for (const entry of patchEntries) {
+    if (entry === null || typeof entry !== 'object') continue;
+    const record = entry as Record<string, unknown>;
+    if (record['id'] !== 'llm-pi-ai') continue;
+    const config = record['config'];
+    if (config === null || typeof config !== 'object') continue;
+    // config 就是 { providers: {...} }，包装成 settings 格式
+    return stringify({ 'llm-pi-ai': config });
+  }
+  return undefined;
 }
 
 /** DeepSeek 原生通道的路由前缀（保留字，pi-ai 供应商不得占用） */
@@ -106,14 +176,38 @@ export function deepseekRoute(): ProxyRoute {
 }
 
 /**
- * 读取本机 settings.yaml 文本。
+ * 读取本机供应商配置文本（归一化为 settings.yaml 格式）。
  *
- * @param path - 覆盖路径（默认 `$DSH_HOME/settings.yaml`，无 DSH_HOME 时 ~/.dsh/settings.yaml）
- * @returns 文本；文件不存在时 undefined
+ * 按运行形态精确读取对应配置源：
+ * - **插件形态**（桌面版 / 网页版）：读当前 profile 的 `cordis.patch.yml`
+ *   （由 {@link setProfilePatchPath} 在插件入口设置，桌面版读 desktop profile，
+ *   网页版读 web profile，互不干扰）
+ * - **CLI 形态**：读 `$DSH_HOME/settings.yaml`
+ *
+ * 两种来源最终都归一化为 `{ 'llm-pi-ai': { providers: {...} } }` 格式，
+ * 下游函数（extractProviderRoutes / mirrorSettingsForTunnel / renderProviderTunnelPatch）
+ * 不感知来源差异。
+ *
+ * @param path - 覆盖路径（显式指定时直接读取该文件，跳过自动探测）
+ * @returns settings 格式的 YAML 文本；找不到时 undefined
  */
-export function readLocalSettings(path: string = defaultLocalSettingsPath()): string | undefined {
+export function readLocalSettings(path?: string): string | undefined {
+  // 显式指定路径：直接读取（测试或特殊场景）
+  if (path !== undefined) {
+    try {
+      return readFileSync(path, 'utf8');
+    } catch { return undefined; }
+  }
+
+  // 插件形态：读当前 profile 的 cordis.patch.yml
+  // 桌面版和网页版各自通过 setProfilePatchPath 设置了自己的路径
+  if (_profilePatchPath !== undefined) {
+    return readProfilePatchProviders(_profilePatchPath);
+  }
+
+  // CLI 形态：读 settings.yaml
   try {
-    return readFileSync(path, 'utf8');
+    return readFileSync(defaultLocalSettingsPath(), 'utf8');
   } catch { /* 文件不存在或不可读：凭据路径只剩 DeepSeek 原生通道 */ }
   return undefined;
 }
