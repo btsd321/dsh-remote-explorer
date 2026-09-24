@@ -214,13 +214,12 @@ export function SshSessionPanel(props: SshSessionPanelProps): ReactNode {
                 placeholder={t('hostPlaceholder')}
                 style={{ ...inputStyle, flex: 1 }}
                 onChange={event => onHostChange(event.target.value)}
+                // 聚焦全选：datalist 会按输入框现有值过滤下拉（残留 OrangePI 时
+                // 下拉只剩它），全选让用户一键输入整体覆盖，想看全部清空即可
+                onFocus={event => event.target.select()}
               />
               <button type="button" style={buttonStyle} title={t('refreshHosts')}
                 onClick={() => { void loadHosts(true); }}>↻</button>
-              {/* 齿轮：配置当前主机的环境变量（hostAlias 取输入值 trim，空时禁用） */}
-              <button type="button" style={buttonStyle} title={t('hostEnvOpen')}
-                disabled={host.trim() === ''}
-                onClick={() => { setEnvDialogHost(host.trim()); }}>⚙</button>
             </span>
           </label>
           <datalist id="dsh-remote-explorer-hosts">
