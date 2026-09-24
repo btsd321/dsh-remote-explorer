@@ -1,6 +1,5 @@
 # 依赖
 node_modules/
-lib/
 *.tgz
 
 # 分发打包产物（scripts/package.ts 产出，不进仓库）
