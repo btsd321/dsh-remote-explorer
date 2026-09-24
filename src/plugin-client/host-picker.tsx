@@ -93,7 +93,9 @@ export function HostPicker(props: HostPickerProps): ReactNode {
       <input
         value={value}
         placeholder={t('hostPlaceholder')}
-        style={{ ...inputStyle, width: '100%' }}
+        // boxSizing 必须：width:100% 在默认 content-box 下会把 padding 与边框
+        // 溢出到容器外（合计 18px），与右侧「↻」刷新按钮重叠
+        style={{ ...inputStyle, width: '100%', boxSizing: 'border-box' }}
         onChange={event => onChange(event.target.value)}
         // 聚焦全选 + 打开完整列表：残留值可一键输入整体覆盖
         onFocus={event => { event.target.select(); setOpen(true); }}
