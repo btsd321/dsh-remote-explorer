@@ -69,6 +69,14 @@
 
 **8f. 心跳是三层判据，一条命令拿全。** 进程存活（`kill -0`）+ 端口监听（`ss`/`netstat`）+ **HTTP 应用级**（带会话令牌 curl 根路径，任何非 000 状态码即健康）——第三层能发现"进程在、端口在、但 webserver 僵死"的故障，前两层探测不到。改 [src/session/heartbeat.ts](../src/session/heartbeat.ts) 时保持单命令形态：每 5 秒一次心跳，拆成三次 exec 会在高延迟链路上占配额。
 
+## 环境变量注入
+
+**16. 远端 dsh 的代理与用户 env 是三层合并，env 键名是命令注入面。** SSH(22) 通 ≠ HTTPS(443) 通：dsh 装 `github:` 插件前用 `git ls-remote https://github.com/...` 探测连通性（探测默认 5 秒超时），无公网主机裸连必超时；dsh 的 `scrubbedParentEnv` 会保留代理变量并注入 `NODE_USE_ENV_PROXY=1`，链路本身完好，缺的只是「dsh 进程自己的环境里有代理变量」——由 `startRemoteDsh` 的 extraEnv 口注入，合并优先级**凭据占位 > per-host 用户 env > `DSH_REMOTE_PROXY` 兜底**（[src/session/proxy-env.ts](../src/session/proxy-env.ts)）。凭据键（`DEEPSEEK_API_KEY` 等）必须最后合并，被用户 env 挤掉会导致远端报 `MISSING_CREDENTIAL`、代理根本收不到请求。三条硬约束：
+
+- **env 键名不经 `quote()` 直接插值进启动命令**（remote-process.ts 的 `envAssignments` 是 `${key}=${quote(value)}`，只有值有转义）——用户 env 键名必须过 `/^[A-Za-z_][A-Za-z0-9_]*$/`，写入（路由+store 双拦截）、读取（防手工编辑文件）、launch（session 层最后防线）三处校验（`assertSafeEnvKeys`）；保留键 `DSH_HOME`/`DSH_AGENTS_HOME`/`PATH` 禁止用户配置——前两个在 envAssignments 里**先于** extraEnv 赋值，用户值会覆盖远端落盘隔离契约（见第 11 条），PATH 由启动器管理。校验集合单一来源在 session 层（plugin 层向下 import，不许反向）
+- **注入只发生在启动远端进程时**：`probeExistingSession` 命中复用不补注入（与凭据占位同语义），要生效用 forceRestart；重连重启路径（reconnectOnce → launch）同样透传 extraEnv
+- per-host 配置（面板齿轮）落盘 `~/.dsh/remote-host-env.json`（原子写、0o600——值可能含代理认证信息，Windows 上 mode 位无效靠目录 ACL）；日志与错误消息**只打键名不打值**；路由 `GET/POST /api/dsh-remote-explorer/host-env` 走 connection 已鉴权通道
+
 ## 凭据与安全
 
 **7. 远端 dsh 已内置令牌认证。** 启动输出形如 `dsh web: http://127.0.0.1:<端口>/?token=<43 字符>`，无令牌访问返回 401，令牌换 `HttpOnly` + `SameSite=Strict` cookie。**令牌不落盘**，只在启动输出首行——所以启动日志文件既是诊断来源也是令牌唯一来源，不能丢。

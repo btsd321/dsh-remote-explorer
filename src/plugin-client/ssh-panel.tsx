@@ -30,6 +30,8 @@ import {
 } from './api.js';
 import { openRemoteWindow, OVERLAY_INTENT_ORIGIN } from './remote-window.js';
 import { RemotePluginsSection } from './panel-plugins.js';
+import { HostEnvDialog } from './host-env-dialog.js';
+import { HostPicker } from './host-picker.js';
 import { STATE_COLORS, STATE_LABEL_KEYS } from '../util/session-display.js';
 import { inputStyle, buttonStyle } from './styles.js';
 import { DESKTOP, HANDOFF_COUNTDOWN_SECONDS } from './constants.js';
@@ -65,6 +67,15 @@ export function SshSessionPanel(props: SshSessionPanelProps): ReactNode {
   const [refreshMirrors, setRefreshMirrors] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [formError, setFormError] = React.useState('');
+
+  // ---- 环境变量配置弹窗（宿主侧 per-host 持久化，连接时注入远端 dsh） ----
+  /** 弹窗目标主机别名；null = 关闭 */
+  const [envDialogHost, setEnvDialogHost] = React.useState<string | null>(null);
+
+  /** 关闭环境变量弹窗（useCallback 保证引用稳定，弹窗 Esc 监听不重挂） */
+  const closeEnvDialog = React.useCallback((): void => {
+    setEnvDialogHost(null);
+  }, []);
 
   // ---- 数据状态 ----
   const [hosts, setHosts] = React.useState<SshHostSummary[]>([]);
@@ -169,6 +180,53 @@ export function SshSessionPanel(props: SshSessionPanelProps): ReactNode {
     }
   };
 
+  // 有活跃会话（含连接中与外部视图）的主机集合：combobox 浮层的「已连接」
+  // 标记 + 连接表单按钮形态切换（选中已连接主机 → 断开）共用同一判定
+  const connectedHostAliases = React.useMemo(() => {
+    const set = new Set<string>();
+    for (const item of sessions) {
+      if (item.connecting || item.state.tag !== 'disconnected') set.add(item.hostAlias);
+    }
+    return set;
+  }, [sessions]);
+
+  /**
+   * 断开某主机在本进程维持的全部活跃会话（连接表单的「断开」按钮）。
+   *
+   * 串行逐个断开（对远端操作默认串行的仓库纪律）；连接中的会话会被宿主
+   * 拒绝（still_connecting）并提示，不阻断其余；外部会话不归本进程管，
+   * 只提示不操作。
+   *
+   * @param hostAlias - 目标主机别名
+   */
+  const onDisconnectHost = async (hostAlias: string): Promise<void> => {
+    if (busy) return;
+    const targets = sessions.filter(item =>
+      item.hostAlias === hostAlias
+      && item.external !== true
+      && (item.connecting || item.state.tag !== 'disconnected'));
+    if (targets.length === 0) {
+      // 集合判定含外部会话：走到这里说明该主机的会话全由其他本机进程维持
+      setFormError(t('hostDisconnectExternal'));
+      return;
+    }
+    setBusy(true);
+    setFormError('');
+    const errors: string[] = [];
+    try {
+      for (const item of targets) {
+        try {
+          await postDisconnect(item.sessionId, stopRemote);
+        } catch (error) {
+          errors.push(messageOf(error));
+        }
+      }
+    } finally {
+      if (errors.length > 0) setFormError(errors.join('；'));
+      setBusy(false);
+    }
+  };
+
   // 全局面板自带页头（settings 弹窗时代标题由设置壳显示，迁出后自己给）；
   // 根容器全高滚动：中央列高度由 layout 决定，内容超长时面板内滚动
   return (
@@ -198,24 +256,19 @@ export function SshSessionPanel(props: SshSessionPanelProps): ReactNode {
           <label style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: '1 1 220px' }}>
             <span style={{ fontSize: 12, opacity: 0.75 }}>{t('host')}</span>
             <span style={{ display: 'flex', gap: 4 }}>
-              <input
-                list="dsh-remote-explorer-hosts"
+              {/* combobox：点开浮层始终列全部主机（datalist 会按残留值过滤，
+                  弃用）；已连接主机带标记，选择直通 cwd 记忆 */}
+              <HostPicker
                 value={host}
-                placeholder={t('hostPlaceholder')}
-                style={{ ...inputStyle, flex: 1 }}
-                onChange={event => onHostChange(event.target.value)}
+                onChange={onHostChange}
+                hosts={hosts}
+                connectedHosts={connectedHostAliases}
+                t={t}
               />
               <button type="button" style={buttonStyle} title={t('refreshHosts')}
                 onClick={() => { void loadHosts(true); }}>↻</button>
             </span>
           </label>
-          <datalist id="dsh-remote-explorer-hosts">
-            {hosts.map(item => (
-              <option key={item.alias} value={item.alias}>
-                {`${item.user === '' ? '' : `${item.user}@`}${item.hostName}:${item.port}`}
-              </option>
-            ))}
-          </datalist>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: '2 1 300px' }}>
             <span style={{ fontSize: 12, opacity: 0.75 }}>{t('cwd')}</span>
             <input value={cwd} placeholder={t('cwdPlaceholder')} style={inputStyle}
@@ -267,30 +320,40 @@ export function SshSessionPanel(props: SshSessionPanelProps): ReactNode {
         </label>
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          {DESKTOP
+          {host.trim() !== '' && connectedHostAliases.has(host.trim())
             ? (
-              // 桌面端单入口：就绪后开整窗浮动桌面（桌面壳无跨 origin 导航能力）
+              // 选中已连接主机：按钮组整体切换为「断开」（含连接中与外部视图的
+              // 主机都算已连接；断开只作用于本进程会话，外部会话给出提示）
               <button type="button" style={{ ...buttonStyle, fontWeight: 600 }}
-                disabled={busy || host.trim() === ''}
-                onClick={() => { void onConnect('window'); }}>
-                {busy ? t('connecting') : t('connectWindow')}
+                disabled={busy}
+                onClick={() => { void onDisconnectHost(host.trim()); }}>
+                {busy ? t('connecting') : t('disconnect')}
               </button>
             )
-            : (
-              // 浏览器端双入口（VS Code 语义）：当前标签 = 就绪后同标签切入；新标签 = 本页留守管理
-              <>
+            : DESKTOP
+              ? (
+                // 桌面端单入口：就绪后开整窗浮动桌面（桌面壳无跨 origin 导航能力）
                 <button type="button" style={{ ...buttonStyle, fontWeight: 600 }}
                   disabled={busy || host.trim() === ''}
-                  onClick={() => { void onConnect('current'); }}>
-                  {busy ? t('connecting') : t('connectCurrent')}
+                  onClick={() => { void onConnect('window'); }}>
+                  {busy ? t('connecting') : t('connectWindow')}
                 </button>
-                <button type="button" style={buttonStyle}
-                  disabled={busy || host.trim() === ''}
-                  onClick={() => { void onConnect('new'); }}>
-                  {t('connectNew')}
-                </button>
-              </>
-            )}
+              )
+              : (
+                // 浏览器端双入口（VS Code 语义）：当前标签 = 就绪后同标签切入；新标签 = 本页留守管理
+                <>
+                  <button type="button" style={{ ...buttonStyle, fontWeight: 600 }}
+                    disabled={busy || host.trim() === ''}
+                    onClick={() => { void onConnect('current'); }}>
+                    {busy ? t('connecting') : t('connectCurrent')}
+                  </button>
+                  <button type="button" style={buttonStyle}
+                    disabled={busy || host.trim() === ''}
+                    onClick={() => { void onConnect('new'); }}>
+                    {t('connectNew')}
+                  </button>
+                </>
+              )}
           {formError !== ''
             ? <span style={{ color: '#ef4444', fontSize: 13 }}>{t('connectError')}：{formError}</span>
             : null}
@@ -317,6 +380,7 @@ export function SshSessionPanel(props: SshSessionPanelProps): ReactNode {
               {sessions.map(session => renderSessionRow(session, selectedId, t, DESKTOP, {
                 onSelect: setSelectedId,
                 onDisconnect: target => { void onDisconnect(target); },
+                onConfigureEnv: hostAlias => { setEnvDialogHost(hostAlias); },
               }))}
             </div>
           )}
@@ -347,6 +411,11 @@ export function SshSessionPanel(props: SshSessionPanelProps): ReactNode {
             ))}
         </div>
       </section>
+
+      {/* ---- 环境变量配置弹窗（固定定位浮层盖在面板上；保存与生效语义见弹窗内提示） ---- */}
+      {envDialogHost !== null
+        ? <HostEnvDialog hostAlias={envDialogHost} t={t} onClose={closeEnvDialog} />
+        : null}
     </div>
   );
 }
@@ -357,6 +426,8 @@ export interface RowActions {
   onSelect: (sessionId: string) => void;
   /** 断开 */
   onDisconnect: (target: string) => void;
+  /** 打开该主机的环境变量配置弹窗；未提供时不渲染行内齿轮（wsl-panel 复用本行渲染，暂未接入） */
+  onConfigureEnv?: (hostAlias: string) => void;
 }
 
 /**
@@ -380,6 +451,8 @@ export function renderSessionRow(
   const stateLabel = t((STATE_LABEL_KEYS[stateTag] ?? 'stateIdle') as RemoteExplorerLocaleKey);
   const stateColor = STATE_COLORS[stateTag] ?? '#9ca3af';
   const missingKeys = session.missingKeyEnvs ?? [];
+  // 提前收窄到局部 const：可选回调的 !== undefined 判定才能穿透进 onClick 闭包
+  const configureEnv = actions.onConfigureEnv;
   return (
     <div
       key={session.sessionId}
@@ -468,20 +541,43 @@ export function renderSessionRow(
       {session.external === true
         ? null
         : (
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              actions.onDisconnect(session.sessionId);
-            }}
-            style={{
-              background: 'transparent', color: 'inherit', fontSize: 12,
-              border: '1px solid rgba(127,127,127,0.5)', borderRadius: 6,
-              padding: '2px 8px', cursor: 'pointer',
-            }}
-          >
-            {t('disconnect')}
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                actions.onDisconnect(session.sessionId);
+              }}
+              style={{
+                background: 'transparent', color: 'inherit', fontSize: 12,
+                border: '1px solid rgba(127,127,127,0.5)', borderRadius: 6,
+                padding: '2px 8px', cursor: 'pointer',
+              }}
+            >
+              {t('disconnect')}
+            </button>
+            {/* 齿轮：配置该主机环境变量。external 会话不给行内入口（env 由对应
+                进程的宿主侧配置管理），同一别名仍可经表单齿轮配置 */}
+            {configureEnv !== undefined
+              ? (
+                <button
+                  type="button"
+                  title={t('hostEnvOpen')}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    configureEnv(session.hostAlias);
+                  }}
+                  style={{
+                    background: 'transparent', color: 'inherit', fontSize: 12,
+                    border: '1px solid rgba(127,127,127,0.5)', borderRadius: 6,
+                    padding: '2px 8px', cursor: 'pointer',
+                  }}
+                >
+                  ⚙
+                </button>
+              )
+              : null}
+          </>
         )}
     </div>
   );

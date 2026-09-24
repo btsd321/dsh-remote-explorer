@@ -10,6 +10,7 @@ export type RemoteExplorerLocaleKey =
   | 'sshSectionIntro' | 'wslSectionIntro'
   | 'menuSsh' | 'menuWsl'
   | 'host' | 'hostPlaceholder' | 'refreshHosts'
+  | 'hostPickerNoMatch' | 'hostDisconnectExternal'
   | 'cwd' | 'cwdPlaceholder'
   | 'advanced' | 'localPort' | 'forceRestart' | 'refreshMirrors'
   | 'nodeVersion' | 'dshVersion' | 'privateKey'
@@ -26,6 +27,12 @@ export type RemoteExplorerLocaleKey =
   | 'stateReconnecting' | 'stateReconnectFailed' | 'stateReconnectExhausted' | 'stateDisconnected'
   | 'log' | 'logEmpty' | 'connectError' | 'loadError' | 'retry'
   | 'missingKeys'
+  | 'hostEnvOpen' | 'hostEnvTitle' | 'hostEnvHint' | 'hostEnvApplyHint'
+  | 'hostEnvKey' | 'hostEnvValue' | 'hostEnvAddRow' | 'hostEnvRemoveRow' | 'hostEnvSkipHint'
+  | 'hostEnvProxyPreset' | 'hostEnvProxyHint'
+  | 'hostEnvSave' | 'hostEnvSaving' | 'hostEnvCancel' | 'hostEnvLoading'
+  | 'hostEnvLoadError' | 'hostEnvSaveError'
+  | 'hostEnvInvalidKey' | 'hostEnvReservedKey' | 'hostEnvDuplicateKey' | 'hostEnvInvalidValue'
   | 'wslDistro' | 'wslDistroPlaceholder' | 'wslUser' | 'wslUserPlaceholder'
   | 'wslNoDistros' | 'wslVersion' | 'wslState'
   | 'wslStateRunning' | 'wslStateStopped' | 'wslDefault'
@@ -43,6 +50,8 @@ export const zh: Record<RemoteExplorerLocaleKey, string> = {
   host: '主机',
   hostPlaceholder: 'ssh config 别名，或 user@host[:port]',
   refreshHosts: '刷新主机列表',
+  hostPickerNoMatch: '没有匹配的主机（也可直填 user@host[:port]）',
+  hostDisconnectExternal: '该主机的会话由其他本机进程维持，请在对应进程或 CLI 中断开',
   cwd: '远端目录',
   cwdPlaceholder: '/home/you/project（留空 = 远端家目录）',
   advanced: '高级选项',
@@ -101,6 +110,27 @@ export const zh: Record<RemoteExplorerLocaleKey, string> = {
   loadError: '加载失败',
   retry: '重试',
   missingKeys: '本机缺少的 LLM key 环境变量',
+  hostEnvOpen: '配置环境变量',
+  hostEnvTitle: '环境变量',
+  hostEnvHint: '按主机保存自定义环境变量，仅存宿主侧 ~/.dsh/remote-host-env.json（不写入 ssh config）；连接时注入远端 dsh 进程',
+  hostEnvApplyHint: '保存后下一次连接该主机时生效；已运行的会话需断开（勾选「同时停止远端 dsh」）后重连才会注入',
+  hostEnvKey: '变量名',
+  hostEnvValue: '值',
+  hostEnvAddRow: '添加一行',
+  hostEnvRemoveRow: '删除此行',
+  hostEnvSkipHint: '未填变量名的空行保存时自动忽略',
+  hostEnvProxyPreset: '代理快捷项',
+  hostEnvProxyHint: '一键填入 https_proxy 与 http_proxy = http://127.0.0.1:18890（SSH 反向隧道的远端端口，按 net_proxy 脚本实际 RemotePort 调整）',
+  hostEnvSave: '保存',
+  hostEnvSaving: '保存中…',
+  hostEnvCancel: '取消',
+  hostEnvLoading: '加载中…',
+  hostEnvLoadError: '加载失败：',
+  hostEnvSaveError: '保存失败：',
+  hostEnvInvalidKey: '变量名非法（仅字母/数字/下划线，首字符不能是数字）：',
+  hostEnvReservedKey: '保留键不可配置（由工具自身管理）：',
+  hostEnvDuplicateKey: '变量名重复：',
+  hostEnvInvalidValue: '值含控制字符：',
   wslDistro: '发行版',
   wslDistroPlaceholder: '选择 WSL 发行版',
   wslUser: '用户名',
@@ -127,6 +157,8 @@ export const en: Record<RemoteExplorerLocaleKey, string> = {
   host: 'Host',
   hostPlaceholder: 'ssh config alias, or user@host[:port]',
   refreshHosts: 'Refresh host list',
+  hostPickerNoMatch: 'No matching host (you can also type user@host[:port])',
+  hostDisconnectExternal: 'The sessions of this host are maintained by other local processes; disconnect from that process or the CLI',
   cwd: 'Remote directory',
   cwdPlaceholder: '/home/you/project (empty = remote home)',
   advanced: 'Advanced',
@@ -185,6 +217,27 @@ export const en: Record<RemoteExplorerLocaleKey, string> = {
   loadError: 'Load failed',
   retry: 'Retry',
   missingKeys: 'LLM key env vars missing on this machine',
+  hostEnvOpen: 'Configure environment variables',
+  hostEnvTitle: 'Environment variables',
+  hostEnvHint: 'Per-host custom environment variables, stored host-side only in ~/.dsh/remote-host-env.json (never in ssh config); injected into the remote dsh process when connecting',
+  hostEnvApplyHint: 'Takes effect on the next connection to this host; running sessions must be disconnected (with "Also stop remote dsh" checked) and reconnected to pick it up',
+  hostEnvKey: 'Variable name',
+  hostEnvValue: 'Value',
+  hostEnvAddRow: 'Add a row',
+  hostEnvRemoveRow: 'Remove this row',
+  hostEnvSkipHint: 'Rows without a variable name are skipped on save',
+  hostEnvProxyPreset: 'Proxy preset',
+  hostEnvProxyHint: 'One-click fills https_proxy and http_proxy = http://127.0.0.1:18890 (the remote end of the SSH reverse tunnel; adjust to the actual RemotePort of your net_proxy script)',
+  hostEnvSave: 'Save',
+  hostEnvSaving: 'Saving…',
+  hostEnvCancel: 'Cancel',
+  hostEnvLoading: 'Loading…',
+  hostEnvLoadError: 'Load failed: ',
+  hostEnvSaveError: 'Save failed: ',
+  hostEnvInvalidKey: 'Invalid variable name (letters/digits/underscore only, must not start with a digit): ',
+  hostEnvReservedKey: 'Reserved key (managed by the tool itself): ',
+  hostEnvDuplicateKey: 'Duplicate variable name: ',
+  hostEnvInvalidValue: 'Value contains control characters: ',
   wslDistro: 'Distribution',
   wslDistroPlaceholder: 'Select a WSL distribution',
   wslUser: 'Username',

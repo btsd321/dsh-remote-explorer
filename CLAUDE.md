@@ -102,9 +102,9 @@ pnpm run setup:hooks
 
 ```
 入口层      cli/            命令分派、参数解析、终端输出（CLI 形态）
-            plugin/         dsh 插件宿主半：supervisor 簿记、remote-plugin-store 远端插件包管理、命令/工具/路由注册
+            plugin/         dsh 插件宿主半：supervisor 簿记、remote-plugin-store 远端插件包管理、host-env-store per-host 环境变量持久化、命令/工具/路由注册
             plugin-client/  dsh 插件浏览器半：远程会话全局面板（React）、useSessionPolling 轮询 Hook、共享常量与样式
-编排层      session/      会话生命周期、心跳、重连、多会话簿记
+编排层      session/      会话生命周期、心跳、重连、多会话簿记、proxy-env 代理与用户环境变量收集注入
 能力层      provision/    装 Node 与 dsh、镜像测速、生成会话 profile、RemoteContext 远端执行上下文
             tunnel/       端口分配、正向转发
             credential/   LLM 凭据代理（反向隧道，key 不出本机）、proxy-secret 凭据材料读写
@@ -125,6 +125,7 @@ pnpm run setup:hooks
 - **停进程**：不能用 `pkill -f`，用 pid 文件或端口定位
 - **socket error**：必须在 destroy 之前挂 error 监听器，否则进程崩溃
 - **凭据**：远端 key 变量是代理令牌不是真实 key；令牌只在启动日志首行
+- **环境变量注入**：注入远端 dsh 的用户 env 键名必须过 `assertSafeEnvKeys`（键名不经 quote 直接拼进启动命令，非法键 = 命令注入）；`DSH_HOME`/`DSH_AGENTS_HOME`/`PATH` 是保留键禁配；合并顺序凭据占位最后（防被挤掉）；复用会话不补注入，要生效用 forceRestart
 - **插件形态**：宿主产物必须 ESM；命令名匹配 `/^[a-z][a-z0-9_-]*$/`；defineTool 的 object 节点必须写 `additionalProperties`；路由只走已鉴权通道
 - **WSL**：detach 用 PowerShell `Start-Process -WindowStyle Hidden`，不能用 `setsid nohup &`；localhost forwarding 默认开启，openChannel 用 127.0.0.1 即可
 
