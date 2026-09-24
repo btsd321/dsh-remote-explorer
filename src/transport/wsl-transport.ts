@@ -22,14 +22,18 @@ import { Duplex } from 'node:stream';
 import { RemoteError, toErrorMessage } from '../util/errors.js';
 import { quote } from '../util/shell-quote.js';
 import { listWslDistros, getWslExePath } from '../hosts/wsl-distro-parser.js';
+import {
+  COMMAND_PREVIEW_LEN,
+  STDERR_PREVIEW_LEN,
+  buildCommandWithEnv,
+  parsePlatformOutput,
+} from './platform.js';
 import type {
   ExecOptions,
   ExecResult,
   FileTransfer,
-  RemoteArch,
   RemoteChannel,
   RemoteFileOptions,
-  RemoteOs,
   RemotePlatform,
   RemoteTransport,
   ReverseConnection,
@@ -49,22 +53,6 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 
 /** UNC 路径前缀模板 */
 const UNC_PREFIX = '\\\\wsl.localhost\\';
-
-/** `uname -m` 输出到 Node 架构命名的映射 */
-const ARCH_MAP: Record<string, RemoteArch> = {
-  aarch64: 'arm64',
-  arm64: 'arm64',
-  x86_64: 'x64',
-  amd64: 'x64',
-  armv7l: 'armv7l',
-  armv7: 'armv7l',
-};
-
-/** `uname -s` 输出到远端 OS 的映射 */
-const OS_MAP: Record<string, RemoteOs> = {
-  Linux: 'linux',
-  Darwin: 'darwin',
-};
 
 /**
  * 基于 WSL 的远端传输。
@@ -157,7 +145,7 @@ export class WslTransport implements RemoteTransport {
         throw new RemoteError(
           'EXEC_FAILED',
           `WSL ${this.options.distroName} 上的命令返回 ${result.exitCode ?? `信号 ${result.signal}`}：`
-            + `${command.slice(0, 120)}\n${result.stderr.trim().slice(0, 400)}`,
+            + `${command.slice(0, COMMAND_PREVIEW_LEN)}\n${result.stderr.trim().slice(0, STDERR_PREVIEW_LEN)}`,
           { hostAlias: this.hostAlias },
         );
       }
@@ -425,25 +413,18 @@ export class WslTransport implements RemoteTransport {
     const result = await this.exec('uname -s && uname -m', {
       ...(signal ? { signal } : {}),
     });
-    const [rawOs = '', rawArch = ''] = result.stdout.trim().split('\n').map(line => line.trim());
-    const os = OS_MAP[rawOs];
-    const arch = ARCH_MAP[rawArch];
-    if (!os) {
-      throw new RemoteError(
-        'PLATFORM_UNSUPPORTED',
-        `WSL ${this.options.distroName} 的系统 ${rawOs || '(空)'} 不受支持；远端只支持 Linux 与 macOS`,
-        { hostAlias: this.hostAlias },
-      );
+    try {
+      return parsePlatformOutput(result.stdout, `WSL ${this.options.distroName}`);
+    } catch (error) {
+      if (error instanceof RemoteError) {
+        // 补充 hostAlias 上下文（parsePlatformOutput 不感知传输层实例）
+        throw new RemoteError(error.code, error.message, {
+          cause: error.cause,
+          hostAlias: this.hostAlias,
+        });
+      }
+      throw error;
     }
-    if (!arch) {
-      throw new RemoteError(
-        'PLATFORM_UNSUPPORTED',
-        `WSL ${this.options.distroName} 的架构 ${rawArch || '(空)'} 不受支持；`
-          + `支持 ${Object.keys(ARCH_MAP).join('、')}`,
-        { hostAlias: this.hostAlias },
-      );
-    }
-    return { os, arch, rawOs, rawArch };
   }
 
   /**
@@ -462,7 +443,7 @@ export class WslTransport implements RemoteTransport {
   }
 
   /**
-   * 给命令加上环境变量和 PATH 前缀。
+   * 给命令加上环境变量和 PATH 前缀（委托给共享模块 {@link buildCommandWithEnv}）。
    *
    * @param command - 原始命令
    * @param env - 环境变量
@@ -474,18 +455,7 @@ export class WslTransport implements RemoteTransport {
     env?: Record<string, string>,
     pathPrefix?: string,
   ): string {
-    const assignments: string[] = [];
-
-    if (pathPrefix !== undefined && pathPrefix.length > 0) {
-      // `"$PATH"` 留在引号外由外层 shell 展开
-      assignments.push(`PATH=${quote(pathPrefix)}:"$PATH"`);
-    }
-    for (const [key, value] of Object.entries(env ?? {})) {
-      assignments.push(`${key}=${quote(value)}`);
-    }
-
-    if (assignments.length === 0) return command;
-    return `env ${assignments.join(' ')} ${command}`;
+    return buildCommandWithEnv(command, env, pathPrefix);
   }
 
   /**
