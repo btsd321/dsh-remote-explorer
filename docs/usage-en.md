@@ -161,7 +161,7 @@ pnpm exec tsx src/cli/bin.ts provision <alias> --cwd //home/user
 
 **Why provision separately:** Provisioning is the slowest and most failure-prone step (~75 seconds for a fresh install). Separating it allows independent retry and diagnosis.
 
-**Version isolation:** Each Node and dsh version is installed in its own directory (e.g. `~/.dsh-remote-explorer/btsd321/node/v24.11.1/`, `~/.dsh-remote-explorer/btsd321/versions/dsh-0.1.6-alpha.2/`). Upgrading never overwrites in place — this avoids "Text file busy" errors when a running process holds files open.
+**Version isolation:** Each Node and dsh version is installed in its own directory (e.g. `~/.dsh-remote-explorer/btsd321/node/v24.21.0/`, `~/.dsh-remote-explorer/btsd321/versions/dsh-0.1.6-alpha.2/`). Upgrading never overwrites in place — this avoids "Text file busy" errors when a running process holds files open.
 
 **Output:** A table showing the remote base directory, Node version, dsh version, dsh entry path, and session `DSH_HOME`.
 

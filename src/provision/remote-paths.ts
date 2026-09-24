@@ -86,13 +86,13 @@ export interface RemotePaths {
 
   /**
    * 某 Node 版本的安装目录。
-   * @param version - 版本号，含前缀 v，如 `v24.11.1`
+   * @param version - 版本号，含前缀 v，如 `v24.21.0`
    */
   nodeDir(version: string): string;
 
   /**
    * 某 Node 版本的可执行文件。
-   * @param version - 版本号，如 `v24.11.1`
+   * @param version - 版本号，如 `v24.21.0`
    */
   nodeBin(version: string): string;
 
@@ -101,7 +101,7 @@ export interface RemotePaths {
    *
    * dsh 与 npm 的 shebang 都是 `#!/usr/bin/env node`，不把这个目录放进 PATH
    * 会直接报 `env: 'node': No such file or directory`（P0 实测）。
-   * @param version - 版本号，如 `v24.11.1`
+   * @param version - 版本号，如 `v24.21.0`
    */
   nodeBinDir(version: string): string;
 

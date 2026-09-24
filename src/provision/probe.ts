@@ -8,7 +8,7 @@
  * + SIGTRAP，但机器有 13G 空闲内存、cgroup 无限制——不是真 OOM，而是 VA 空间与
  * ASLR 交互导致的随机失败。`npm install` 要起几十次 node 子进程，35% 的单次崩溃率
  * 意味着整装几乎必败，且报错会误导到最后一个失败的包（当时是 koffi）。
- * v24.11.1 在同一台机器上 0/60 失败，故决策锁定 v24 系。
+ * v24.11.1 在同一台机器上 0/60 失败，故决策锁定 v24 系（默认 v24.21.0，Node 24 LTS）。
  *
  * 结论：装完 Node 必须自检，不合格就换版本，别等 npm install 跑一半再回溯。
  */
@@ -35,7 +35,7 @@ export interface RemoteTools {
 export interface InstalledRuntime {
   /** 绝对路径 */
   path: string;
-  /** 版本号（如 v24.11.1 或 0.1.7-rc.1） */
+  /** 版本号（如 v24.21.0 或 0.1.7-rc.1） */
   version: string;
 }
 

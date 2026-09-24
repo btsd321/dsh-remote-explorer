@@ -6,7 +6,8 @@
  * 版本策略（决策 10）：默认锁定 v24 系。P0 实测 v22.23.2 在 aarch64 上起进程
  * 崩溃率 35%（V8 初始化 isolate 随机失败，报 OOM 但机器内存充足），
  * 而 v24.11.1 在同一台机器上 0/60 失败。dsh 的 engines 是
- * `^22.19.0 || >=24.0.0`，v24 在范围内。
+ * `^22.19.0 || >=24.0.0`，v24 在范围内。默认跟随 Node 24 LTS（Krypton）
+ * 最新版，当前为 v24.21.0。
  *
  * 目录隔离：每个版本装到 `~/.dsh-remote-explorer/btsd321/node/<版本>/`，多版本并存。
  * 升级时不覆盖旧版本，避免「运行中的进程占着文件」这类故障。
@@ -23,10 +24,10 @@ import type { RemoteArch, RemoteOs, RemoteTransport } from '../transport/types.j
 /**
  * 默认安装的 Node 版本。
  *
- * P0 在 aarch64 上实测 0/60 失败，是目前已验证稳定的版本。
- * 用户可用 `--node-version` 覆盖。
+ * 跟随 Node 24 LTS（Krypton）最新版。P0 实测 v24.11.1 在 aarch64 上 0/60
+ * 失败，v24 系已验证稳定。用户可用 `--node-version` 覆盖。
  */
-export const DEFAULT_NODE_VERSION = 'v24.11.1';
+export const DEFAULT_NODE_VERSION = 'v24.21.0';
 
 /** 下载 tarball 的超时（毫秒）。P0 实测 29M 用了 2.9s，给足余量应对慢链路 */
 const DOWNLOAD_TIMEOUT_MS = 600_000;

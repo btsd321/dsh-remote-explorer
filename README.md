@@ -242,7 +242,7 @@ pnpm exec tsx scripts/package.ts --os linux --arch arm64
 | `--os <os>` | Target OS: `win32` / `linux` / `darwin` (default: current platform) |
 | `--arch <arch>` | Target architecture: `x64` / `arm64` (default: current architecture) |
 | `--all` | Build the full five-platform matrix; ignores `--os` / `--arch` |
-| `--node-version <ver>` | Node version to bundle (default: `v24.11.1`) |
+| `--node-version <ver>` | Node version to bundle (default: `v24.21.0`) |
 | `--mirror <mirror>` | Node download source: `npmmirror` (default) / `official` / custom URL prefix |
 | `--out-dir <dir>` | Output directory (default: `dist`) |
 | `--minify` | Minify the bundle (off by default, keeps readable stack traces) |
