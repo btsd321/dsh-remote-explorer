@@ -182,18 +182,26 @@ export const TEMPLATE_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-
 const FALLBACK_LINK_NAMES = new Set(['@deepseek-ai', 'cpu-features', 'nan']);
 
 /**
- * 把 store 的 dependencies/bundles 合并进会话 manifest（真源在 store）。
+ * 双向同步 store 与会话 manifest，确保无论通过哪条路径操作插件都能收敛到一致状态。
  *
  * 会话 manifest 是 dsh hmr 的 watch 对象——改写即热加载/卸载 bundle 层，
  * 这是「本机活会话立即生效」的实现点。内容无变化时不写（避免无谓 hmr 触发）。
  *
- * 三条自愈/保留规则：
+ * 同步规则（双向收敛）：
+ *
+ * **正向（store → session）**：
  * - store deps 从 store node_modules 扫描自愈——远端窗口原生 UI 的 pnpm 安装
  *   落在 store（session nm 是 symlink），其 manifest 写入只到会话层，这里收编
  * - store bundles 从会话 manifest 收编「store nm 中真实存在」的项——远端原生 UI
  *   启用插件只写会话 bundles，不收编则下次 sync 覆盖会话 bundles 时会把它关掉
  *   （面板列表也会显示未启用）；只增不删，handoff/TEMPLATE 不在扫描集内不受影响
  * - 会话 bundles = store bundles ∪ 模板 base bundles（base/web-app 永不被覆盖）
+ *
+ * **反向（session → store）**：
+ * - store nm 中已不存在的包从 store deps 中移除——覆盖 dsh 原生 UI 卸载后 nm 已
+ *   清理但 store manifest 未更新的场景（不论 spec 值，不再仅限 '*' 收编项）
+ * - 会话 bundles 中已不存在的项从 store bundles 中移除——覆盖 dsh 原生 UI 卸载
+ *   后只改了 profile package.json 的场景，防止下次 sync 把旧 bundles 写回 session
  *
  * @param io - manifest IO
  * @param paths - 远端路径集合
@@ -227,9 +235,11 @@ export async function syncSessionManifest(
       storeChanged = true;
     }
   }
-  // 自愈回收：版本为 '*' 的收编项若已不在 store nm（卸载残留）则清除
-  for (const [name, spec] of Object.entries(storeDeps)) {
-    if (spec === '*' && !scannedNames.has(name)) {
+  // 自愈回收：store nm 中已不存在的包从 store deps 中移除（不论 spec 值）。
+  // 覆盖 dsh 原生 UI 卸载后 nm 已被 pnpm 清理但 store manifest 仍保留声明的场景。
+  // 旧版只回收 spec === '*' 的收编项，对有具体版本号的残留无效——现已放宽。
+  for (const name of Object.keys(storeDeps)) {
+    if (!scannedNames.has(name)) {
       delete storeDeps[name];
       storeChanged = true;
     }
@@ -256,6 +266,19 @@ export async function syncSessionManifest(
     if (!scannedNames.has(name)) continue;
     storeBundlesList.push(name);
     storeChanged = true;
+  }
+  // 反向同步 bundles：会话 bundles 中已不存在的项从 store bundles 中移除。
+  // 覆盖 dsh 原生 UI 卸载后只改了 profile package.json 的场景——若不移除，
+  // 下次 sync 会把 store 的旧 bundles 写回 session，导致已卸载的插件复活。
+  // TEMPLATE_BUNDLES 受保护，不会被反向同步移除。
+  const sessionBundlesSet = new Set(session.dsh?.profile?.bundles ?? []);
+  for (let i = storeBundlesList.length - 1; i >= 0; i--) {
+    const name = storeBundlesList[i];
+    if (TEMPLATE_BUNDLES.includes(name)) continue;
+    if (!sessionBundlesSet.has(name)) {
+      storeBundlesList.splice(i, 1);
+      storeChanged = true;
+    }
   }
   if (storeChanged) {
     await writePluginStoreManifest(io, paths, {
