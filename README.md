@@ -8,7 +8,7 @@ Inspired by VS Code Remote-SSH, Zed, and JetBrains Gateway — **code and sessio
 
 ## Supported environments
 
-- **Local (client)**: Windows / Linux / macOS. Node.js v20.19+ or v22+ is only needed for the **source-run** mode; release packages bundle their own Node runtime.
+- **Local (client)**: Windows / Linux / macOS. Node.js v20.19+ or v22+ and pnpm 11+ are only needed for the **source-run** mode (pnpm is the default dev package manager, pinned via `packageManager`); release packages bundle their own Node runtime.
 - **Remote host**: Linux or macOS (POSIX); aarch64 (arm64) and x86_64 both work. No Node preinstalled required — the tool installs and self-checks it.
 - **WSL (Windows Subsystem for Linux)**: On Windows, WSL2 distributions are supported as remote targets. dsh is auto-installed inside WSL, tunneled via localhost forwarding — no SSH setup needed. Click the "WSL Sessions" card in the panel to use; the entry is hidden on non-Windows platforms.
 - **SSH authentication**: private key (`IdentityFile`, recommended); with no key configured, an interactive terminal prompts for a password (no echo); `--password` also works (leaks via process list / shell history — the CLI warns).
@@ -20,11 +20,11 @@ The CLI has two run modes (identical commands and options); if you already run d
 
 ### Option 1: run from source
 
-The repository has no build step; `.ts` source is executed directly via tsx. After fetching the source:
+The repository has no build step; `.ts` source is executed directly via tsx. The dev environment defaults to **pnpm** (version pinned via `packageManager` in package.json). After fetching the source:
 
 ```bash
-npm install
-npx tsx src/cli/bin.ts list
+pnpm install
+pnpm exec tsx src/cli/bin.ts list
 ```
 
 ### Option 2: run a release package
@@ -49,7 +49,7 @@ dsh plugin --profile web add dsh-remote-explorer
 # When dsh is not on PATH:
 npx --yes @deepseek-ai/dsh plugin --profile web add dsh-remote-explorer
 # From a local checkout (build the plugin artifacts first):
-npm run build:plugin && dsh plugin --profile web add /path/to/repo
+pnpm run build:plugin && dsh plugin --profile web add /path/to/repo
 ```
 
 Restart `dsh web` after installing. The plugin provides three surfaces:
@@ -62,35 +62,35 @@ The plugin shares the CLI's session orchestration and remote layout (`~/.dsh-rem
 
 ## Quick start
 
-> Examples below use the **source-run** form. With a release package, replace `npx tsx src/cli/bin.ts` with `./dsh-remote-explorer` (Windows: `dsh-remote-explorer.cmd`) — the options are identical.
+> Examples below use the **source-run** form. With a release package, replace `pnpm exec tsx src/cli/bin.ts` with `./dsh-remote-explorer` (Windows: `dsh-remote-explorer.cmd`) — the options are identical.
 
 ```bash
 # List hosts from ~/.ssh/config
-npx tsx src/cli/bin.ts list
+pnpm exec tsx src/cli/bin.ts list
 
 # Diagnose a host's provisioning conditions (replace myhost with your alias or user@host[:port])
-npx tsx src/cli/bin.ts doctor myhost
-npx tsx src/cli/bin.ts doctor myhost --refresh-mirrors   # force re-benchmark mirrors
+pnpm exec tsx src/cli/bin.ts doctor myhost
+pnpm exec tsx src/cli/bin.ts doctor myhost --refresh-mirrors   # force re-benchmark mirrors
 
 # Main command: provision → start remote dsh → build tunnel → open browser (long-running)
 # Export the API key for whichever provider you use (provider list comes from ~/.dsh/settings.yaml)
-DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect myhost --cwd //home/youruser
+DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect myhost --cwd //home/youruser
 
 # Show all sessions maintained on this machine
-npx tsx src/cli/bin.ts status
+pnpm exec tsx src/cli/bin.ts status
 
 # Stop remote dsh
-npx tsx src/cli/bin.ts kill myhost --all
+pnpm exec tsx src/cli/bin.ts kill myhost --all
 
 # Clean up stale remote resources (old versions, dead session dirs; running sessions are protected)
-npx tsx src/cli/bin.ts clean myhost
-npx tsx src/cli/bin.ts clean myhost --keep 2   # keep 2 versions per category
+pnpm exec tsx src/cli/bin.ts clean myhost
+pnpm exec tsx src/cli/bin.ts clean myhost --keep 2   # keep 2 versions per category
 
 # Provision only, don't start services (idempotent; reuses installed versions)
-npx tsx src/cli/bin.ts provision myhost --cwd //home/youruser
+pnpm exec tsx src/cli/bin.ts provision myhost --cwd //home/youruser
 
 # Use a different ssh config file
-npx tsx src/cli/bin.ts list --ssh-config /path/to/config
+pnpm exec tsx src/cli/bin.ts list --ssh-config /path/to/config
 ```
 
 After `connect`, the process must stay running — the local tunnel listener and LLM proxy live inside it. **Ctrl-C stops the remote dsh as well** (disconnect = clean). To disconnect but keep the remote process for reuse, add `--keep-remote`. If the session enters a terminal state due to failure, the remote process is also preserved.
@@ -205,8 +205,8 @@ Foundation   hosts/   util/
 ## Development
 
 ```bash
-# Type check (local tsc has issues, see CLAUDE.md)
-npx -y -p typescript@5.7.3 tsc --noEmit
+# Type check
+pnpm run typecheck
 ```
 
 Code style guide is in [docs/type_script_style.md](docs/type_script_style.md) — read it before writing any code.
@@ -216,9 +216,9 @@ Code style guide is in [docs/type_script_style.md](docs/type_script_style.md) �
 Produces release packages (see [Installation and running](#option-2-run-a-release-package)): esbuild bundles the CLI with all runtime dependencies into a single `dsh-remote-explorer.cjs`, then the official Node binary for the target platform is added, along with launchers and docs, and everything is archived. Output lands in `dist/` (gitignored) — **this does not change how the source itself runs via tsx**.
 
 ```bash
-npx tsx scripts/package.ts                        # package for the current platform
-npx tsx scripts/package.ts --all                  # full five-platform matrix
-npx tsx scripts/package.ts --os linux --arch arm64
+pnpm exec tsx scripts/package.ts                        # package for the current platform
+pnpm exec tsx scripts/package.ts --all                  # full five-platform matrix
+pnpm exec tsx scripts/package.ts --os linux --arch arm64
 ```
 
 | Option | Description |

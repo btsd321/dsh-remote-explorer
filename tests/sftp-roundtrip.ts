@@ -7,7 +7,7 @@
  *                 printf-over-exec 路径的天敌，SFTP 主路径必须无感
  *              4. uploadFiles 批量并发上传（会话内 4 路）逐个摘要一致
  *
- * 用法：npx tsx tests/sftp-roundtrip.ts <主机别名>
+ * 用法：pnpm exec tsx tests/sftp-roundtrip.ts <主机别名>
  */
 
 import { createHash, randomBytes } from 'node:crypto';
@@ -23,7 +23,7 @@ import { quote } from '../src/util/shell-quote.js';
 
 const alias = process.argv[2];
 if (alias === undefined) {
-  console.error('用法：npx tsx tests/sftp-roundtrip.ts <主机别名>');
+  console.error('用法：pnpm exec tsx tests/sftp-roundtrip.ts <主机别名>');
   process.exit(64);
 }
 

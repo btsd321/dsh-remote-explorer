@@ -19,7 +19,7 @@
  * （scripts/package.ts 仍选 CJS——它独立运行，没有 loader/peer 解析问题。）
  *
  * 用法：
- *   npx tsx scripts/build-plugin.ts [--minify]
+ *   pnpm exec tsx scripts/build-plugin.ts [--minify]
  */
 
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
@@ -99,6 +99,10 @@ export async function buildPlugin(options: BuildPluginOptions = {}): Promise<voi
     target: 'node20',
     bundle: true,
     external: HOST_EXTERNAL,
+    // ssh2 可选原生件（sshcrypto.node）在放行构建脚本的机器上存在——单文件
+    // bundle 带不走它，empty loader 让 require 拿到空模块，ssh2 的 try/catch
+    // 自然回落纯 JS（与 package.ts 对 cpu-features 的 external 同一哲学）
+    loader: { '.node': 'empty' },
     define,
     minify,
   });
@@ -139,6 +143,8 @@ export async function buildPlugin(options: BuildPluginOptions = {}): Promise<voi
     bundle: true,
     external: HOST_EXTERNAL,
     banner: { js: HOST_BANNER },
+    // 同 handoff 宿主半：宿主半 bundle 了 ssh2，须容忍 .node 原生件存在
+    loader: { '.node': 'empty' },
     // handoff 产物文本随宿主半内联（引导期写进远端会话 profile）
     define: handoffDefine,
     minify,

@@ -18,9 +18,9 @@
  * - Node 二进制按平台不同（文件名与内容都是）
  *
  * 用法：
- *   npx tsx scripts/package.ts                        # 打当前运行平台
- *   npx tsx scripts/package.ts --os linux --arch arm64
- *   npx tsx scripts/package.ts --all                  # 五平台全矩阵
+ *   pnpm exec tsx scripts/package.ts                        # 打当前运行平台
+ *   pnpm exec tsx scripts/package.ts --os linux --arch arm64
+ *   pnpm exec tsx scripts/package.ts --all                  # 五平台全矩阵
  */
 
 import { execFileSync } from 'node:child_process';
@@ -453,6 +453,11 @@ async function main(): Promise<number> {
     // cpu-features 是 ssh2 的可选原生件：external 保留 require，运行时缺件由
     // ssh2 的 try/catch 兜住回落纯 JS；nan 只在编译 cpu-features 时用到
     external: ['cpu-features', 'nan'],
+    // ssh2 的可选原生件 sshcrypto.node 在放行构建脚本的机器上存在（pnpm-workspace
+    // 的 allowBuilds）——单文件 CLI 带不走它，empty loader 让 require 拿到空模块、
+    // ssh2 回落纯 JS；不带此配置时该机器上打包直接报「No loader is configured
+    // for .node files」
+    loader: { '.node': 'empty' },
     minify: values.minify === true,
   });
   progress.done(`${(statSync(bundleFile).size / 1_000_000).toFixed(1)} MB`);

@@ -4,7 +4,7 @@
 
 This document provides a detailed walkthrough of every `dsh-remote-explorer` command, its options, and common workflows.
 
-> Examples use the source-run form (`npx tsx src/cli/bin.ts <command>`). With a release package, substitute `./dsh-remote-explorer <command>` (Windows: `dsh-remote-explorer.cmd <command>`) — commands and options are identical.
+> Examples use the source-run form (`pnpm exec tsx src/cli/bin.ts <command>`; the dev environment defaults to pnpm). With a release package, substitute `./dsh-remote-explorer <command>` (Windows: `dsh-remote-explorer.cmd <command>`) — commands and options are identical.
 
 ## Table of contents
 
@@ -83,7 +83,7 @@ dsh-remote-explorer <command> [options]
 Since the project has no build step, run commands via tsx:
 
 ```bash
-npx tsx src/cli/bin.ts <command> [options]
+pnpm exec tsx src/cli/bin.ts <command> [options]
 ```
 
 ---
@@ -93,7 +93,7 @@ npx tsx src/cli/bin.ts <command> [options]
 Lists all `Host` entries from `~/.ssh/config`. Pure local operation — does not connect to any host.
 
 ```bash
-npx tsx src/cli/bin.ts list
+pnpm exec tsx src/cli/bin.ts list
 ```
 
 **Options:**
@@ -111,7 +111,7 @@ npx tsx src/cli/bin.ts list
 Runs a comprehensive diagnostic of a host's provisioning conditions. This is the **first tool for troubleshooting** — most remote development failures are environmental, not code-related.
 
 ```bash
-npx tsx src/cli/bin.ts doctor <alias>
+pnpm exec tsx src/cli/bin.ts doctor <alias>
 ```
 
 **Options:**
@@ -144,7 +144,7 @@ npx tsx src/cli/bin.ts doctor <alias>
 Installs Node and dsh on the remote host to the point where `dsh --version` reports the correct version. Does not start services or build tunnels. **Idempotent** — re-running with the same versions reuses existing installs.
 
 ```bash
-npx tsx src/cli/bin.ts provision <alias> --cwd //home/user
+pnpm exec tsx src/cli/bin.ts provision <alias> --cwd //home/user
 ```
 
 **Options:**
@@ -172,7 +172,7 @@ npx tsx src/cli/bin.ts provision <alias> --cwd //home/user
 The main command. Orchestrates the entire flow: provision → start remote dsh → build forward tunnel → open browser → maintain session (long-running).
 
 ```bash
-DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect <alias> --cwd //home/user
+DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect <alias> --cwd //home/user
 ```
 
 **Options:**
@@ -218,7 +218,7 @@ DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect <alias> --cwd //home/user
 Lists all remote sessions currently maintained by this machine. Pure local operation — reads the session registry without connecting to any host.
 
 ```bash
-npx tsx src/cli/bin.ts status
+pnpm exec tsx src/cli/bin.ts status
 ```
 
 Stale entries (sessions whose maintaining CLI has exited) are automatically pruned.
@@ -235,10 +235,10 @@ Stops the remote dsh process. Useful when the remote process is in a bad state (
 
 ```bash
 # Stop a specific session
-npx tsx src/cli/bin.ts kill <alias> --cwd //home/user
+pnpm exec tsx src/cli/bin.ts kill <alias> --cwd //home/user
 
 # Stop all sessions on a host (including orphan processes)
-npx tsx src/cli/bin.ts kill <alias> --all
+pnpm exec tsx src/cli/bin.ts kill <alias> --all
 ```
 
 **Options:**
@@ -266,10 +266,10 @@ Removes stale session directories, old Node versions, and old dsh versions from 
 
 ```bash
 # Clean with defaults (keep 1 version per category)
-npx tsx src/cli/bin.ts clean <alias>
+pnpm exec tsx src/cli/bin.ts clean <alias>
 
 # Keep 2 versions per category
-npx tsx src/cli/bin.ts clean <alias> --keep 2
+pnpm exec tsx src/cli/bin.ts clean <alias> --keep 2
 ```
 
 **Options:**
@@ -299,19 +299,19 @@ The user-level plugin store (`plugins/`) is shared data and is **never touched b
 ## help — Show usage
 
 ```bash
-npx tsx src/cli/bin.ts help
+pnpm exec tsx src/cli/bin.ts help
 # or
-npx tsx src/cli/bin.ts --help
+pnpm exec tsx src/cli/bin.ts --help
 # or
-npx tsx src/cli/bin.ts -h
+pnpm exec tsx src/cli/bin.ts -h
 ```
 
 Also shows version:
 
 ```bash
-npx tsx src/cli/bin.ts --version
+pnpm exec tsx src/cli/bin.ts --version
 # or
-npx tsx src/cli/bin.ts -V
+pnpm exec tsx src/cli/bin.ts -V
 ```
 
 ---
@@ -321,44 +321,44 @@ npx tsx src/cli/bin.ts -V
 ### First-time setup
 
 ```bash
-# 1. Install dependencies
-npm install
+# 1. Install dependencies (dev environment defaults to pnpm)
+pnpm install
 
 # 2. List available hosts
-npx tsx src/cli/bin.ts list
+pnpm exec tsx src/cli/bin.ts list
 
 # 3. Diagnose the target host
-npx tsx src/cli/bin.ts doctor my-server
+pnpm exec tsx src/cli/bin.ts doctor my-server
 
 # 4. Provision (optional — connect does this automatically)
-npx tsx src/cli/bin.ts provision my-server --cwd //home/user
+pnpm exec tsx src/cli/bin.ts provision my-server --cwd //home/user
 
 # 5. Connect
-DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect my-server --cwd //home/user
+DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect my-server --cwd //home/user
 ```
 
 ### Password login (host with no key configured)
 
 ```bash
 # Ad-hoc syntax + interactive password (no echo; re-prompts on rejection, up to 3 attempts)
-npx tsx src/cli/bin.ts doctor user@192.168.0.10
+pnpm exec tsx src/cli/bin.ts doctor user@192.168.0.10
 
 # Same for connect; the password stays in local process memory and is
 # silently reused across reconnections
-DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect user@192.168.0.10 --cwd //home/user
+DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect user@192.168.0.10 --cwd //home/user
 
 # For throwaway scripts you can pass it in the clear (leaks; CLI warns)
-DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect user@192.168.0.10 --cwd //home/user --password 'xxx'
+DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect user@192.168.0.10 --cwd //home/user --password 'xxx'
 
 # Explicit key path (wins over the config's IdentityFile)
-npx tsx src/cli/bin.ts connect my-server --cwd //home/user --private-key ~/.ssh/id_ed25519
+pnpm exec tsx src/cli/bin.ts connect my-server --cwd //home/user --private-key ~/.ssh/id_ed25519
 ```
 
 ### Reconnect to an existing session
 
 ```bash
 # If you disconnected with --keep-remote (or the session survived a crash)
-DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect my-server --cwd //home/user
+DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect my-server --cwd //home/user
 ```
 
 The tool detects the running remote dsh and reuses it. You get a fresh local tunnel port.
@@ -367,10 +367,10 @@ The tool detects the running remote dsh and reuses it. You get a fresh local tun
 
 ```bash
 # Stop the remote dsh
-npx tsx src/cli/bin.ts kill my-server --all
+pnpm exec tsx src/cli/bin.ts kill my-server --all
 
 # Clean stale versions and dead sessions
-npx tsx src/cli/bin.ts clean my-server
+pnpm exec tsx src/cli/bin.ts clean my-server
 
 # Full remote uninstall (run on the remote host itself)
 rm -rf ~/.dsh-remote-explorer/btsd321
@@ -379,13 +379,13 @@ rm -rf ~/.dsh-remote-explorer/btsd321
 ### Force restart a stuck session
 
 ```bash
-DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect my-server --cwd //home/user --force-restart
+DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect my-server --cwd //home/user --force-restart
 ```
 
 ### Run without auto-opening a browser
 
 ```bash
-DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect my-server --cwd //home/user --no-open
+DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect my-server --cwd //home/user --no-open
 ```
 
 The access URL (with token) is printed in the terminal; open it manually.
@@ -439,13 +439,13 @@ dsh plugin --profile web add dsh-remote-explorer
 npx --yes @deepseek-ai/dsh plugin --profile web add dsh-remote-explorer
 
 # From a local checkout (development): build the plugin artifacts first
-npm run build:plugin
+pnpm run build:plugin
 dsh plugin --profile web add /path/to/repo
 
 # Development sandbox (isolated DSH_HOME, never touches ~/.dsh; includes boot smoke)
-npx tsx scripts/dev-plugin.ts          # resident, Ctrl-C to stop
-npx tsx scripts/dev-plugin.ts --smoke  # probes then kills (CI)
-npx tsx scripts/dev-plugin.ts --sync   # sync artifacts into the sandbox only
+pnpm exec tsx scripts/dev-plugin.ts          # resident, Ctrl-C to stop
+pnpm exec tsx scripts/dev-plugin.ts --smoke  # probes then kills (CI)
+pnpm exec tsx scripts/dev-plugin.ts --sync   # sync artifacts into the sandbox only
 ```
 
 Restart `dsh web` after installing (dsh contract: package replacement requires a process restart to load new code). Uninstall: `dsh plugin --profile web remove dsh-remote-explorer`.

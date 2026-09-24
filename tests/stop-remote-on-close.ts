@@ -5,14 +5,14 @@
  *              终点路径——openSession 后 close({ stopRemote: true })——
  *              验证「断开即停止远端 dsh」的关闭逻辑本身。
  *
- * 用法：npx tsx tests/stop-remote-on-close.ts <主机别名>
+ * 用法：pnpm exec tsx tests/stop-remote-on-close.ts <主机别名>
  */
 
 import { openSession } from '../src/session/session-manager.js';
 
 const alias = process.argv[2];
 if (alias === undefined) {
-  console.error('用法：npx tsx tests/stop-remote-on-close.ts <主机别名>');
+  console.error('用法：pnpm exec tsx tests/stop-remote-on-close.ts <主机别名>');
   process.exit(64);
 }
 

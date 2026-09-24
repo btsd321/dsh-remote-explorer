@@ -18,7 +18,7 @@
  * 8. cordis.patch.yml 的 entry id 必须合法 kebab-case 且不是第三方占用的
  *    `dsh-remote`；entry name 必须等于包名
  *
- * 用法：npx tsx scripts/check-plugin.ts（违规 → 退出码 1）
+ * 用法：pnpm exec tsx scripts/check-plugin.ts（违规 → 退出码 1）
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';

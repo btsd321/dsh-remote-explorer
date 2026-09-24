@@ -1,0 +1,15 @@
+# pnpm 11 起包管理器设置统一放这里（package.json 的 pnpm 字段已废弃）。
+# 本仓库是单包非 monorepo——此文件只承载设置，不声明 packages。
+
+# 构建脚本逐包放行（pnpm 11 用 allowBuilds 映射，pnpm 10 的
+# onlyBuiltDependencies 列表不再被读取）：ssh2/cpu-features 构建原生
+# 加密绑定（sshcrypto.node），esbuild 校验平台二进制。
+allowBuilds:
+  cpu-features: true
+  esbuild: true
+  ssh2: true
+
+# pnpm 11 默认启用 minimumReleaseAge（24h）供应链策略：拒绝安装发布不满
+# 24 小时的包。本仓库 devDependencies 需跟踪 @deepseek-ai/dsh 当天发布的 RC
+# （版本钉死、lockfile 入库），对该默认关闭；风险由 lockfile 审查兜底。
+minimumReleaseAge: 0

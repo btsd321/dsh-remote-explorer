@@ -355,7 +355,7 @@ get currentTransport(): RemoteTransport | undefined {
 ## 七、工程化约束
 
 1. **开发流程无构建步骤。** CLI 形态以 `.ts` 源码经 tsx 直接运行，开发流程不添加 `outDir` 产物。**插件形态是例外**：dsh loader 经纯 ESM import 加载插件、不走 tsx，必须用 `scripts/build-plugin.ts` 的产物（`lib/`，已 gitignore；含 handoff 双入口，产物文本经 define 内联进宿主半 bundle）。分发打包走 `scripts/package.ts`（esbuild 单文件 + 目标平台 Node 二进制），产物落 `dist/` 且已 gitignore——不改变源码运行方式，不提交产物。
-2. **改代码后跑类型检查**：`npx -y -p typescript@5.7.3 tsc --noEmit`（本地 `tsc` 目前不可用，原因见 [CLAUDE.md](../CLAUDE.md)）。不要让类型错误总数变多。
+2. **改代码后跑类型检查**：`pnpm run typecheck`。不要让类型错误总数变多。
 3. **新增运行时依赖必须写进 `package.json`**，版本锁定或用窄范围。`node_modules` 里有不等于已声明——`ssh-config` 就是现存的反例。
 4. **协议与命名常量不可单方面修改**：路由前缀（`/api/dsh-remote-explorer`、`/api/dsh-remote-handoff`）、slash 命令名、agent 工具名前缀、handoff 协议版本（`HANDOFF_PROTOCOL_VERSION`）在 `scripts/check-plugin.ts` 都有静态护栏；改动必须同步护栏并在注释里标明兼容性影响（远端旧 bundle 靠协议版本降级只读）。
 5. **跨平台**：客户端可能是 Windows，远端一定是 POSIX。
@@ -366,7 +366,7 @@ get currentTransport(): RemoteTransport | undefined {
 7. **落盘配置放 `~/.dsh/` 下**，读取时容错（文件缺失或损坏回落默认值），写入失败不影响运行时。
 8. **新增面板能力同步三处**：`src/plugin/routes.ts` 的 RouteDef、`src/plugin-client/api.ts` 的客户端函数、面板组件；快照形状经 `import type` 从 `supervisor.ts` 共享，编译期强制同步。远端执行的脚本片段（如 plugin-store 的扫描脚本）里所有动态值必须过 `quote()`。
 9. **前端脚本无框架无构建**：`client/` 下是原生 JS，保持零依赖，不要引入打包器。
-10. **改动传输或引导逻辑后跑一次真实验证**：插件形态 `npx tsx scripts/dev-plugin.ts --smoke`，CLI 形态真实 `doctor`/`connect`（行为脚本 `tests/stop-remote-on-close.ts`、`tests/sftp-roundtrip.ts`）。类型检查通过不等于连得上。
+10. **改动传输或引导逻辑后跑一次真实验证**：插件形态 `pnpm exec tsx scripts/dev-plugin.ts --smoke`，CLI 形态真实 `doctor`/`connect`（行为脚本 `tests/stop-remote-on-close.ts`、`tests/sftp-roundtrip.ts`）。类型检查通过不等于连得上。
 11. **日志统一使用 `src/util/logger.ts` 的 `createLogger`**。不直接调用 `console.*`。
     每个模块在文件顶部创建日志器：`const log = createLogger('模块名');`，模块名用
     kebab-case 取自文件名。级别语义：debug（开发排查）、info（关键流程节点）、

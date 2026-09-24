@@ -8,7 +8,7 @@
 
 ## 支持的环境
 
-- **本机（客户端）**：Windows / Linux / macOS。Node.js v20.19+ 或 v22+ 仅**源码运行方式**需要；release 包自带 Node 运行时。
+- **本机（客户端）**：Windows / Linux / macOS。Node.js v20.19+ 或 v22+ 与 pnpm 11+ 仅**源码运行方式**需要（开发环境默认 pnpm，`packageManager` 已钉版本）；release 包自带 Node 运行时。
 - **远端主机**：Linux 或 macOS（POSIX）；aarch64（arm64）与 x86_64 均可。远端无需预装 Node——工具会自动安装并自检。
 - **WSL（Windows Subsystem for Linux）**：Windows 平台额外支持 WSL2 发行版作为远程目标。在 WSL 内自动安装 dsh，通过 localhost forwarding 建立隧道，无需 SSH 配置。点击面板中的「WSL 会话」卡片即可使用；非 Windows 平台自动隐藏此入口。
 - **SSH 认证**：私钥（`IdentityFile`，推荐）；无私钥时在交互式终端提示输入密码（不回显）；也可 `--password` 明文传入（有泄露风险，CLI 会警告）。
@@ -20,11 +20,11 @@ CLI 有两种运行方式（命令与参数完全一致）；本机已在用 dsh
 
 ### 方式一：源码运行
 
-本仓库无构建步骤，源码以 `.ts` 形式经 tsx 直接执行。取到源码后：
+本仓库无构建步骤，源码以 `.ts` 形式经 tsx 直接执行。开发环境默认 **pnpm**（`package.json` 的 `packageManager` 已钉版本）。取到源码后：
 
 ```bash
-npm install
-npx tsx src/cli/bin.ts list
+pnpm install
+pnpm exec tsx src/cli/bin.ts list
 ```
 
 ### 方式二：release 包运行
@@ -49,7 +49,7 @@ dsh plugin --profile web add dsh-remote-explorer
 # dsh 不在 PATH 时：
 npx --yes @deepseek-ai/dsh plugin --profile web add dsh-remote-explorer
 # 本地源码安装（先构建插件产物）：
-npm run build:plugin && dsh plugin --profile web add /path/to/repo
+pnpm run build:plugin && dsh plugin --profile web add /path/to/repo
 ```
 
 装完重启 `dsh web`。插件提供三个入口：
@@ -62,35 +62,35 @@ npm run build:plugin && dsh plugin --profile web add /path/to/repo
 
 ## 快速开始
 
-> 下文示例统一以**源码方式**书写；用 release 包时把 `npx tsx src/cli/bin.ts` 替换为 `./dsh-remote-explorer`（Windows 为 `dsh-remote-explorer.cmd`），参数完全一致。
+> 下文示例统一以**源码方式**书写；用 release 包时把 `pnpm exec tsx src/cli/bin.ts` 替换为 `./dsh-remote-explorer`（Windows 为 `dsh-remote-explorer.cmd`），参数完全一致。
 
 ```bash
 # 列出 ~/.ssh/config 中的主机
-npx tsx src/cli/bin.ts list
+pnpm exec tsx src/cli/bin.ts list
 
 # 诊断某台主机的引导条件（myhost 换成你的主机别名或 user@host[:port]）
-npx tsx src/cli/bin.ts doctor myhost
-npx tsx src/cli/bin.ts doctor myhost --refresh-mirrors   # 强制重测镜像
+pnpm exec tsx src/cli/bin.ts doctor myhost
+pnpm exec tsx src/cli/bin.ts doctor myhost --refresh-mirrors   # 强制重测镜像
 
 # 主命令：引导 → 起远端 dsh → 建隧道 → 开浏览器（进程常驻）
 # 用哪个供应商就把哪个 key 放进本机环境（供应商清单来自 ~/.dsh/settings.yaml）
-DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect myhost --cwd //home/youruser
+DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect myhost --cwd //home/youruser
 
 # 查看本机维持的所有会话
-npx tsx src/cli/bin.ts status
+pnpm exec tsx src/cli/bin.ts status
 
 # 停止远端 dsh
-npx tsx src/cli/bin.ts kill myhost --all
+pnpm exec tsx src/cli/bin.ts kill myhost --all
 
 # 清理远端陈旧资源（旧版本、死会话目录；运行中会话使用的版本受保护）
-npx tsx src/cli/bin.ts clean myhost
-npx tsx src/cli/bin.ts clean myhost --keep 2   # 每个类别保留 2 个版本
+pnpm exec tsx src/cli/bin.ts clean myhost
+pnpm exec tsx src/cli/bin.ts clean myhost --keep 2   # 每个类别保留 2 个版本
 
 # 只做引导，不起服务（幂等，重复执行会复用已装版本）
-npx tsx src/cli/bin.ts provision myhost --cwd //home/youruser
+pnpm exec tsx src/cli/bin.ts provision myhost --cwd //home/youruser
 
 # 通用参数：改用其他 ssh config 文件
-npx tsx src/cli/bin.ts list --ssh-config /path/to/config
+pnpm exec tsx src/cli/bin.ts list --ssh-config /path/to/config
 ```
 
 `connect` 之后本进程必须保持运行——正向隧道的本机监听器与 LLM 代理都活在其中。**Ctrl-C 会连远端 dsh 一起停止**（断开即干净）；要断开但保留远端进程供下次复用，加 `--keep-remote`。会话因故障进入终结态时远端进程也会保留。
@@ -205,8 +205,8 @@ npx tsx src/cli/bin.ts list --ssh-config /path/to/config
 ## 开发
 
 ```bash
-# 类型检查（本地 tsc 不可用，原因见 CLAUDE.md）
-npx -y -p typescript@5.7.3 tsc --noEmit
+# 类型检查
+pnpm run typecheck
 ```
 
 代码规范见 [docs/type_script_style.md](docs/type_script_style.md)，写任何代码前先读。
@@ -216,9 +216,9 @@ npx -y -p typescript@5.7.3 tsc --noEmit
 产出 release 分发包（见[安装与运行](#方式二release-包运行)）：esbuild 把 CLI 与全部运行时依赖打进单个 `dsh-remote-explorer.cjs`，再按目标平台打入官方 Node 二进制，组装启动器与文档后压缩。产物在 `dist/`（已 gitignore），**不改变源码的 tsx 运行方式**。
 
 ```bash
-npx tsx scripts/package.ts                        # 打当前运行平台
-npx tsx scripts/package.ts --all                  # 五平台全矩阵
-npx tsx scripts/package.ts --os linux --arch arm64
+pnpm exec tsx scripts/package.ts                        # 打当前运行平台
+pnpm exec tsx scripts/package.ts --all                  # 五平台全矩阵
+pnpm exec tsx scripts/package.ts --os linux --arch arm64
 ```
 
 | 参数 | 说明 |

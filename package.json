@@ -1,6 +1,6 @@
 {
   "name": "dsh-remote-explorer",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "远程开发启动器：把 dsh 装到远程主机并在本机浏览器中使用，凭据不离开本机",
   "type": "module",
   "license": "Apache-2.0",
@@ -113,5 +113,6 @@
   },
   "engines": {
     "node": "^20.19.0 || >=22.0.0"
-  }
+  },
+  "packageManager": "pnpm@11.7.0"
 }

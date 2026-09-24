@@ -16,9 +16,9 @@
  * 前置条件：PATH 上有 pnpm（dsh plugin 命令是对 pnpm 的原样转发）。
  *
  * 用法：
- *   npx tsx scripts/dev-plugin.ts            # 构建 → 安装/同步 → 启动（前台，Ctrl-C 停）
- *   npx tsx scripts/dev-plugin.ts --smoke    # 构建 → 安装/同步 → 启动 → 探针 → 杀掉（CI 用）
- *   npx tsx scripts/dev-plugin.ts --sync     # 只把 lib/ 覆盖进沙箱 profile（不启动）
+ *   pnpm exec tsx scripts/dev-plugin.ts            # 构建 → 安装/同步 → 启动（前台，Ctrl-C 停）
+ *   pnpm exec tsx scripts/dev-plugin.ts --smoke    # 构建 → 安装/同步 → 启动 → 探针 → 杀掉（CI 用）
+ *   pnpm exec tsx scripts/dev-plugin.ts --sync     # 只把 lib/ 覆盖进沙箱 profile（不启动）
  *   --fresh 清空沙箱重装；--port 默认 50599；--profile 默认 web；
  *   --dsh-version 默认 0.1.7-rc.1；--dsh-bin <路径> 跳过 npx 用本地 dsh；
  *   --install-spec <pnpm spec> 换安装源（发布演练：npm pack 的 tgz 绝对路径）

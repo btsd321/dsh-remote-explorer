@@ -25,47 +25,49 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 常用命令
 
+**本机开发默认 pnpm 11.7.0**（与 dsh 官方仓库对齐，`package.json` 的 `packageManager` 钉版本）：装依赖用 `pnpm install`（会顺带跑 `prepare` 构建插件产物），跑本地二进制用 `pnpm exec`。不要用 npm——dsh 各包的 peer 钉死具体版本，npm 在残留旧树上做增量解析必报 ERESOLVE。pnpm 11 的三个坑已处理进 [pnpm-workspace.yaml](pnpm-workspace.yaml)：包管理器设置迁到了这里（package.json 的 `pnpm` 字段已废弃）；构建脚本改用 `allowBuilds` 映射逐包放行（ssh2/cpu-features 的原生加密绑定、esbuild 平台二进制校验）；`minimumReleaseAge` 默认 24h 会拦截当天发布的 dsh RC，故显式置 0。放行构建脚本后机器上会出现 `sshcrypto.node`——两个打包脚本（build-plugin/package）的 esbuild 调用都加了 `.node: empty` loader（单文件 bundle 带不走原生件，empty 让 ssh2 的 try/catch 回落纯 JS；没这个 loader 时打包直接报「No loader is configured for .node files」）。**远端分工不变**：dsh 本体 npm、插件 store pnpm 10 系——与官方 dsh 语义一致（官方对已发布包的消费入口是 `npx @deepseek-ai/dsh`，运行期插件/profile 管理才走 pnpm；远端 pin 10 系是因为 11 系对未决策的 allowBuilds 致命报错而远端无人交互），不要把远端 dsh 本体改成 pnpm 安装。
+
 ```bash
-# 类型检查（见下方"已知问题"，本地 tsc 跑不起来，用这条替代）
-npx -y -p typescript@5.7.3 tsc --noEmit
+# 类型检查
+pnpm run typecheck
 
 # 列出 ~/.ssh/config 中的主机（纯本地，不连接）
-npx tsx src/cli/bin.ts list
+pnpm exec tsx src/cli/bin.ts list
 
 # 诊断某台主机的引导条件（排查远端问题的首选手段）
-npx tsx src/cli/bin.ts doctor myhost
-npx tsx src/cli/bin.ts doctor myhost --refresh-mirrors
+pnpm exec tsx src/cli/bin.ts doctor myhost
+pnpm exec tsx src/cli/bin.ts doctor myhost --refresh-mirrors
 
 # 引导远端环境（幂等；改动 provision/ 后用它验证）
-npx tsx src/cli/bin.ts provision myhost --cwd //home/youruser
+pnpm exec tsx src/cli/bin.ts provision myhost --cwd //home/youruser
 # 验证全新安装路径（复用路径会跳过下载与 npm install，测不到真正易错的代码）
-npx tsx src/cli/bin.ts provision myhost --node-version v24.20.0
+pnpm exec tsx src/cli/bin.ts provision myhost --node-version v24.20.0
 
 # 完整会话（常驻进程；改动 session/、tunnel/ 或 credential/ 后用它验证）
 # Ctrl-C 默认连远端 dsh 一起停；--keep-remote 保留远端进程。行为验证脚本：
-# npx tsx tests/stop-remote-on-close.ts myhost（Windows 收不到合成 SIGINT，
+# pnpm exec tsx tests/stop-remote-on-close.ts myhost（Windows 收不到合成 SIGINT，
 # 脚本直接走 Ctrl-C 处理器的同一条 close 路径）
-DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect myhost --cwd //home/youruser --local-port 18950 --no-open
-npx tsx src/cli/bin.ts status
-npx tsx src/cli/bin.ts kill myhost --all
+DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect myhost --cwd //home/youruser --local-port 18950 --no-open
+pnpm exec tsx src/cli/bin.ts status
+pnpm exec tsx src/cli/bin.ts kill myhost --all
 # kill 不带 --cwd 时按默认目录算会话 id——停不到用非默认 --cwd 启动的会话
 # （实测踩过：connect 用了 --cwd //home/xxx，kill 忘带同值只报「没有正在运行
 # 的远端 dsh」）。要停非默认 cwd 的会话必须带相同的 --cwd，或用 --all
 # （按 owner 指纹 scope 扫远端全部会话目录）。
 
 # 清理远端陈旧资源（改动 clean.ts 后用它验证）
-npx tsx src/cli/bin.ts clean myhost
+pnpm exec tsx src/cli/bin.ts clean myhost
 
 # 分发包打包（esbuild 单文件 + 目标平台 Node 二进制，产物在 dist/，gitignored）
 # 开发流程仍无构建——本命令只服务分发。--all 打五平台矩阵；默认打当前平台
-npx tsx scripts/package.ts --all
+pnpm exec tsx scripts/package.ts --all
 
 # dsh 插件形态（改动 src/plugin/、src/plugin-client/ 后必须跑）
-npx tsx scripts/build-plugin.ts        # esbuild 双入口 → lib/index.js + lib/client.js
-npx tsx scripts/check-plugin.ts        # 护栏：命令名/工具名/schema/路由前缀/版本一致
-npx tsx scripts/dev-plugin.ts --smoke  # 隔离 DSH_HOME 沙箱：安装→启动→探针（ping 401）
-npx tsx scripts/dev-plugin.ts          # 常驻沙箱，打印带令牌的 URL 供浏览器联调
-npx tsx scripts/dev-plugin.ts --sync   # 产物同步进沙箱（宿主半重启生效，浏览器半刷新生效）
+pnpm exec tsx scripts/build-plugin.ts        # esbuild 双入口 → lib/index.js + lib/client.js
+pnpm exec tsx scripts/check-plugin.ts        # 护栏：命令名/工具名/schema/路由前缀/版本一致
+pnpm exec tsx scripts/dev-plugin.ts --smoke  # 隔离 DSH_HOME 沙箱：安装→启动→探针（ping 401）
+pnpm exec tsx scripts/dev-plugin.ts          # 常驻沙箱，打印带令牌的 URL 供浏览器联调
+pnpm exec tsx scripts/dev-plugin.ts --sync   # 产物同步进沙箱（宿主半重启生效，浏览器半刷新生效）
 ```
 
 **在 Git Bash 里传远端路径必须用双斜杠**（`--cwd //home/xxx`）或先设
@@ -113,7 +115,6 @@ npx tsx scripts/dev-plugin.ts --sync   # 产物同步进沙箱（宿主半重启
 
 ## 已知问题
 
-- **`npm run typecheck` 跑不起来。** `node_modules` 里的 typescript 版本缺 win32 平台包。用 `npx -y -p typescript@5.7.3 tsc --noEmit` 替代。
 - **部分远端主机的内核未启用 landlock**（实测某台 aarch64 测试机的 LSM 列表不含 landlock），`node-addon-system` 的 `probe()` 会返回 `unusable`。这是主机内核配置问题，与本项目架构无关；`flock` 在同一台机器上可用。
 
 ## 约束

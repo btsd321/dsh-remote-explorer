@@ -4,7 +4,7 @@
 
 本文档详细介绍 `dsh-remote-explorer` 的每个命令、参数及常见工作流。
 
-> 示例统一以源码方式（`npx tsx src/cli/bin.ts <命令>`）书写；用 release 分发包时把它替换为 `./dsh-remote-explorer <命令>`（Windows 为 `dsh-remote-explorer.cmd <命令>`），命令与参数完全一致。
+> 示例统一以源码方式（`pnpm exec tsx src/cli/bin.ts <命令>`，开发环境默认 pnpm）书写；用 release 分发包时把它替换为 `./dsh-remote-explorer <命令>`（Windows 为 `dsh-remote-explorer.cmd <命令>`），命令与参数完全一致。
 
 ## 目录
 
@@ -83,7 +83,7 @@ dsh-remote-explorer <命令> [参数]
 本项目无构建步骤，通过 tsx 直接运行：
 
 ```bash
-npx tsx src/cli/bin.ts <命令> [参数]
+pnpm exec tsx src/cli/bin.ts <命令> [参数]
 ```
 
 ---
@@ -93,7 +93,7 @@ npx tsx src/cli/bin.ts <命令> [参数]
 列出 `~/.ssh/config` 中的所有 `Host` 条目。纯本地操作，不连接任何主机。
 
 ```bash
-npx tsx src/cli/bin.ts list
+pnpm exec tsx src/cli/bin.ts list
 ```
 
 **参数：**
@@ -111,7 +111,7 @@ npx tsx src/cli/bin.ts list
 对主机的引导条件进行全面诊断。这是**排查远端问题的首选手段**——远程开发的故障大多出在环境而非代码。
 
 ```bash
-npx tsx src/cli/bin.ts doctor <别名>
+pnpm exec tsx src/cli/bin.ts doctor <别名>
 ```
 
 **参数：**
@@ -144,7 +144,7 @@ npx tsx src/cli/bin.ts doctor <别名>
 在远端主机上安装 Node 和 dsh，直到 `dsh --version` 输出正确版本。不启动服务、不建隧道。**幂等**——重复执行相同版本会复用已装版本。
 
 ```bash
-npx tsx src/cli/bin.ts provision <别名> --cwd //home/user
+pnpm exec tsx src/cli/bin.ts provision <别名> --cwd //home/user
 ```
 
 **参数：**
@@ -172,7 +172,7 @@ npx tsx src/cli/bin.ts provision <别名> --cwd //home/user
 主命令。编排完整流程：引导 → 起远端 dsh → 建正向隧道 → 开浏览器 → 维持会话（常驻）。
 
 ```bash
-DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect <别名> --cwd //home/user
+DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect <别名> --cwd //home/user
 ```
 
 **参数：**
@@ -218,7 +218,7 @@ DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect <别名> --cwd //home/use
 列出本机当前维持的所有远端会话。纯本地操作——只读会话表，不连接任何主机。
 
 ```bash
-npx tsx src/cli/bin.ts status
+pnpm exec tsx src/cli/bin.ts status
 ```
 
 陈旧条目（维持会话的本机 CLI 已退出）会自动清理。
@@ -235,10 +235,10 @@ npx tsx src/cli/bin.ts status
 
 ```bash
 # 停止指定会话
-npx tsx src/cli/bin.ts kill <别名> --cwd //home/user
+pnpm exec tsx src/cli/bin.ts kill <别名> --cwd //home/user
 
 # 停止该主机上的全部会话（含孤儿进程）
-npx tsx src/cli/bin.ts kill <别名> --all
+pnpm exec tsx src/cli/bin.ts kill <别名> --all
 ```
 
 **参数：**
@@ -266,10 +266,10 @@ npx tsx src/cli/bin.ts kill <别名> --all
 
 ```bash
 # 默认各保留最新 1 个版本
-npx tsx src/cli/bin.ts clean <别名>
+pnpm exec tsx src/cli/bin.ts clean <别名>
 
 # 每个类别保留 2 个版本
-npx tsx src/cli/bin.ts clean <别名> --keep 2
+pnpm exec tsx src/cli/bin.ts clean <别名> --keep 2
 ```
 
 **参数：**
@@ -299,19 +299,19 @@ npx tsx src/cli/bin.ts clean <别名> --keep 2
 ## help — 显示帮助
 
 ```bash
-npx tsx src/cli/bin.ts help
+pnpm exec tsx src/cli/bin.ts help
 # 或
-npx tsx src/cli/bin.ts --help
+pnpm exec tsx src/cli/bin.ts --help
 # 或
-npx tsx src/cli/bin.ts -h
+pnpm exec tsx src/cli/bin.ts -h
 ```
 
 版本号：
 
 ```bash
-npx tsx src/cli/bin.ts --version
+pnpm exec tsx src/cli/bin.ts --version
 # 或
-npx tsx src/cli/bin.ts -V
+pnpm exec tsx src/cli/bin.ts -V
 ```
 
 ---
@@ -321,43 +321,43 @@ npx tsx src/cli/bin.ts -V
 ### 首次设置
 
 ```bash
-# 1. 安装依赖
-npm install
+# 1. 安装依赖（开发环境默认 pnpm）
+pnpm install
 
 # 2. 列出可用主机
-npx tsx src/cli/bin.ts list
+pnpm exec tsx src/cli/bin.ts list
 
 # 3. 诊断目标主机
-npx tsx src/cli/bin.ts doctor my-server
+pnpm exec tsx src/cli/bin.ts doctor my-server
 
 # 4. 引导（可选——connect 会自动做）
-npx tsx src/cli/bin.ts provision my-server --cwd //home/user
+pnpm exec tsx src/cli/bin.ts provision my-server --cwd //home/user
 
 # 5. 连接
-DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect my-server --cwd //home/user
+DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect my-server --cwd //home/user
 ```
 
 ### 密码登录（未配置私钥的主机）
 
 ```bash
 # 直连语法 + 交互式输密码（不回显，输错可重试，最多 3 次）
-npx tsx src/cli/bin.ts doctor user@192.168.0.10
+pnpm exec tsx src/cli/bin.ts doctor user@192.168.0.10
 
 # connect 时同理；密码只存本进程内存，重连时静默复用
-DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect user@192.168.0.10 --cwd //home/user
+DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect user@192.168.0.10 --cwd //home/user
 
 # 临时脚本场景可用明文（有泄露风险，CLI 会警告）
-DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect user@192.168.0.10 --cwd //home/user --password 'xxx'
+DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect user@192.168.0.10 --cwd //home/user --password 'xxx'
 
 # 显式指定私钥（优先于 config 的 IdentityFile）
-npx tsx src/cli/bin.ts connect my-server --cwd //home/user --private-key ~/.ssh/id_ed25519
+pnpm exec tsx src/cli/bin.ts connect my-server --cwd //home/user --private-key ~/.ssh/id_ed25519
 ```
 
 ### 重连到已有会话
 
 ```bash
 # 如果上次断开时用了 --keep-remote（或会话从故障中存活）
-DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect my-server --cwd //home/user
+DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect my-server --cwd //home/user
 ```
 
 工具会探到正在运行的远端 dsh 并复用。你获得一个新的本机隧道端口。
@@ -366,10 +366,10 @@ DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect my-server --cwd //home/us
 
 ```bash
 # 停止远端 dsh
-npx tsx src/cli/bin.ts kill my-server --all
+pnpm exec tsx src/cli/bin.ts kill my-server --all
 
 # 清理旧版本和死会话
-npx tsx src/cli/bin.ts clean my-server
+pnpm exec tsx src/cli/bin.ts clean my-server
 
 # 远端完整卸载（在远端主机上执行）
 rm -rf ~/.dsh-remote-explorer/btsd321
@@ -378,13 +378,13 @@ rm -rf ~/.dsh-remote-explorer/btsd321
 ### 强制重启卡住的会话
 
 ```bash
-DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect my-server --cwd //home/user --force-restart
+DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect my-server --cwd //home/user --force-restart
 ```
 
 ### 不自动打开浏览器
 
 ```bash
-DEEPSEEK_API_KEY=sk-xxx npx tsx src/cli/bin.ts connect my-server --cwd //home/user --no-open
+DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect my-server --cwd //home/user --no-open
 ```
 
 访问 URL（含令牌）会打印在终端中，手动打开即可。
@@ -438,13 +438,13 @@ dsh plugin --profile web add dsh-remote-explorer
 npx --yes @deepseek-ai/dsh plugin --profile web add dsh-remote-explorer
 
 # 本地源码安装（开发）：先构建插件产物再装
-npm run build:plugin
+pnpm run build:plugin
 dsh plugin --profile web add /path/to/repo
 
 # 开发沙箱（隔离 DSH_HOME，绝不碰 ~/.dsh；含启动冒烟）
-npx tsx scripts/dev-plugin.ts          # 常驻，Ctrl-C 停
-npx tsx scripts/dev-plugin.ts --smoke  # 探针跑完即杀（CI）
-npx tsx scripts/dev-plugin.ts --sync   # 只同步产物进沙箱
+pnpm exec tsx scripts/dev-plugin.ts          # 常驻，Ctrl-C 停
+pnpm exec tsx scripts/dev-plugin.ts --smoke  # 探针跑完即杀（CI）
+pnpm exec tsx scripts/dev-plugin.ts --sync   # 只同步产物进沙箱
 ```
 
 装完重启 `dsh web`（dsh 契约：包替换需重启进程才加载新代码）。卸载：`dsh plugin --profile web remove dsh-remote-explorer`。
