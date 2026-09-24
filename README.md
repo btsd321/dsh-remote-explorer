@@ -184,6 +184,7 @@ Foundation   hosts/   util/
 | [src/transport/types.ts](src/transport/types.ts) | Transport abstraction (designed for multiple transports; Docker/WSL possible later) |
 | [src/transport/ssh-transport.ts](src/transport/ssh-transport.ts) | ssh2 implementation: jump host chains, command execution, SFTP, forward/reverse forwarding, password auth (retries on rejection, up to 3) |
 | [src/transport/channel-pool.ts](src/transport/channel-pool.ts) | SSH channel quota, avoids exceeding MaxSessions |
+| [src/transport/platform.ts](src/transport/platform.ts) | Shared platform detection and command building: arch mapping, uname parsing, PATH assembly |
 | [src/provision/probe.ts](src/provision/probe.ts) | Remote probe + **Node stability self-check** |
 | [src/provision/mirror-selector.ts](src/provision/mirror-selector.ts) | Live mirror latency measurement and adaptive selection |
 | [src/provision/remote-paths.ts](src/provision/remote-paths.ts) | Single source of truth for remote path rules |
@@ -191,6 +192,7 @@ Foundation   hosts/   util/
 | [src/provision/dsh-installer.ts](src/provision/dsh-installer.ts) | Install dsh, explicit version (no dist-tag reliance) |
 | [src/provision/profile-writer.ts](src/provision/profile-writer.ts) | Per-session independent `DSH_HOME` and profile/patch generation |
 | [src/provision/provisioner.ts](src/provision/provisioner.ts) | Provisioning orchestration, each step idempotent |
+| [src/provision/remote-context.ts](src/provision/remote-context.ts) | Remote execution context: binds transport instance and path info |
 | [src/util/session-id.ts](src/util/session-id.ts) | Deterministic session id from host alias + remote directory |
 | [src/tunnel/port-allocator.ts](src/tunnel/port-allocator.ts) | Remote port allocation and listen confirmation |
 | [src/tunnel/forward-local.ts](src/tunnel/forward-local.ts) | Forward tunneling, **listener survives reconnection** |
@@ -199,11 +201,13 @@ Foundation   hosts/   util/
 | [src/session/heartbeat.ts](src/session/heartbeat.ts) | Heartbeat: process + port + HTTP application-level, single command |
 | [src/session/reconnect.ts](src/session/reconnect.ts) | Bounded exponential backoff |
 | [src/session/session-registry.ts](src/session/session-registry.ts) | Local session table, lock file + atomic replacement |
-| [src/session/session-manager.ts](src/session/session-manager.ts) | Session orchestration: open, credential wiring, reconnect, close |
+| [src/session/session-manager.ts](src/session/session-manager.ts) | Session orchestration: 5-phase open, heartbeat, reconnect, close |
 | [src/credential/tunnel-proxy.ts](src/credential/tunnel-proxy.ts) | Reverse tunnel LLM proxy (multi-provider routing), injects real keys |
 | [src/credential/provider-routes.ts](src/credential/provider-routes.ts) | Extract provider routes from local config (settings.yaml / profile patch), produce remote mirror |
 | [src/credential/local-credentials.ts](src/credential/local-credentials.ts) | Read local `.credentials.yaml` refs as env-var credential fallback |
 | [src/credential/token.ts](src/credential/token.ts) | Proxy token: generation and constant-time comparison |
+| [src/credential/proxy-secret.ts](src/credential/proxy-secret.ts) | Credential material I/O: session-scoped token and reverse port persisted on remote |
+| [src/plugin/remote-plugin-store.ts](src/plugin/remote-plugin-store.ts) | Remote plugin package management: list / install / remove / toggle |
 | [src/cli/](src/cli/) | Command dispatch, argument parsing, terminal output, per-command auth wiring |
 
 ## Development

@@ -73,7 +73,7 @@
 
 **7. 远端 dsh 已内置令牌认证。** 启动输出形如 `dsh web: http://127.0.0.1:<端口>/?token=<43 字符>`，无令牌访问返回 401，令牌换 `HttpOnly` + `SameSite=Strict` cookie。**令牌不落盘**，只在启动输出首行——所以启动日志文件既是诊断来源也是令牌唯一来源，不能丢。
 
-**8d. 凭据路径：占位令牌 + 落盘材料 + 跨重连的代理。** 三件事必须一起成立，改任何一件都要读 [src/session/session-manager.ts](../src/session/session-manager.ts) 的 open()：
+**8d. 凭据路径：占位令牌 + 落盘材料 + 跨重连的代理。** 三件事必须一起成立。凭据材料读写已下沉到 [src/credential/proxy-secret.ts](../src/credential/proxy-secret.ts)；会话编排见 [src/session/session-manager.ts](../src/session/session-manager.ts) 的 `open()`（已拆分为 `prepareTransport`/`probeAndReadCredentials`/`provisionAndConfigure`/`probeOrStartRemote`/`setupTunnels` 五个阶段方法）：
 
 - 远端进程环境里的 key 变量（`DEEPSEEK_API_KEY`等）是**代理令牌**（随机值）不是真实 key——dsh 缺 key 会在请求发出前就报 `MISSING_CREDENTIAL`，代理根本收不到，所以必须有占位值。真实 key 只在本机进程（`process.env[keyEnv]` → [src/credential/tunnel-proxy.ts](../src/credential/tunnel-proxy.ts) 注入）。
 - **代理是多供应商路由表**：DeepSeek 原生通道走 `/anthropic` 前缀（patch 重定向），`llm-pi-ai` 供应商走 `/r/<名>` 前缀（路由自动从本机 `~/.dsh/settings.yaml` 的 `llm-pi-ai.providers` 提取，见 [src/credential/provider-routes.ts](../src/credential/provider-routes.ts)）。转发时请求前缀替换成上游自身路径。每条路由的 keyEnv 各自检查，缺哪个只影响哪个供应商。

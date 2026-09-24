@@ -31,6 +31,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # 类型检查
 pnpm run typecheck
 
+# 单元测试（纯函数模块，无需 SSH 主机）
+pnpm exec tsx --test tests/unit/*.test.ts
+
 # 列出 ~/.ssh/config 中的主机（纯本地，不连接）
 pnpm exec tsx src/cli/bin.ts list
 
@@ -90,16 +93,16 @@ pnpm run setup:hooks
 
 ```
 入口层      cli/            命令分派、参数解析、终端输出（CLI 形态）
-            plugin/         dsh 插件宿主半：supervisor 簿记、命令/工具/路由注册
-            plugin-client/  dsh 插件浏览器半：远程会话全局面板（React，slots 注入 main/sidebar.panellist）
+            plugin/         dsh 插件宿主半：supervisor 簿记、remote-plugin-store 远端插件包管理、命令/工具/路由注册
+            plugin-client/  dsh 插件浏览器半：远程会话全局面板（React）、useSessionPolling 轮询 Hook、共享常量与样式
 编排层      session/      会话生命周期、心跳、重连、多会话簿记
-能力层      provision/    装 Node 与 dsh、镜像测速、生成会话 profile
+能力层      provision/    装 Node 与 dsh、镜像测速、生成会话 profile、RemoteContext 远端执行上下文
             tunnel/       端口分配、正向转发
-            credential/   LLM 凭据代理（反向隧道，key 不出本机）
+            credential/   LLM 凭据代理（反向隧道，key 不出本机）、proxy-secret 凭据材料读写
             handoff/      远端窗口交接组件（宿主半跑在远端 dsh、浏览器半是状态 pill + 管理菜单）
-传输层      transport/    ssh2 连接、命令执行、池化 SFTP、开通道、反向转发、通道配额
+传输层      transport/    ssh2 连接、命令执行、池化 SFTP、开通道、反向转发、通道配额、platform 平台探测与命令构建
 基础层      hosts/        ssh config 解析（主机配置唯一来源）
-            util/         shell 转义、错误类型、会话 id、远端路径校验
+            util/         shell 转义、错误类型、会话 id、远端路径校验、字节格式化、状态显示常量
 ```
 
 原计划的第二个交付物 `dsh-remote-guard`（远端插件）**最终不需要**：认证 dsh 已内置（P0 发现），`baseURL` 由 profile patch 解决（P4），免认证探活由心跳的 HTTP 层解决（P5，带会话令牌 curl 根路径，任何 HTTP 状态码即证明 webserver 在服务）。

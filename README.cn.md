@@ -184,6 +184,7 @@ pnpm exec tsx src/cli/bin.ts list --ssh-config /path/to/config
 | [src/transport/types.ts](src/transport/types.ts) | 传输抽象接口（按多传输设计，日后可加 Docker / WSL） |
 | [src/transport/ssh-transport.ts](src/transport/ssh-transport.ts) | ssh2 实现：跳板机链、命令执行、SFTP、正反向转发、密码认证（被拒重试，最多 3 次） |
 | [src/transport/channel-pool.ts](src/transport/channel-pool.ts) | SSH 通道配额，避免超 `MaxSessions` |
+| [src/transport/platform.ts](src/transport/platform.ts) | 平台探测与命令构建共享：架构映射、uname 解析、PATH 拼接 |
 | [src/provision/probe.ts](src/provision/probe.ts) | 远端探测 + **Node 稳定性自检** |
 | [src/provision/mirror-selector.ts](src/provision/mirror-selector.ts) | 在远端实测镜像延迟并自适应选取 |
 | [src/provision/remote-paths.ts](src/provision/remote-paths.ts) | 远端路径规则的唯一真源 |
@@ -191,6 +192,7 @@ pnpm exec tsx src/cli/bin.ts list --ssh-config /path/to/config
 | [src/provision/dsh-installer.ts](src/provision/dsh-installer.ts) | 装 dsh，版本显式指定不依赖 dist-tag |
 | [src/provision/profile-writer.ts](src/provision/profile-writer.ts) | 每会话独立 `DSH_HOME` 与 profile、patch 生成 |
 | [src/provision/provisioner.ts](src/provision/provisioner.ts) | 引导流程编排，各步均幂等 |
+| [src/provision/remote-context.ts](src/provision/remote-context.ts) | 远端执行上下文封装：绑定传输实例与路径信息 |
 | [src/util/session-id.ts](src/util/session-id.ts) | 由主机别名 + 远端目录算确定性会话 id |
 | [src/tunnel/port-allocator.ts](src/tunnel/port-allocator.ts) | 远端端口分配与监听确认 |
 | [src/tunnel/forward-local.ts](src/tunnel/forward-local.ts) | 正向转发，**监听器跨重连存活** |
@@ -199,11 +201,13 @@ pnpm exec tsx src/cli/bin.ts list --ssh-config /path/to/config
 | [src/session/heartbeat.ts](src/session/heartbeat.ts) | 心跳探活：进程 + 端口 + HTTP 应用级，一条命令 |
 | [src/session/reconnect.ts](src/session/reconnect.ts) | 有限次指数退避 |
 | [src/session/session-registry.ts](src/session/session-registry.ts) | 本机会话表，锁文件 + 原子替换 |
-| [src/session/session-manager.ts](src/session/session-manager.ts) | 会话编排：打开、凭据接线、重连、关闭 |
+| [src/session/session-manager.ts](src/session/session-manager.ts) | 会话编排：五阶段打开流程、心跳、重连、关闭 |
 | [src/credential/tunnel-proxy.ts](src/credential/tunnel-proxy.ts) | 反向隧道 LLM 代理（多供应商路由），注入真实 key |
 | [src/credential/provider-routes.ts](src/credential/provider-routes.ts) | 从本机配置（settings.yaml / profile patch）提取供应商路由，产出远端镜像 |
 | [src/credential/local-credentials.ts](src/credential/local-credentials.ts) | 读取本机 `.credentials.yaml` 的 refs 段，作为环境变量的凭据回退源 |
 | [src/credential/token.ts](src/credential/token.ts) | 代理令牌：生成与常数时间比较 |
+| [src/credential/proxy-secret.ts](src/credential/proxy-secret.ts) | 凭据材料读写：会话级令牌与反向端口的远端落盘 |
+| [src/plugin/remote-plugin-store.ts](src/plugin/remote-plugin-store.ts) | 远端插件包管理：list / install / remove / toggle |
 | [src/cli/](src/cli/) | 命令分派、参数解析、终端输出、命令级认证装配 |
 
 ## 开发
