@@ -206,6 +206,7 @@ AI agent 在本仓库执行代码变更时，按以下清单自检：
 - [ ] 中文描述，注释用中文
 - [ ] 运行 `pnpm run typecheck` 确认零错误
 - [ ] 涉及 plugin/ 改动时运行 `pnpm exec tsx scripts/check-plugin.ts`
+- [ ] 提交前运行 `pnpm exec tsx scripts/build-plugin.ts` 更新 lib/ 构建产物，并将 lib/ 变更一并提交
 
 ### 完成后
 
@@ -227,3 +228,4 @@ AI agent 在本仓库执行代码变更时，按以下清单自检：
 | 使用 `git merge --squash` | 保留完整提交历史，merge 时用 `--no-ff` |
 | 提交含 `.claude/`、`.agents/`、`agent/`、`tasks/` 的文件 | 已在 .gitignore 中排除 |
 | 提交信息用英文 | 本仓库一律中文 |
+| 提交 src/ 改动时不带 lib/ 更新 | lib/ 是构建产物，必须与源码同步提交 |
