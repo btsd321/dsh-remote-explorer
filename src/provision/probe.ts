@@ -14,6 +14,7 @@
  */
 
 import { RemoteError } from '../util/errors.js';
+import { formatBytes } from '../util/format.js';
 import { quote } from '../util/shell-quote.js';
 import { BASE_DIR_NAME } from './remote-paths.js';
 import type { RemotePlatform, RemoteTransport } from '../transport/types.js';
@@ -294,14 +295,4 @@ function hasTool(output: string, name: string): boolean {
   return collect(output, 'TOOL=').includes(name);
 }
 
-/**
- * 格式化字节数为人类可读文本。
- *
- * @param bytes - 字节数
- * @returns 如 "1.4 GB"
- */
-function formatBytes(bytes: number): string {
-  const gb = bytes / 1_000_000_000;
-  if (gb >= 1) return `${gb.toFixed(1)} GB`;
-  return `${Math.round(bytes / 1_000_000)} MB`;
-}
+

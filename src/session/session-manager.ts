@@ -294,7 +294,6 @@ export class RemoteSession {
     private readonly passwords: PasswordProvider | undefined,
   ) {}
 
-  /** 浏览器访问地址（含令牌） */
   /**
    * 窄 exec 委托：监督器的远端插件管理复用当前传输。
    *
@@ -330,6 +329,7 @@ export class RemoteSession {
     await writeRemoteTextFile(this.transport, path, content, {});
   }
 
+  /** 浏览器访问地址（含令牌） */
   get url(): string {
     return `http://127.0.0.1:${this.forward.localPort}/?token=${this.process.token}`;
   }

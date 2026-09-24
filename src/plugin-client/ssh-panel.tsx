@@ -27,68 +27,24 @@ import type { SshHostSummary } from '../hosts/ssh-config-parser.js';
 import type { LogEntry } from '../plugin/supervisor.js';
 import type { RemoteExplorerLocaleKey } from './locales.js';
 import {
-  ApiError, fetchHosts, fetchSessionLog, fetchSessions, postConnect, postDisconnect,
+  fetchHosts, fetchSessionLog, fetchSessions, messageOf, postConnect, postDisconnect,
   type PanelSession,
 } from './api.js';
-import { isDesktopShell } from './desktop-bridge.js';
 import { openRemoteWindow, OVERLAY_INTENT_ORIGIN } from './remote-window.js';
 import { RemotePluginsSection } from './panel-plugins.js';
-
-/** 会话列表轮询间隔（毫秒） */
-const SESSIONS_POLL_MS = 2_000;
-
-/** 选中会话的日志增量轮询间隔（毫秒） */
-const LOG_POLL_MS = 1_500;
-
-/** 当前标签形态就绪后的自动导航倒计时（秒，可取消） */
-const HANDOFF_COUNTDOWN_SECONDS = 3;
+import { STATE_COLORS, STATE_LABEL_KEYS } from '../util/session-display.js';
+import { inputStyle, buttonStyle } from './styles.js';
+import {
+  SESSIONS_POLL_MS, LOG_POLL_MS, HANDOFF_COUNTDOWN_SECONDS, DESKTOP,
+} from './constants.js';
 
 /** localStorage 里「上次远端目录」的键前缀（按主机别名记忆） */
 const LAST_CWD_KEY_PREFIX = 'dsh-remote-explorer:lastCwd:';
-
-/** 是否桌面壳（preload 注入先于一切脚本，页面生命周期内不变，模块级算一次） */
-const DESKTOP = isDesktopShell();
-
-/** 状态标签 → 语义色（状态点用；文案走 locale） */
-const STATE_COLORS: Record<string, string> = {
-  connected: '#22c55e',
-  connecting: '#3b82f6',
-  idle: '#9ca3af',
-  'heartbeat-missed': '#f59e0b',
-  reconnecting: '#f59e0b',
-  'reconnect-failed': '#f97316',
-  'reconnect-exhausted': '#ef4444',
-  disconnected: '#9ca3af',
-};
-
-/** 状态标签 → locale 键 */
-const STATE_LABEL_KEYS: Record<string, RemoteExplorerLocaleKey> = {
-  idle: 'stateIdle',
-  connecting: 'stateConnecting',
-  connected: 'stateConnected',
-  'heartbeat-missed': 'stateHeartbeatMissed',
-  reconnecting: 'stateReconnecting',
-  'reconnect-failed': 'stateReconnectFailed',
-  'reconnect-exhausted': 'stateReconnectExhausted',
-  disconnected: 'stateDisconnected',
-};
 
 /** 面板 props：locale 面由 slots 框架注入（注册时声明了 locale 命名空间） */
 export interface SshSessionPanelProps {
   /** 命名空间绑定的翻译函数 */
   t: (key: RemoteExplorerLocaleKey) => string;
-}
-
-/**
- * 把未知异常归一成展示文本。
- *
- * @param error - 捕获值
- * @returns 中文消息
- */
-function messageOf(error: unknown): string {
-  if (error instanceof ApiError) return error.message;
-  if (error instanceof Error) return error.message;
-  return String(error);
 }
 
 /**
@@ -282,23 +238,6 @@ export function SshSessionPanel(props: SshSessionPanelProps): ReactNode {
     } catch (error) {
       setLoadError(messageOf(error));
     }
-  };
-
-  const inputStyle: React.CSSProperties = {
-    background: 'transparent',
-    color: 'inherit',
-    border: '1px solid rgba(127,127,127,0.4)',
-    borderRadius: 6,
-    padding: '4px 8px',
-    minWidth: 0,
-  };
-  const buttonStyle: React.CSSProperties = {
-    background: 'transparent',
-    color: 'inherit',
-    border: '1px solid rgba(127,127,127,0.5)',
-    borderRadius: 6,
-    padding: '4px 12px',
-    cursor: 'pointer',
   };
 
   // 全局面板自带页头（settings 弹窗时代标题由设置壳显示，迁出后自己给）；
@@ -509,7 +448,7 @@ export function renderSessionRow(
   actions: RowActions,
 ): ReactNode {
   const stateTag = session.connecting ? 'connecting' : session.state.tag;
-  const stateLabel = t(STATE_LABEL_KEYS[stateTag] ?? 'stateIdle');
+  const stateLabel = t((STATE_LABEL_KEYS[stateTag] ?? 'stateIdle') as RemoteExplorerLocaleKey);
   const stateColor = STATE_COLORS[stateTag] ?? '#9ca3af';
   const missingKeys = session.missingKeyEnvs ?? [];
   return (

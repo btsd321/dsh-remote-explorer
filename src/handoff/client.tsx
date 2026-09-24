@@ -30,6 +30,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client';
 import {
   HANDOFF_PROTOCOL_VERSION, HANDOFF_ROUTE_PREFIX, type HandoffMeta,
 } from './protocol.js';
+import { STATE_COLORS, STATE_LABEL_KEYS } from '../util/session-display.js';
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -97,30 +98,6 @@ const STATE_POLL_MS = 2_000;
 
 /** 菜单打开时日志增量轮询间隔 */
 const LOG_POLL_MS = 1_500;
-
-/** 状态标签 → 语义色（与本地面板 STATE_COLORS 同值） */
-const STATE_COLORS: Record<string, string> = {
-  connected: '#22c55e',
-  connecting: '#3b82f6',
-  idle: '#9ca3af',
-  'heartbeat-missed': '#f59e0b',
-  reconnecting: '#f59e0b',
-  'reconnect-failed': '#f97316',
-  'reconnect-exhausted': '#ef4444',
-  disconnected: '#9ca3af',
-};
-
-/** 状态标签 → locale 键 */
-const STATE_LABEL_KEYS: Record<string, HandoffLocaleKey> = {
-  idle: 'stateIdle',
-  connecting: 'stateConnecting',
-  connected: 'stateConnected',
-  'heartbeat-missed': 'stateHeartbeatMissed',
-  reconnecting: 'stateReconnecting',
-  'reconnect-failed': 'stateReconnectFailed',
-  'reconnect-exhausted': 'stateReconnectExhausted',
-  disconnected: 'stateDisconnected',
-};
 
 /** 本机监督器经反向隧道回报的状态快照（裁剪形状） */
 interface HandoffState {
@@ -253,7 +230,7 @@ function HandoffPill(props: HandoffPillProps): ReactNode {
     || meta.protocolVersion !== HANDOFF_PROTOCOL_VERSION;
   const tag = state?.connecting === true ? 'connecting' : state?.state.tag ?? 'idle';
   const dotColor = STATE_COLORS[tag] ?? '#9ca3af';
-  const label = t(STATE_LABEL_KEYS[tag] ?? 'stateIdle');
+  const label = t((STATE_LABEL_KEYS[tag] ?? 'stateIdle') as HandoffLocaleKey);
 
   const intent = (hash: string): void => {
     if (meta.managerUrl === undefined || state === null) return;
