@@ -55,7 +55,6 @@
     "build:plugin": "tsx scripts/build-plugin.ts",
     "check:plugin": "tsx scripts/check-plugin.ts",
     "dev:plugin": "tsx scripts/dev-plugin.ts",
-    "prepare": "tsx scripts/build-plugin.ts",
     "prepublishOnly": "tsx scripts/build-plugin.ts && tsx scripts/check-plugin.ts"
   },
   "dependencies": {
