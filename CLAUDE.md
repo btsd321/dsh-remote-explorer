@@ -53,7 +53,7 @@ pnpm exec tsx src/cli/bin.ts doctor myhost --refresh-mirrors
 # 引导远端环境（幂等；改动 provision/ 后用它验证）
 pnpm exec tsx src/cli/bin.ts provision myhost --cwd //home/youruser
 # 验证全新安装路径（复用路径会跳过下载与 npm install，测不到真正易错的代码）
-pnpm exec tsx src/cli/bin.ts provision myhost --node-version v24.20.0
+pnpm exec tsx src/cli/bin.ts provision myhost --node-version v24.21.0
 
 # 完整会话（常驻进程；改动 session/、tunnel/ 或 credential/ 后用它验证）
 # Ctrl-C 默认连远端 dsh 一起停；--keep-remote 保留远端进程。行为验证脚本：

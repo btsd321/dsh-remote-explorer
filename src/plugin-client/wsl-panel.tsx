@@ -238,7 +238,7 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
             </label>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               <span style={{ fontSize: 12, opacity: 0.75 }}>{t('nodeVersion')}</span>
-              <input value={nodeVersion} placeholder="v24.20.0" style={inputStyle}
+              <input value={nodeVersion} placeholder="v24.21.0" style={inputStyle}
                 onChange={event => setNodeVersion(event.target.value)} />
             </label>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
