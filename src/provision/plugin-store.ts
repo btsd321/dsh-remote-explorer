@@ -1,24 +1,18 @@
 /**
- * @file 远端插件仓库（plugin store，host × 远程 OS 用户级）
- * @description 对标 VS Code `~/.vscode-server/extensions/`：插件真源在本工具
- *              远端根的 `plugins/`（pnpm 真目录 + manifest），**该远程账号的所有
- *              会话共享一份安装**——会话 profile 不持有任何包副本。
+ * @file 主机级共享 profile 管理（dsh 官方 `$DSH_HOME/profiles/<name>/` 结构）
+ * @description 插件安装/卸载的唯一真源在 `base/profiles/<platform>/`，与 dsh 官方
+ *              plugin-manager 的操作目录完全一致。所有会话通过 symlink 共享同一份
+ *              安装——会话 `$DSH_HOME/profiles/<platform>` 是指向主机级 profile 的
+ *              整体 symlink。
  *
- * 会话接入机制（用户拍板：整体 symlink）：会话 profile 的 `node_modules`
- * 是指向 store node_modules 的**整体 symlink**。dsh 的 bundle 解析从 profile
- * 锚命中 symlink；peer 裸导入的 Node 父 walk 落在 store 内，由 store 的三条
- * 回退链接（`@deepseek-ai/` 整目录、`cpu-features`、`nan` → dsh 安装树）闭环——
- * 等价于 dsh 自己在 `$DSH_HOME/profiles/node_modules` 做的安装回退链接。
+ * 与 dsh 官方的一致性：
+ * - pnpm 在 host profile 目录执行 add/remove，操作 host profile 的 package.json
+ * - dsh 原生 UI 的 plugin-manager 也在同一目录操作，不存在双真源冲突
+ * - bundle 解析从 profile 锚命中 symlink，peer 裸导入由回退链接闭环
  *
- * 生效语义（用户拍板：Reload 语义，不自动重启远端）：
- * - store 写操作后**本机自己的活会话**立即合并 manifest（dsh hmr 热加载/卸载
- *   bundle 层，比 VS Code 的 Reload Required 更热）
- * - **其他用户的活会话**在其下次连接时合并（最后写赢）
- * - hmr 不可用的老远端 dsh 回退为「重连/重启后生效」，UI 文案兜底
- *
- * 并发模型对标 VS Code「单管理进程」+ 我们的多本机现实：pnpm 对同目录 install
- * 自带锁序列化；跨工具写 store 的临界区另有 flock（install-lock.ts）可套。
- * 多个远端 dsh 进程只读 store，无竞态。
+ * 回退链接（`@deepseek-ai/`、`cpu-features`、`nan` → dsh 安装树）在 host profile
+ * 的 node_modules 中创建，等价于 dsh 自己在 `$DSH_HOME/profiles/node_modules`
+ * 做的安装回退链接。
  */
 
 import { quote } from '../util/shell-quote.js';
@@ -30,7 +24,7 @@ import type { RemoteTransport } from '../transport/types.js';
 
 /**
  * manifest 读写所需的最小 IO：监督器用会话的窄委托（exec/writeRemoteFile），
- * 引导路径用传输本体——同一套 store 逻辑两处复用，且 provision 层不 import 编排层。
+ * 引导路径用传输本体——同一套逻辑两处复用，且 provision 层不 import 编排层。
  */
 export interface ManifestIo {
   /** 远端执行（只取 stdout） */
@@ -52,65 +46,73 @@ export function transportIo(transport: RemoteTransport): ManifestIo {
   };
 }
 
-/** store / 会话 manifest 的本工具关心部分 */
+/** host profile manifest 的本工具关心部分 */
 export interface PluginStoreManifest {
-  /** 包名（store 初始化清单用；会话 manifest 已有自己的名字） */
   name?: string;
   private?: boolean;
   dependencies?: Record<string, string>;
   dsh?: { profile?: { bundles?: string[] } };
 }
 
+/** 默认平台 profile 名（与 dsh 模板 web 对齐） */
+export const DEFAULT_PLATFORM = 'web';
+
 /**
- * 确保 store 骨架：目录、空清单、三条 peer 回退链接（幂等）。
+ * 确保主机级 profile 骨架：目录、空清单、三条 peer 回退链接（幂等）。
  *
  * 回退链接目标随 dsh 版本变（升级后重链）；`ln -sfn` 覆盖旧链接。
  *
  * @param ctx - 远端执行上下文
  * @param dshVersion - 当前会话使用的 dsh 版本（回退链接锚定其安装树）
+ * @param platform - 平台 profile 名（默认 web）
  */
-export async function ensurePluginStore(
+export async function ensureHostProfile(
   ctx: RemoteContext,
   dshVersion: string,
+  platform: string = DEFAULT_PLATFORM,
 ): Promise<void> {
   const { transport, paths } = ctx;
-  const storeNm = paths.pluginsStoreNodeModules;
+  const profileDir = paths.hostProfileDir(platform);
+  const profileNm = paths.hostProfileNodeModules(platform);
+  const profileManifest = paths.hostProfileManifest(platform);
   const dshNm = `${paths.dshDir(dshVersion)}/node_modules`;
   const exists = await transport.exec(
-    `test -f ${quote(paths.pluginsStoreManifest)} && echo EXISTS || true`,
+    `test -f ${quote(profileManifest)} && echo EXISTS || true`,
     { allowNonZeroExit: true },
   );
   const script = [
-    `mkdir -p ${quote(storeNm)}`,
+    `mkdir -p ${quote(profileNm)}`,
     // @deepseek-ai 整目录：cordis 与全部 dsh-* peer 一次闭环
-    `[ -d ${quote(`${dshNm}/@deepseek-ai`)} ] && ln -sfn ${quote(`${dshNm}/@deepseek-ai`)} ${quote(`${storeNm}/@deepseek-ai`)}`,
-    `[ -d ${quote(`${dshNm}/cpu-features`)} ] && ln -sfn ${quote(`${dshNm}/cpu-features`)} ${quote(`${storeNm}/cpu-features`)}`,
-    `[ -d ${quote(`${dshNm}/nan`)} ] && ln -sfn ${quote(`${dshNm}/nan`)} ${quote(`${storeNm}/nan`)}`,
+    `[ -d ${quote(`${dshNm}/@deepseek-ai`)} ] && ln -sfn ${quote(`${dshNm}/@deepseek-ai`)} ${quote(`${profileNm}/@deepseek-ai`)}`,
+    `[ -d ${quote(`${dshNm}/cpu-features`)} ] && ln -sfn ${quote(`${dshNm}/cpu-features`)} ${quote(`${profileNm}/cpu-features`)}`,
+    `[ -d ${quote(`${dshNm}/nan`)} ] && ln -sfn ${quote(`${dshNm}/nan`)} ${quote(`${profileNm}/nan`)}`,
     'true',
   ].join('\n');
   await transport.exec(script, { allowNonZeroExit: true });
   if (!exists.stdout.includes('EXISTS')) {
     await writePluginStoreManifest(transportIo(transport), paths, {
-      name: 'dsh-remote-explorer-plugin-store',
+      name: `dsh-remote-explorer-${platform}`,
       private: true,
       dependencies: {},
       dsh: { profile: { bundles: [] } },
-    });
+    }, platform);
   }
 }
 
 /**
- * 读 store manifest；缺失/损坏时返回空清单（调用方按空 store 处理）。
+ * 读 host profile manifest；缺失/损坏时返回空清单。
  *
- * @param transport - 已连接的传输
+ * @param io - manifest IO
  * @param paths - 远端路径集合
+ * @param platform - 平台 profile 名（默认 web）
  * @returns manifest 结构
  */
 export async function readPluginStoreManifest(
   io: ManifestIo,
   paths: RemotePaths,
+  platform: string = DEFAULT_PLATFORM,
 ): Promise<PluginStoreManifest> {
-  const result = await io.exec(`cat ${quote(paths.pluginsStoreManifest)} 2>/dev/null || true`, {
+  const result = await io.exec(`cat ${quote(paths.hostProfileManifest(platform))} 2>/dev/null || true`, {
     allowNonZeroExit: true,
   });
   try {
@@ -121,184 +123,118 @@ export async function readPluginStoreManifest(
 }
 
 /**
- * 写 store manifest。
+ * 写 host profile manifest。
  *
- * @param transport - 已连接的传输
+ * @param io - manifest IO
  * @param paths - 远端路径集合
  * @param manifest - 新清单
+ * @param platform - 平台 profile 名（默认 web）
  */
 export async function writePluginStoreManifest(
   io: ManifestIo,
   paths: RemotePaths,
   manifest: PluginStoreManifest,
+  platform: string = DEFAULT_PLATFORM,
 ): Promise<void> {
-  await io.writeFile(paths.pluginsStoreManifest, `${JSON.stringify(manifest, undefined, 2)}\n`);
+  await io.writeFile(paths.hostProfileManifest(platform), `${JSON.stringify(manifest, undefined, 2)}\n`);
 }
 
 /**
- * 会话 profile 的 node_modules 接入 store：整体 symlink（幂等）。
+ * 会话 profile 接入主机级 profile：整体 symlink（幂等）。
  *
- * 老会话遗留的真实 node_modules 目录（功能上线前的会话级副本）直接迁移：
- * 删除后改 symlink——其中的 handoff 与插件副本都已升格 store，无需保留。
+ * 会话 `$DSH_HOME/profiles/<platform>` → `base/profiles/<platform>`。
+ * dsh 启动时 `--profile web` 在此找到 symlink，指向主机级共享安装。
+ *
+ * 老会话遗留的真实 profile 目录直接替换为 symlink。
  *
  * @param ctx - 远端执行上下文
  * @param sessionId - 会话 id
+ * @param platform - 平台 profile 名（默认 web）
  */
-export async function attachSessionNodeModules(
+export async function attachSessionProfile(
   ctx: RemoteContext,
   sessionId: string,
+  platform: string = DEFAULT_PLATFORM,
 ): Promise<void> {
   const { transport, paths } = ctx;
-  const profileDir = paths.sessionProfile(sessionId);
-  const profileNm = `${profileDir}/node_modules`;
-  const storeNm = paths.pluginsStoreNodeModules;
+  const sessionProfileDir = paths.sessionProfile(sessionId);
+  const hostProfileDir = paths.hostProfileDir(platform);
+  // sessionProfile 的父目录可能不存在（首次连接）
+  const parentDir = sessionProfileDir.substring(0, sessionProfileDir.lastIndexOf('/'));
   const script = [
-    `if [ -L ${quote(profileNm)} ]; then :;`,
-    `elif [ -d ${quote(profileNm)} ]; then rm -rf ${quote(profileNm)} && ln -s ${quote(storeNm)} ${quote(profileNm)};`,
-    `else ln -s ${quote(storeNm)} ${quote(profileNm)};`,
+    `mkdir -p ${quote(parentDir)}`,
+    `if [ -L ${quote(sessionProfileDir)} ]; then :;`,
+    `elif [ -d ${quote(sessionProfileDir)} ]; then rm -rf ${quote(sessionProfileDir)} && ln -s ${quote(hostProfileDir)} ${quote(sessionProfileDir)};`,
+    `else ln -s ${quote(hostProfileDir)} ${quote(sessionProfileDir)};`,
     'fi',
   ].join('\n');
   await transport.exec(script, { allowNonZeroExit: true });
-  // 远端窗口原生插件 UI 在 profile 目录跑 pnpm：node_modules 是指向 store 的
-  // symlink 时，pnpm 按 profile 根算出的默认 virtual store（profile 下 .pnpm）
-  // 与穿过 symlink 的实际位置（store 下 .pnpm）不符，报
-  // ERR_PNPM_UNEXPECTED_VIRTUAL_STORE。用 .npmrc 把 virtual store 钉到 store
-  // 的那一份，两个表面的 pnpm 共用同一虚拟存储（实测报错后补）
-  await writeRemoteTextFile(
-    transport,
-    `${profileDir}/.npmrc`,
-    `virtual-store-dir=${storeNm}/.pnpm\n`,
-    { tolerant: true },
-  );
 }
 
 /**
- * profile 模板（web）自带的 base bundles——不属于 store 管理范围，
- * 合并进会话 manifest 时必须保留（丢了远端 dsh 起不来：无 webserver）。
+ * profile 模板（web）自带的 base bundles——不属于插件管理范围，
+ * 合并进 manifest 时必须保留（丢了远端 dsh 起不来：无 webserver）。
  */
 export const TEMPLATE_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'];
 
-/** store node_modules 里由回退链接占据的名字（不是插件，扫描时排除） */
+/** host profile node_modules 里由回退链接占据的名字（不是插件，扫描时排除） */
 const FALLBACK_LINK_NAMES = new Set(['@deepseek-ai', 'cpu-features', 'nan']);
 
 /**
- * 双向同步 store 与会话 manifest，确保无论通过哪条路径操作插件都能收敛到一致状态。
+ * 同步 host profile manifest 的 deps/bundles 与实际 node_modules 状态。
  *
- * 会话 manifest 是 dsh hmr 的 watch 对象——改写即热加载/卸载 bundle 层，
- * 这是「本机活会话立即生效」的实现点。内容无变化时不写（避免无谓 hmr 触发）。
- *
- * 同步规则（双向收敛）：
- *
- * **正向（store → session）**：
- * - store deps 从 store node_modules 扫描自愈——远端窗口原生 UI 的 pnpm 安装
- *   落在 store（session nm 是 symlink），其 manifest 写入只到会话层，这里收编
- * - store bundles 从会话 manifest 收编「store nm 中真实存在」的项——远端原生 UI
- *   启用插件只写会话 bundles，不收编则下次 sync 覆盖会话 bundles 时会把它关掉
- *   （面板列表也会显示未启用）；只增不删，handoff/TEMPLATE 不在扫描集内不受影响
- * - 会话 bundles = store bundles ∪ 模板 base bundles（base/web-app 永不被覆盖）
- *
- * **反向（session → store）**：
- * - store nm 中已不存在的包从 store deps 中移除——覆盖 dsh 原生 UI 卸载后 nm 已
- *   清理但 store manifest 未更新的场景（不论 spec 值，不再仅限 '*' 收编项）
- * - 会话 bundles 中已不存在的项从 store bundles 中移除——覆盖 dsh 原生 UI 卸载
- *   后只改了 profile package.json 的场景，防止下次 sync 把旧 bundles 写回 session
+ * host profile 是唯一真源（session profile 只是 symlink），不再需要双向同步。
+ * 本函数只做自愈：nm 中存在但 manifest 未声明的包收编进 deps；manifest 中
+ * 声明但 nm 中已不存在的包从 deps 中移除。bundles 同理。
  *
  * @param io - manifest IO
  * @param paths - 远端路径集合
- * @param sessionId - 会话 id
+ * @param platform - 平台 profile 名（默认 web）
  * @returns 是否实际改写（false = 已一致）
  */
-export async function syncSessionManifest(
+export async function syncHostProfileManifest(
   io: ManifestIo,
   paths: RemotePaths,
-  sessionId: string,
+  platform: string = DEFAULT_PLATFORM,
 ): Promise<boolean> {
-  const store = await readPluginStoreManifest(io, paths);
-  const storeDeps = { ...(store.dependencies ?? {}) };
-  // 自愈：store nm 里真实存在的包目录（排除回退链接）收编进 deps
+  const manifest = await readPluginStoreManifest(io, paths, platform);
+  const deps = { ...(manifest.dependencies ?? {}) };
+  const profileNm = paths.hostProfileNodeModules(platform);
+
+  // 扫描 nm 中真实存在的包目录
   const scanned = await io.exec(
-    `cd ${quote(paths.pluginsStoreNodeModules)} 2>/dev/null && for d in */ @*/*/; do [ -f "$d/package.json" ] && echo "$d"; done || true`,
+    `cd ${quote(profileNm)} 2>/dev/null && for d in */ @*/*/; do [ -f "$d/package.json" ] && echo "$d"; done || true`,
     { allowNonZeroExit: true },
   );
-  let storeChanged = false;
+  let changed = false;
   const scannedNames = new Set<string>();
   for (const line of scanned.stdout.split('\n')) {
     const name = line.trim().replace(/\/$/, '');
-    // 回退链接占据的名字、@deepseek-ai 命名空间（整目录链到 dsh 树，扫进来
-    // 会把 dsh 自家包全收编成「插件」）、以及直落盘的 handoff 合成包（不经
-    // pnpm，收编进 deps 会让 pnpm 去 registry 找它或报 linked-dir 错）都跳过
     if (name === '' || FALLBACK_LINK_NAMES.has(name) || name.startsWith('@deepseek-ai/')
       || name === HANDOFF_PKG_NAME) continue;
     scannedNames.add(name);
-    if (storeDeps[name] === undefined) {
-      storeDeps[name] = '*';
-      storeChanged = true;
+    if (deps[name] === undefined) {
+      deps[name] = '*';
+      changed = true;
     }
   }
-  // 自愈回收：store nm 中已不存在的包从 store deps 中移除（不论 spec 值）。
-  // 覆盖 dsh 原生 UI 卸载后 nm 已被 pnpm 清理但 store manifest 仍保留声明的场景。
-  // 旧版只回收 spec === '*' 的收编项，对有具体版本号的残留无效——现已放宽。
-  for (const name of Object.keys(storeDeps)) {
+  // 回收：nm 中已不存在的包从 deps 中移除
+  for (const name of Object.keys(deps)) {
     if (!scannedNames.has(name)) {
-      delete storeDeps[name];
-      storeChanged = true;
+      delete deps[name];
+      changed = true;
     }
   }
-  // 读会话 manifest 提前到 store 写回之前：bundles 收编依赖它的现状
-  const sessionManifestPath = `${paths.sessionProfile(sessionId)}/package.json`;
-  const sessionRaw = await io.exec(`cat ${quote(sessionManifestPath)}`, {
-    allowNonZeroExit: true,
-  });
-  let session: PluginStoreManifest;
-  try {
-    session = JSON.parse(sessionRaw.stdout) as PluginStoreManifest;
-  } catch {
-    session = {};
-  }
-  // 自愈收编 bundles：远端窗口原生 UI 装/启插件只写**会话** manifest 的 bundles，
-  // 若不收编进 store，下次 sync 会用 store bundles 整体覆盖会话 bundles，把原生 UI
-  // 启用的插件（含外观类）关掉、且面板列表显示为未启用。收编条件 = 在会话 bundles
-  // 里且 store nm 中真实存在（scannedNames）；只增不删——handoff 与 TEMPLATE 不在
-  // scannedNames 内，收编碰不到它们，不会误删既有 bundles
-  const storeBundlesList = [...(store.dsh?.profile?.bundles ?? [])];
-  for (const name of session.dsh?.profile?.bundles ?? []) {
-    if (TEMPLATE_BUNDLES.includes(name) || storeBundlesList.includes(name)) continue;
-    if (!scannedNames.has(name)) continue;
-    storeBundlesList.push(name);
-    storeChanged = true;
-  }
-  // 反向同步 bundles：会话 bundles 中已不存在的项从 store bundles 中移除。
-  // 覆盖 dsh 原生 UI 卸载后只改了 profile package.json 的场景——若不移除，
-  // 下次 sync 会把 store 的旧 bundles 写回 session，导致已卸载的插件复活。
-  // TEMPLATE_BUNDLES 受保护，不会被反向同步移除。
-  const sessionBundlesSet = new Set(session.dsh?.profile?.bundles ?? []);
-  for (let i = storeBundlesList.length - 1; i >= 0; i--) {
-    const name = storeBundlesList[i];
-    if (TEMPLATE_BUNDLES.includes(name)) continue;
-    if (!sessionBundlesSet.has(name)) {
-      storeBundlesList.splice(i, 1);
-      storeChanged = true;
-    }
-  }
-  if (storeChanged) {
+  // bundles 自愈：nm 中存在且有 bundle patch 的包应在 bundles 中
+  const bundles = [...(manifest.dsh?.profile?.bundles ?? [])];
+  // 注意：bundles 的增删由 install/remove/toggle 操作负责，这里只做一致性校验
+  // 不移除 bundles 中的项（可能是停用但未卸载的插件）
+  if (changed) {
     await writePluginStoreManifest(io, paths, {
-      ...store,
-      dependencies: storeDeps,
-      dsh: { ...store.dsh, profile: { ...store.dsh?.profile, bundles: storeBundlesList } },
-    });
+      ...manifest,
+      dependencies: deps,
+      dsh: { ...manifest.dsh, profile: { ...manifest.dsh?.profile, bundles } },
+    }, platform);
   }
-  const storeBundles = [
-    ...TEMPLATE_BUNDLES,
-    ...storeBundlesList.filter(name => !TEMPLATE_BUNDLES.includes(name)),
-  ];
-  const sameDeps = JSON.stringify(session.dependencies ?? {}) === JSON.stringify(storeDeps);
-  const sameBundles = JSON.stringify(session.dsh?.profile?.bundles ?? []) === JSON.stringify(storeBundles);
-  if (sameDeps && sameBundles) return false;
-  const next: PluginStoreManifest = {
-    ...session,
-    dependencies: { ...storeDeps },
-    dsh: { ...session.dsh, profile: { ...session.dsh?.profile, bundles: [...storeBundles] } },
-  };
-  await io.writeFile(sessionManifestPath, `${JSON.stringify(next, undefined, 2)}\n`);
-  return true;
+  return changed;
 }

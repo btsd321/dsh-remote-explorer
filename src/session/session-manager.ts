@@ -37,7 +37,7 @@ import { writeRemoteTextFile } from '../transport/write-text.js';
 import { provision, type ProvisionResult } from '../provision/provisioner.js';
 import { installHandoffBundle } from '../provision/handoff-installer.js';
 import {
-  attachSessionNodeModules, syncSessionManifest, transportIo,
+  attachSessionProfile, syncHostProfileManifest, transportIo,
 } from '../provision/plugin-store.js';
 import { probeRemote } from '../provision/probe.js';
 import { createRemotePaths, type RemotePaths } from '../provision/remote-paths.js';
@@ -667,11 +667,11 @@ export class RemoteSession {
       options.onStageSkip?.(`交接组件安装失败（不影响会话）：${toErrorMessage(error)}`);
     }
 
-    // 5.6 会话接入 store（必须在远端启动前）：profile node_modules 整体
-    //     symlink 到 store + manifest 从 store 合并（改写即 hmr 热生效；
-    //     无变化不写）。老会话遗留的真实 node_modules 目录在此迁移为 symlink
-    await attachSessionNodeModules(ctx, sessionId);
-    await syncSessionManifest(transportIo(transport), paths, sessionId);
+    // 5.6 会话接入主机级 profile（必须在远端启动前）：session profile 整体
+    //     symlink 到 host profile + manifest 自愈。dsh 启动时 --profile web
+    //     在 $DSH_HOME/profiles/web/ 找到 symlink，指向主机级共享安装
+    await attachSessionProfile(ctx, sessionId);
+    await syncHostProfileManifest(transportIo(transport), paths);
 
     // 6. settings 双写：本机 settings 整体复制到会话 DSH_HOME + pi-ai 供应商
     //    路由写进 home patch 层（`$DSH_HOME/cordis.patch.yml`）。

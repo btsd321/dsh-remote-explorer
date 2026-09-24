@@ -73,16 +73,26 @@ export interface RemotePaths {
    */
   readonly installLockFile: string;
   /**
-   * 远端插件仓库根（host × 远程 OS 用户级，VS Code ~/.vscode-server/extensions 对标）。
+   * 主机级共享 profile 目录（dsh 官方 `$DSH_HOME/profiles/<name>/` 结构）。
    *
-   * 插件真源在此；会话 profile 连接时同步（硬链接拷贝 + bundles 合并），
-   * 见 plugin-store.ts。
+   * 插件安装/卸载的唯一真源。所有会话通过 symlink 共享同一份安装，
+   * 与 dsh 官方 plugin-manager 的操作目录完全一致。
+   *
+   * @param platform - 平台 profile 名（如 `web`、`cli`、`desktop`）
    */
-  readonly pluginsStore: string;
-  /** 插件仓库清单（dependencies + bundles 唯一真源） */
-  readonly pluginsStoreManifest: string;
-  /** 插件仓库 node_modules */
-  readonly pluginsStoreNodeModules: string;
+  hostProfileDir(platform: string): string;
+
+  /**
+   * 主机级 profile 的 package.json。
+   * @param platform - 平台 profile 名
+   */
+  hostProfileManifest(platform: string): string;
+
+  /**
+   * 主机级 profile 的 node_modules。
+   * @param platform - 平台 profile 名
+   */
+  hostProfileNodeModules(platform: string): string;
 
   /**
    * 某 Node 版本的安装目录。
@@ -124,7 +134,11 @@ export interface RemotePaths {
   sessionHome(sessionId: string): string;
 
   /**
-   * 某会话的 profile 目录。
+   * 某会话的 profile 目录（symlink 到主机级 host profile）。
+   *
+   * dsh 启动时 `--profile web` 在 `$DSH_HOME/profiles/web/` 找到此 symlink，
+   * 指向 `base/profiles/web/`，所有会话共享同一份安装。
+   *
    * @param sessionId - 会话 id
    */
   sessionProfile(sessionId: string): string;
@@ -245,9 +259,9 @@ export function createRemotePaths(homeDir: string): RemotePaths {
     npmCache: `${base}/npm-cache`,
     tmpRoot: `${base}/tmp`,
     installLockFile: `${base}/tmp/install.lock`,
-    pluginsStore: `${base}/plugins`,
-    pluginsStoreManifest: `${base}/plugins/package.json`,
-    pluginsStoreNodeModules: `${base}/plugins/node_modules`,
+    hostProfileDir: (platform) => `${base}/profiles/${platform}`,
+    hostProfileManifest: (platform) => `${base}/profiles/${platform}/package.json`,
+    hostProfileNodeModules: (platform) => `${base}/profiles/${platform}/node_modules`,
 
     nodeDir: (version) => `${base}/node/${version}`,
     nodeBin: (version) => `${base}/node/${version}/bin/node`,
@@ -257,7 +271,7 @@ export function createRemotePaths(homeDir: string): RemotePaths {
     dshBin: (version) => `${base}/versions/dsh-${version}/node_modules/.bin/dsh`,
 
     sessionHome: (sessionId) => `${base}/sessions/${sessionId}`,
-    sessionProfile: (sessionId) => `${base}/sessions/${sessionId}/profiles/remote`,
+    sessionProfile: (sessionId) => `${base}/sessions/${sessionId}/profiles/web`,
     sessionRuntime: (sessionId) => `${base}/sessions/${sessionId}/.runtime`,
     sessionPidFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/pid`,
     sessionLogFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/dsh.log`,
