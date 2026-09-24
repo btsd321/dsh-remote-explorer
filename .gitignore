@@ -52,8 +52,9 @@ lerna-debug.log*
 .vscode/
 *.swp
 
-# AI agent 工具配置（本地使用，不提交）
+# AI agent 工具配置与产出（本地使用，不提交）
 .claude/
 .agents/
 agent/
 skills-lock.json
+tasks/
