@@ -2,9 +2,18 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 必读文档
+
+AI agent 或人类开发者在动手修改任何代码或文档之前，**必须先阅读**以下两份规范：
+
+- [docs/git-workflow.md](docs/git-workflow.md) — Git 分支管理与提交规范（分支创建、合并方向、commit message 格式、agent 检查清单）
+- [docs/type_script_style.md](docs/type_script_style.md) — TypeScript 编程规范（注释、命名、模块结构、类型约定）
+
+未读这两份文档就动手改代码视为违规。
+
 ## 语言要求
 
-本仓库的所有交流、代码注释、提交信息、文档一律使用**中文**。代码规范见 [docs/type_script_style.md](docs/type_script_style.md)，写任何代码前先读它。
+本仓库的所有交流、代码注释、提交信息、文档一律使用**中文**。
 
 ## 这是什么
 
