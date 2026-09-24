@@ -242,7 +242,7 @@ pnpm exec tsx scripts/package.ts --os linux --arch arm64
 | `--os <os>` | 目标平台：`win32` / `linux` / `darwin`（默认当前平台） |
 | `--arch <arch>` | 目标架构：`x64` / `arm64`（默认当前架构） |
 | `--all` | 打全部五平台矩阵，忽略 `--os` / `--arch` |
-| `--node-version <版本>` | 打入的 Node 版本（默认 `v24.11.1`） |
+| `--node-version <版本>` | 打入的 Node 版本（默认 `v24.21.0`） |
 | `--mirror <镜像>` | Node 下载源：`npmmirror`（默认，国内可达）/ `official` / 自定义 URL 前缀 |
 | `--out-dir <目录>` | 产物目录（默认 `dist`） |
 | `--minify` | 压缩产物体积（默认关闭，保留可读堆栈） |
