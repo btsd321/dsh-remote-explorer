@@ -17,47 +17,26 @@ import type { ReactNode } from 'react';
 import type { LogEntry } from '../plugin/supervisor.js';
 import type { RemoteExplorerLocaleKey } from './locales.js';
 import {
-  ApiError, fetchSessionLog, fetchSessions, fetchWslDistros, postConnect, postDisconnect,
+  fetchSessionLog, fetchSessions, fetchWslDistros, messageOf, postConnect, postDisconnect,
   type PanelSession, type WslDistroSummary,
 } from './api.js';
-import { isDesktopShell } from './desktop-bridge.js';
 import { openRemoteWindow, OVERLAY_INTENT_ORIGIN } from './remote-window.js';
 import { renderSessionRow } from './ssh-panel.js';
 import { createLogger } from '../util/logger.js';
+import { inputStyle, buttonStyle } from './styles.js';
+import {
+  SESSIONS_POLL_MS, LOG_POLL_MS, HANDOFF_COUNTDOWN_SECONDS, DESKTOP,
+} from './constants.js';
 
 const logger = createLogger('wsl-panel');
 
-/** 会话列表轮询间隔（毫秒） */
-const SESSIONS_POLL_MS = 2_000;
-
-/** 选中会话的日志增量轮询间隔（毫秒） */
-const LOG_POLL_MS = 1_500;
-
-/** 当前标签形态就绪后的自动导航倒计时（秒，可取消） */
-const HANDOFF_COUNTDOWN_SECONDS = 3;
-
 /** localStorage 里「上次远端目录」的键前缀（按发行版记忆） */
 const LAST_CWD_KEY_PREFIX = 'dsh-remote-explorer:wsl:lastCwd:';
-
-/** 是否桌面壳（preload 注入先于一切脚本，页面生命周期内不变，模块级算一次） */
-const DESKTOP = isDesktopShell();
 
 /** 面板 props：locale 面由 slots 框架注入 */
 export interface WslSessionPanelProps {
   /** 命名空间绑定的翻译函数 */
   t: (key: RemoteExplorerLocaleKey) => string;
-}
-
-/**
- * 把未知异常归一成展示文本。
- *
- * @param error - 捕获值
- * @returns 中文消息
- */
-function messageOf(error: unknown): string {
-  if (error instanceof ApiError) return error.message;
-  if (error instanceof Error) return error.message;
-  return String(error);
 }
 
 /**
@@ -240,23 +219,6 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
     } catch (error) {
       setLoadError(messageOf(error));
     }
-  };
-
-  const inputStyle: React.CSSProperties = {
-    background: 'transparent',
-    color: 'inherit',
-    border: '1px solid rgba(127,127,127,0.4)',
-    borderRadius: 6,
-    padding: '4px 8px',
-    minWidth: 0,
-  };
-  const buttonStyle: React.CSSProperties = {
-    background: 'transparent',
-    color: 'inherit',
-    border: '1px solid rgba(127,127,127,0.5)',
-    borderRadius: 6,
-    padding: '4px 12px',
-    cursor: 'pointer',
   };
 
   /** 格式化发行版状态文案 */

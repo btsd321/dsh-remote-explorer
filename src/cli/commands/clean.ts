@@ -18,6 +18,7 @@ import { SshTransport } from '../../transport/ssh-transport.js';
 import { probeRemote } from '../../provision/probe.js';
 import { createRemotePaths, BASE_DIR_NAME } from '../../provision/remote-paths.js';
 import { ownerFingerprint } from '../../util/owner-fingerprint.js';
+import { formatBytes } from '../../util/format.js';
 import { quote } from '../../util/shell-quote.js';
 import { prepareHostAuth } from '../host-auth.js';
 import { bold, cyan, dim, green, println, ProgressReporter, yellow } from '../output.js';
@@ -243,14 +244,4 @@ async function pruneVersions(
   return removable.map(name => name.slice(prefix.length));
 }
 
-/**
- * 格式化字节数。
- *
- * @param bytes - 字节数
- * @returns 人类可读文本
- */
-function formatBytes(bytes: number): string {
-  const gb = bytes / 1_000_000_000;
-  if (gb >= 1) return `${gb.toFixed(1)} GB`;
-  return `${Math.round(bytes / 1_000_000)} MB`;
-}
+

@@ -18,6 +18,7 @@ import {
   fetchRemotePlugins, postRemotePluginAction, type RemotePluginAction, type RemotePluginInfo,
 } from './api.js';
 import type { RemoteExplorerLocaleKey } from './locales.js';
+import { inputStyle } from './styles.js';
 
 /** 区块 props */
 export interface RemotePluginsSectionProps {
@@ -69,14 +70,6 @@ export function RemotePluginsSection(props: RemotePluginsSectionProps): ReactNod
     }
   };
 
-  const inputStyle: React.CSSProperties = {
-    background: 'transparent',
-    color: 'inherit',
-    border: '1px solid rgba(127,127,127,0.4)',
-    borderRadius: 6,
-    padding: '4px 8px',
-    minWidth: 0,
-  };
   const buttonStyle: React.CSSProperties = {
     background: 'transparent',
     color: 'inherit',

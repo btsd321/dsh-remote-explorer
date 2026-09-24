@@ -32,6 +32,18 @@ export class ApiError extends Error {
 }
 
 /**
+ * 把未知异常归一成展示文本。
+ *
+ * @param error - 捕获值
+ * @returns 中文消息
+ */
+export function messageOf(error: unknown): string {
+  if (error instanceof ApiError) return error.message;
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+/**
  * 发起一次 /api 请求并解析 JSON。
  *
  * @param path - 路由（不含前缀）
