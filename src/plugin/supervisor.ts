@@ -20,6 +20,7 @@
 import { openSession, type RemoteSession, type TransportType } from '../session/session-manager.js';
 import { HANDOFF_PROTOCOL_VERSION, type ManageHandlers } from '../handoff/protocol.js';
 import { listSessions } from '../session/session-registry.js';
+import { readHostEnv } from './host-env-store.js';
 import { INITIAL_STATE, type SessionState } from '../session/lifecycle-state.js';
 import { computeSessionId } from '../util/session-id.js';
 import { normalizeRemoteCwd, validateRemoteCwd } from '../util/remote-cwd.js';
@@ -394,6 +395,14 @@ export class SessionSupervisor {
   private async runOpen(record: SupervisedSession, request: ConnectRequest): Promise<void> {
     this.push(record, 'info', `runOpen 开始: transportType=${record.transportType}, hostAlias=${request.hostAlias}, distroName=${request.distroName ?? '(无)'}`);
     try {
+      // per-host 环境变量（面板齿轮配置，本机 ~/.dsh/remote-host-env.json）：
+      // ConnectRequest 不携带 env——面板/命令/工具三个入口统一从这里读，
+      // 坏键已在读取侧过滤。空对象不传（避免把 undefined 语义写进可选项）
+      const hostEnv = readHostEnv(request.hostAlias);
+      if (Object.keys(hostEnv).length > 0) {
+        // 只打键名不打值（值可能含代理认证信息或敏感 token）
+        this.push(record, 'info', `注入主机环境变量: ${Object.keys(hostEnv).join(', ')}`);
+      }
       const session = await openSession({
         hostAlias: request.hostAlias,
         remoteCwd: record.remoteCwd,
@@ -410,6 +419,7 @@ export class SessionSupervisor {
         ...(this.defaults.dshVersion ? { dshVersion: this.defaults.dshVersion } : {}),
         ...(request.privateKey ? { privateKey: request.privateKey } : {}),
         ...(request.password !== undefined ? { password: request.password } : {}),
+        ...(Object.keys(hostEnv).length > 0 ? { extraEnv: hostEnv } : {}),
         onStageStart: (stage) => { this.push(record, 'info', `[开始] ${stage}`); },
         onStageDone: (detail) => {
           this.push(record, 'info', `[完成] ${detail ?? ''}`);

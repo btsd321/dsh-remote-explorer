@@ -120,6 +120,16 @@ Remote dsh ──(placeholder token)──▶ Remote 127.0.0.1:<reverse-port>/r/
 - Multiple local CLIs sharing the same session share the credential path (reverse port is first-come-first-served; later views automatically yield).
 - Known residual risk: a same-privilege user on the remote could consume your quota via your tunnel (they cannot extract the key itself). Be aware on multi-user remote hosts: the proxy raises the bar with per-session tokens, rate limiting, and a path allowlist, but cannot fully block same-privilege users.
 
+### Remote proxy for GitHub access (DSH_REMOTE_PROXY)
+
+The remote dsh is launched by this tool, so its environment carries no proxy variables by default — on a remote host without direct internet, installing a GitHub plugin (which uses HTTPS `git ls-remote`) times out even though SSH (port 22) works. Setting `DSH_REMOTE_PROXY` on the local machine fixes that: the launcher injects `http_proxy` / `https_proxy` / `ALL_PROXY` (both letter cases) into the remote dsh process, pointing at the proxy port your SSH reverse tunnel exposes on the remote (e.g. `http://127.0.0.1:18890`):
+
+```bash
+DSH_REMOTE_PROXY=http://127.0.0.1:18890 DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect myhost
+```
+
+dsh itself passes proxy variables through to the `git`/`pnpm` child processes it spawns, so plugin installs and dependency fetches go through the same proxy. Leaving `DSH_REMOTE_PROXY` unset injects nothing — machines with direct internet are unaffected. In plugin form, per-host custom variables (the gear button on the panel, persisted in `~/.dsh/remote-host-env.json`) take precedence over this fallback.
+
 ## Remote disk isolation
 
 Modeled after VS Code's `~/.vscode-server` single-root self-contained model: everything this tool writes on the remote is inside `~/.dsh-remote-explorer/btsd321/` (installations, per-session state, npm cache, temporary files). It **never writes to** remote `~/.dsh` (official dsh's home) or `~/.npm` (shared npm cache). The remote dsh's skill directory is also redirected into the session (`DSH_AGENTS_HOME`), not the machine-global `~/.agents`.
