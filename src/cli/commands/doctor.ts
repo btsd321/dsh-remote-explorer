@@ -21,6 +21,7 @@ import {
 } from '../../provision/probe.js';
 import { selectMirror, type MirrorProbeResult } from '../../provision/mirror-selector.js';
 import { createRemotePaths, type RemotePaths } from '../../provision/remote-paths.js';
+import type { RemoteContext } from '../../provision/remote-context.js';
 import { isWslAvailable, listWslDistros } from '../../hosts/wsl-distro-parser.js';
 import { toErrorMessage } from '../../util/errors.js';
 import { quote } from '../../util/shell-quote.js';
@@ -119,6 +120,7 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
     if (!probe) { report(findings); return 1; }
 
     const paths = createRemotePaths(probe.homeDir);
+    const ctx: RemoteContext = { transport, paths };
 
     // 基础命令检查
     checkBasicCommands(probe, findings);
@@ -133,7 +135,7 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
     await checkNodeStabilityChecks(transport, probe, progress, findings);
 
     // 镜像测速
-    await checkMirror(transport, paths, options, progress, findings);
+    await checkMirror(ctx, options, progress, findings);
 
     // 通道配额（仅 SSH）
     checkChannelQuota(transport, findings);
@@ -142,7 +144,7 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
     await checkSftp(transport, progress, findings);
 
     // 隔离检查
-    findings.push(await checkIsolation(transport, paths));
+    findings.push(await checkIsolation(ctx));
 
     println();
     report(findings);
@@ -363,12 +365,12 @@ async function checkNodeStabilityChecks(
  * 镜像测速（Node 发行版 + npm registry）。
  */
 async function checkMirror(
-  transport: RemoteTransport,
-  paths: RemotePaths,
+  ctx: RemoteContext,
   options: DoctorOptions,
   progress: ProgressReporter,
   findings: Finding[],
 ): Promise<void> {
+  const { transport, paths } = ctx;
   for (const kind of ['node', 'npm'] as const) {
     const label = kind === 'node' ? 'Node 发行版镜像' : 'npm registry';
     progress.start(`${label}测速`);
@@ -457,14 +459,13 @@ async function checkSftp(
  * 的家）与 `~/.npm` 从不被本工具写入。检测 `~/.dsh` 是否存在只是给用户
  * 提示「这台机器上有别人在用官方 dsh」——存在与否都不改变本工具的行为。
  *
- * @param transport - 已连接的传输
- * @param paths - 远端路径集合
+ * @param ctx - 远端执行上下文
  * @returns 诊断条目
  */
 async function checkIsolation(
-  transport: RemoteTransport,
-  paths: RemotePaths,
+  ctx: RemoteContext,
 ): Promise<Finding> {
+  const { transport, paths } = ctx;
   // 一条命令拿齐：本工具占用 + 官方 dsh 家的存在性
   const script = [
     `printf 'FOOTPRINT=%s\\n' "$(du -sh ${quote(paths.base)} 2>/dev/null | cut -f1)"`,

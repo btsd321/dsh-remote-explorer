@@ -17,6 +17,7 @@ import { ensureDsh, resolveDshVersion, type DshInstallResult } from './dsh-insta
 import { ensurePnpm } from './pnpm-installer.js';
 import { prepareSessionProfile, type PatchEntry, type ProfileResult } from './profile-writer.js';
 import { createRemotePaths, type RemotePaths } from './remote-paths.js';
+import type { RemoteContext } from './remote-context.js';
 import type { RemoteTransport } from '../transport/types.js';
 
 /** 引导选项 */
@@ -91,6 +92,7 @@ export async function provision(
   const probe = await probeRemote(transport, signal);
   assertDiskSpace(probe, transport.hostAlias);
   const paths = createRemotePaths(probe.homeDir);
+  const ctx: RemoteContext = { transport, paths };
   options.onStageDone?.(`${probe.platform.os}/${probe.platform.arch}`);
 
   const nodeVersion = options.nodeVersion ?? DEFAULT_NODE_VERSION;
@@ -115,7 +117,7 @@ export async function provision(
 
   // 3. 装 Node（含稳定性自检）
   options.onStageStart?.(`准备 Node ${nodeVersion}`);
-  const node = await ensureNode(transport, paths, {
+  const node = await ensureNode(ctx, {
     version: nodeVersion,
     // 已装时不会用到 URL，给个占位避免把 undefined 传下去
     mirrorBaseUrl: nodeMirrorUrl ?? '',
@@ -139,7 +141,7 @@ export async function provision(
   let dshVersion = requested;
   if (TAG_PATTERN.test(requested)) {
     options.onStageStart?.(`解析 dsh ${requested} 标签`);
-    dshVersion = await resolveDshVersion(transport, paths, {
+    dshVersion = await resolveDshVersion(ctx, {
       tag: requested,
       registryUrl: npmSelection.selected.baseUrl,
       nodeBinDir: node.binDir,
@@ -150,7 +152,7 @@ export async function provision(
 
   // 6. 装 dsh
   options.onStageStart?.(`准备 dsh ${dshVersion}`);
-  const dsh = await ensureDsh(transport, paths, {
+  const dsh = await ensureDsh(ctx, {
     version: dshVersion,
     registryUrl: npmSelection.selected.baseUrl,
     nodeBinDir: node.binDir,
@@ -161,7 +163,7 @@ export async function provision(
   // 6.5 准备 pnpm：双表面插件管理的共同前提（远端窗口原生插件 UI 在远端
   //     进程内跑 pnpm；本地面板经 SSH 在远端 profile 跑 pnpm）。幂等复用
   options.onStageStart?.('准备 pnpm');
-  const pnpm = await ensurePnpm(transport, paths, {
+  const pnpm = await ensurePnpm(ctx, {
     registryUrl: npmSelection.selected.baseUrl,
     nodeBinDir: node.binDir,
     ...(signal ? { signal } : {}),
@@ -170,7 +172,7 @@ export async function provision(
 
   // 7. 准备会话 profile
   options.onStageStart?.('准备会话 profile');
-  const profile = await prepareSessionProfile(transport, paths, {
+  const profile = await prepareSessionProfile(ctx, {
     sessionId: options.sessionId,
     dshBin: dsh.dshBin,
     nodeBinDir: node.binDir,

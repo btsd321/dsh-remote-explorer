@@ -41,6 +41,7 @@ import {
 } from '../provision/plugin-store.js';
 import { probeRemote } from '../provision/probe.js';
 import { createRemotePaths, type RemotePaths } from '../provision/remote-paths.js';
+import type { RemoteContext } from '../provision/remote-context.js';
 import { allocateRemotePorts } from '../tunnel/port-allocator.js';
 import { LocalForward } from '../tunnel/forward-local.js';
 import { computeSessionId } from '../util/session-id.js';
@@ -544,17 +545,18 @@ export class RemoteSession {
     const probe = await probeRemote(transport);
     log.info(`远端探测完成: homeDir=${probe.homeDir}`);
     const paths = createRemotePaths(probe.homeDir);
+    const ctx: RemoteContext = { transport, paths };
 
     // 1. 凭据材料：读回已有的，没有则生成新的
-    let secret = await readProxySecret(transport, paths, sessionId);
+    let secret = await readProxySecret(ctx, sessionId);
 
     // 2. 探既有远端进程
     if (options.forceRestart === true) {
-      await stopRemoteDsh(transport, paths, { sessionId });
+      await stopRemoteDsh(ctx, { sessionId });
     }
     let processInfo: RemoteProcessInfo | undefined;
     if (options.forceRestart !== true) {
-      processInfo = await probeExistingSession(transport, paths, sessionId);
+      processInfo = await probeExistingSession(ctx, sessionId);
     }
 
     if (processInfo && !secret) {
@@ -606,6 +608,7 @@ export class RemoteSession {
     credential: TunnelProxyCredential | undefined;
   }> {
     const { paths, secret, secretIsNew } = probeCtx;
+    const ctx: RemoteContext = { transport, paths };
 
     // 4. 凭据策略实例。构造便宜（不起监听），放在引导之前——
     //    环境注入、patch 条目与 settings 镜像都从它取，编排层不重复拼细节。
@@ -646,7 +649,7 @@ export class RemoteSession {
     //     安装失败不阻断会话（增强面非成立条件）
     options.onStageStart?.('检查远端交接组件');
     try {
-      const installed = await installHandoffBundle(transport, paths, provisioned.dsh.version);
+      const installed = await installHandoffBundle(ctx, provisioned.dsh.version);
       options.onStageDone?.(installed ? '已安装交接组件（远端窗口获得管理菜单）' : '交接组件已就位');
     } catch (error) {
       options.onStageSkip?.(`交接组件安装失败（不影响会话）：${toErrorMessage(error)}`);
@@ -655,7 +658,7 @@ export class RemoteSession {
     // 5.6 会话接入 store（必须在远端启动前）：profile node_modules 整体
     //     symlink 到 store + manifest 从 store 合并（改写即 hmr 热生效；
     //     无变化不写）。老会话遗留的真实 node_modules 目录在此迁移为 symlink
-    await attachSessionNodeModules(transport, paths, sessionId);
+    await attachSessionNodeModules(ctx, sessionId);
     await syncSessionManifest(transportIo(transport), paths, sessionId);
 
     // 6. settings 双写：本机 settings 整体复制到会话 DSH_HOME + pi-ai 供应商
@@ -687,7 +690,7 @@ export class RemoteSession {
 
     // 7. 新凭据材料落盘（600 权限）。之后无论哪个视图重连都读回同一组值
     if (secret && secretIsNew) {
-      await writeProxySecret(transport, paths, sessionId, secret);
+      await writeProxySecret(ctx, sessionId, secret);
     }
 
     return { provisioned, credential };
@@ -810,10 +813,10 @@ export class RemoteSession {
 
     if (options.stopRemote === true) {
       try {
-        await stopRemoteDsh(this.transport, this.provisioned.paths, {
-          sessionId: this.sessionId,
-          port: this.process.port,
-        });
+        await stopRemoteDsh(
+          { transport: this.transport, paths: this.provisioned.paths },
+          { sessionId: this.sessionId, port: this.process.port },
+        );
       } catch { /* 停远端失败不应阻碍本机清理 */ }
     }
 
@@ -849,7 +852,7 @@ export class RemoteSession {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       options.onStageStart?.(`启动远端 dsh（端口 ${port}）`);
       try {
-        const info = await startRemoteDsh(transport, provisioned.paths, {
+        const info = await startRemoteDsh({ transport, paths: provisioned.paths }, {
           sessionId,
           dshBin: provisioned.dsh.dshBin,
           dshHome: provisioned.profile.dshHome,
@@ -1004,7 +1007,10 @@ export class RemoteSession {
     try {
       await next.connect();
 
-      const existing = await probeExistingSession(next, this.provisioned.paths, this.sessionId);
+      const existing = await probeExistingSession(
+        { transport: next, paths: this.provisioned.paths },
+        this.sessionId,
+      );
       if (existing) {
         this.process = existing;
       } else {

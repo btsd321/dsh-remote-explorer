@@ -24,6 +24,7 @@
 import { quote } from '../util/shell-quote.js';
 import { writeRemoteTextFile } from '../transport/write-text.js';
 import { HANDOFF_PKG_NAME } from '../handoff/protocol.js';
+import type { RemoteContext } from './remote-context.js';
 import type { RemotePaths } from './remote-paths.js';
 import type { RemoteTransport } from '../transport/types.js';
 
@@ -65,15 +66,14 @@ export interface PluginStoreManifest {
  *
  * 回退链接目标随 dsh 版本变（升级后重链）；`ln -sfn` 覆盖旧链接。
  *
- * @param transport - 已连接的传输
- * @param paths - 远端路径集合
+ * @param ctx - 远端执行上下文
  * @param dshVersion - 当前会话使用的 dsh 版本（回退链接锚定其安装树）
  */
 export async function ensurePluginStore(
-  transport: RemoteTransport,
-  paths: RemotePaths,
+  ctx: RemoteContext,
   dshVersion: string,
 ): Promise<void> {
+  const { transport, paths } = ctx;
   const storeNm = paths.pluginsStoreNodeModules;
   const dshNm = `${paths.dshDir(dshVersion)}/node_modules`;
   const exists = await transport.exec(
@@ -141,15 +141,14 @@ export async function writePluginStoreManifest(
  * 老会话遗留的真实 node_modules 目录（功能上线前的会话级副本）直接迁移：
  * 删除后改 symlink——其中的 handoff 与插件副本都已升格 store，无需保留。
  *
- * @param transport - 已连接的传输
- * @param paths - 远端路径集合
+ * @param ctx - 远端执行上下文
  * @param sessionId - 会话 id
  */
 export async function attachSessionNodeModules(
-  transport: RemoteTransport,
-  paths: RemotePaths,
+  ctx: RemoteContext,
   sessionId: string,
 ): Promise<void> {
+  const { transport, paths } = ctx;
   const profileDir = paths.sessionProfile(sessionId);
   const profileNm = `${profileDir}/node_modules`;
   const storeNm = paths.pluginsStoreNodeModules;

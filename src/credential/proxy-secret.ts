@@ -10,8 +10,7 @@
  * 不得 import 编排层（session/）。
  */
 
-import type { RemoteTransport } from '../transport/types.js';
-import type { RemotePaths } from '../provision/remote-paths.js';
+import type { RemoteContext } from '../provision/remote-context.js';
 import { quote } from '../util/shell-quote.js';
 
 /** 随会话固定的凭据材料（远端 `.runtime/` 落盘的那组值） */
@@ -25,16 +24,15 @@ export interface ProxySecret {
 /**
  * 读回会话的凭据材料。
  *
- * @param transport - 传输实例
- * @param paths - 远端路径集合
+ * @param ctx - 远端执行上下文
  * @param sessionId - 会话 id
  * @returns 材料；任一文件缺失或非法时 undefined
  */
 export async function readProxySecret(
-  transport: RemoteTransport,
-  paths: RemotePaths,
+  ctx: RemoteContext,
   sessionId: string,
 ): Promise<ProxySecret | undefined> {
+  const { transport, paths } = ctx;
   const tokenFile = paths.sessionProxyTokenFile(sessionId);
   const portFile = paths.sessionReversePortFile(sessionId);
   const script = [
@@ -59,17 +57,16 @@ export async function readProxySecret(
  * 不是真实 API key；残余风险与 PLAN 4.5 节的既有评估一致
  * （同权限用户本就能读进程环境拿到它）。
  *
- * @param transport - 传输实例
- * @param paths - 远端路径集合
+ * @param ctx - 远端执行上下文
  * @param sessionId - 会话 id
  * @param secret - 凭据材料
  */
 export async function writeProxySecret(
-  transport: RemoteTransport,
-  paths: RemotePaths,
+  ctx: RemoteContext,
   sessionId: string,
   secret: ProxySecret,
 ): Promise<void> {
+  const { transport, paths } = ctx;
   const tokenFile = paths.sessionProxyTokenFile(sessionId);
   const portFile = paths.sessionReversePortFile(sessionId);
   // 令牌值不打印到任何日志；这里只写文件
