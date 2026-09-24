@@ -327,7 +327,13 @@ function HandoffPill(props: HandoffPillProps): ReactNode {
               : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   <button type="button" style={buttonStyle}
-                    onClick={() => { window.open(meta.managerUrl, '_blank', 'noopener'); }}>
+                    onClick={() => {
+                      // 桌面端 webview 里 window.open 被 Electron guest 默认 deny；
+                      // 改用 location.href 导航触发 will-navigate → handleIntentUrl
+                      // 截获（无 hash = 纯返回意图 → closeRemoteWindow）。
+                      // 浏览器端同理：同标签导航回本机管理页根路径
+                      if (meta.managerUrl !== undefined) window.location.href = meta.managerUrl;
+                    }}>
                     {t('managerOpen')}
                   </button>
                   <button type="button" style={buttonStyle}
