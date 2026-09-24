@@ -201,6 +201,12 @@ DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect <别名> --cwd //ho
 5. **打开浏览器** — 用会话 URL（含访问令牌）启动默认浏览器。
 6. **保持运行** — 进程阻塞，维持隧道和代理。心跳每 5 秒执行一次。
 
+**环境变量：**
+
+- `DEEPSEEK_API_KEY` 等 LLM key：在启动 `connect` 的 shell 中导出（用哪个供应商导哪个，清单来自 `~/.dsh/settings.yaml`）。
+- `DSH_REMOTE_PROXY`：无公网主机的代理兜底。远端 dsh 装 GitHub 插件走 HTTPS（`git ls-remote https://github.com/...`），**SSH(22) 能通不代表 HTTPS(443) 能通**。设了它，启动器把 `http_proxy`/`https_proxy`/`ALL_PROXY`（大小写共六个键）注入远端 dsh 进程，值指向 SSH 反向隧道在远端回环暴露的代理端口（如 `http://127.0.0.1:18890`）；dsh 会把这些变量透传给它拉起的 `git`/`pnpm` 子进程。不设则不注入任何变量，直连主机零影响。
+- 注入发生在**启动远端进程时**：复用已运行的会话不会补注入，需 `--force-restart`。插件形态的 per-host 齿轮配置优先于本变量（见[以 dsh 插件形式使用](#以-dsh-插件形式使用)）。
+
 **会话复用：** 用相同别名和 `--cwd` 再次 `connect`，会探到已运行的远端 dsh 并复用。新 CLI 获得自己的本机隧道端口。多个 CLI 可共享一个远端会话。
 
 **Ctrl-C 行为：**
@@ -353,6 +359,18 @@ DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect user@192.168.0.10 -
 pnpm exec tsx src/cli/bin.ts connect my-server --cwd //home/user --private-key ~/.ssh/id_ed25519
 ```
 
+### 无公网主机经代理装插件
+
+远端 dsh 装插件（如 `github:btsd321/...`）走 HTTPS；主机无公网时裸连超时，dsh 里报「连接 GitHub 超时」。把本机代理经 SSH 反向隧道借到远端回环后，让启动器注入代理变量：
+
+```bash
+# 假设反向隧道把本机代理暴露在远端 127.0.0.1:18890
+DSH_REMOTE_PROXY=http://127.0.0.1:18890 DEEPSEEK_API_KEY=sk-xxx \
+  pnpm exec tsx src/cli/bin.ts connect my-server --cwd //home/user
+```
+
+验证方法：连接输出里的远端 pid，在远端跑 `cat /proc/<pid>/environ | tr '\0' '\n' | grep -i proxy` 应看到代理变量；`https_proxy=http://127.0.0.1:18890 git ls-remote https://github.com/<仓库> HEAD` 应返回 commit hash（这就是 dsh 装插件前的探测命令）。插件形态改用面板的每主机 ⚙ 齿轮按钮配置（代理快捷项一键填入，下次连接生效）。
+
 ### 重连到已有会话
 
 ```bash
@@ -453,7 +471,7 @@ pnpm exec tsx scripts/dev-plugin.ts --sync   # 只同步产物进沙箱
 
 **左导航「远程 SSH 会话」**（全局面板，与「插件」按钮平级；0.6.x 起从 Settings 迁出——设置页只放偏好，工作流面板独立成面）：
 
-- 连接表单：主机（下拉来自 `~/.ssh/config`，也可直填 `user@host[:port]`）、远端目录（按主机记忆上次值）、高级选项（本机端口 / 强制重启 / 重测镜像 / Node 与 dsh 版本 / 私钥路径）、SSH 密码框。**窗口形态按钮按环境分流**：
+- 连接表单：主机（下拉来自 `~/.ssh/config`，也可直填 `user@host[:port]`）、远端目录（按主机记忆上次值）、高级选项（本机端口 / 强制重启 / 重测镜像 / Node 与 dsh 版本 / 私钥路径）、SSH 密码框、**⚙ 环境变量按钮**（按主机配置自定义环境变量：key-value 行编辑 + 代理快捷项，存宿主侧 `~/.dsh/remote-host-env.json`，不写 ssh config；连接时注入远端 dsh 进程，`DSH_HOME`/`DSH_AGENTS_HOME`/`PATH` 为保留键禁配）。会话行也有同款齿轮（「外部」会话除外）。**窗口形态按钮按环境分流**：
   - **桌面端（DeepSeek Harness）**：单按钮「在新窗口连接」——就绪后弹**整窗浮动桌面**（桌面壳是单 OS 窗口，http/https 弹窗与跨 origin 导航全被甩给系统浏览器，应用内唯一通道是 webview；浮层不透明铺满窗口 = 打开即隐藏主桌面及其标题栏按钮，收起即还原，窗口最小化/全屏整体一起动）。**不叠加自建顶栏**：远程 dsh 的 web 界面铺满整窗，它没有桌面壳标题栏（web 形态本就不渲染「应用/编辑」菜单条），返回/关闭/停止一律走远程侧栏底部那枚状态 pill（见[远端窗口交接](#远端窗口交接handoff)）；加载阶段（webview 未夺焦）Esc 也可收起。应用重载后浮层不自动恢复，从面板重开即可
   - **浏览器端**：双入口（对标 VS Code）——「在当前标签页连接」= 就绪后 3 秒倒计时同标签切入远端窗口（可取消）；「在新标签页连接」= 本页留守管理，会话行按钮开远端新标签
 - 会话表：状态点、本机端口、行内入口（桌面端「新窗口打开」= 整窗浮动桌面；浏览器端「进入（当前标签）」与「新标签打开 ↗」，新页 = **隧道转发后的远端 dsh 界面**）、「断开」按钮（默认勾选「同时停止远端 dsh」）；其他本机进程维持的会话标「外部」只读
@@ -528,3 +546,4 @@ pnpm exec tsx scripts/dev-plugin.ts --sync   # 只同步产物进沙箱
 - **连接一直卡在引导**：面板日志区看阶段输出；远端首次引导要下载 Node 与 dsh（数分钟），`doctor` 可先诊断
 - **远端窗口没有状态 pill**：确认会话在 0.6.x 后连接过（老会话重连时补装组件，存活复用的远端进程要下次重启才出现）；带 Cookie 访问远端 `/api/dsh-remote-handoff/meta` 应得 200，503 = 会话运行时材料缺失
 - **远端插件安装失败**：面板日志看 pnpm 报错；registry 由引导测速缓存决定；同一远端账号并发引导/安装时后者等 flock，超时 15 分钟报「另一引导正在进行」
+- **远端装 GitHub 插件报「连接 GitHub 超时」**：dsh 装 `github:` 插件走 HTTPS（`git ls-remote`），SSH(22) 通不代表 HTTPS(443) 通。给启动器配代理：CLI 设 `DSH_REMOTE_PROXY`（见[常见工作流](#常见工作流)），插件面板用主机输入框旁或会话行的 ⚙ 齿轮按主机配置（代理快捷项可一键填入）。配置在**下一次连接**生效——已运行的会话需断开（勾选「同时停止远端 dsh」）后重连才会注入

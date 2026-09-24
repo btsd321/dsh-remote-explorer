@@ -201,6 +201,12 @@ DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect <alias> --cwd //hom
 5. **Open browser** — launches the default browser with the session URL (includes access token).
 6. **Stay running** — the process blocks, maintaining the tunnel and proxy. Heartbeat checks run every 5 seconds.
 
+**Environment variables:**
+
+- `DEEPSEEK_API_KEY` and other LLM keys: export them in the shell that launches `connect` (export the ones for the providers you use; the list comes from `~/.dsh/settings.yaml`).
+- `DSH_REMOTE_PROXY`: proxy fallback for hosts without direct internet. Installing a GitHub plugin in remote dsh goes over HTTPS (`git ls-remote https://github.com/...`) — **SSH (port 22) working does not mean HTTPS (port 443) works**. When set, the launcher injects `http_proxy`/`https_proxy`/`ALL_PROXY` (both letter cases, six keys) into the remote dsh process, pointing at the proxy port your SSH reverse tunnel exposes on the remote loopback (e.g. `http://127.0.0.1:18890`); dsh passes these through to the `git`/`pnpm` child processes it spawns. Unset injects nothing — machines with direct internet are unaffected.
+- Injection happens **when the remote process starts**: reusing an already-running session does not re-inject; use `--force-restart`. In plugin form, per-host gear-button config takes precedence over this variable (see [Using as a dsh plugin](#using-as-a-dsh-plugin)).
+
 **Session reuse:** If you run `connect` again with the same alias and `--cwd`, it detects the existing remote dsh process and reuses it. The new CLI gets its own local tunnel port. Multiple CLIs can share one remote session.
 
 **Ctrl-C behavior:**
@@ -354,6 +360,18 @@ DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect user@192.168.0.10 -
 pnpm exec tsx src/cli/bin.ts connect my-server --cwd //home/user --private-key ~/.ssh/id_ed25519
 ```
 
+### Installing plugins on an offline host via proxy
+
+Installing a plugin in remote dsh (e.g. `github:btsd321/...`) goes over HTTPS; on a host without direct internet the bare connection times out and dsh reports "GitHub connection timeout". Once your local proxy is borrowed to the remote loopback via an SSH reverse tunnel, have the launcher inject the proxy variables:
+
+```bash
+# Assuming the reverse tunnel exposes the local proxy at remote 127.0.0.1:18890
+DSH_REMOTE_PROXY=http://127.0.0.1:18890 DEEPSEEK_API_KEY=sk-xxx \
+  pnpm exec tsx src/cli/bin.ts connect my-server --cwd //home/user
+```
+
+To verify: take the remote pid from the connect output and run `cat /proc/<pid>/environ | tr '\0' '\n' | grep -i proxy` on the remote (the proxy variables should be listed); `https_proxy=http://127.0.0.1:18890 git ls-remote https://github.com/<repo> HEAD` should return a commit hash (this is exactly the probe dsh runs before installing). In plugin form, use the per-host ⚙ gear button in the panel instead (one-click proxy preset, effective on the next connect).
+
 ### Reconnect to an existing session
 
 ```bash
@@ -454,7 +472,7 @@ Restart `dsh web` after installing (dsh contract: package replacement requires a
 
 **Left navigation "Remote SSH Sessions"** (global panel, level with the "Plugins" button; moved out of Settings in 0.6.x — Settings holds preferences, workflow panels get their own surface):
 
-- Connect form: host (dropdown from `~/.ssh/config`, or type `user@host[:port]`), remote directory (remembers the last value per host), advanced options (local port / force restart / mirror re-test / Node and dsh versions / private key path), SSH password field. **Window-mode buttons branch by environment**:
+- Connect form: host (dropdown from `~/.ssh/config`, or type `user@host[:port]`), remote directory (remembers the last value per host), advanced options (local port / force restart / mirror re-test / Node and dsh versions / private key path), SSH password field, and the **⚙ environment-variables button** (per-host custom variables: key-value row editor plus a proxy preset; stored host-side in `~/.dsh/remote-host-env.json`, never in ssh config; injected into the remote dsh process on connect — `DSH_HOME`/`DSH_AGENTS_HOME`/`PATH` are reserved and rejected). Session rows carry the same gear button (except "external" sessions). **Window-mode buttons branch by environment**:
   - **Desktop (DeepSeek Harness)**: a single "Connect in new window" button — once the session is ready it opens a **full-window floating desktop** (the desktop shell is a single OS window; every http/https popup and cross-origin navigation is redirected to the system browser, so the only in-app carrier is a webview; the opaque overlay fills the window — opening it hides the main desktop and its title-bar buttons, collapsing restores it, and minimize/fullscreen move the whole window). **No self-made top bar**: the remote dsh web UI fills the window; being web-form it renders no desktop title bar ("App/Edit" menus are an Electron desktop-shell feature the remote web page does not have), so back/close/stop all go through the remote sidebar's status pill (see [Remote window handoff](#remote-window-handoff)); Esc also collapses while the webview has not taken focus. After an app reload the overlay is not restored — reopen it from the panel
   - **Browser**: the dual entry points (VS Code-style) — "Connect in current tab" = after the session is ready, a 3-second cancellable countdown navigates this tab into the remote window; "Connect in new tab" = this page stays as the manager and the session row opens the remote in a new tab
 - Session table: state dot, local port, the row entry (desktop: "Open in new window" = the full-window floating desktop; browser: "Enter (current tab)" and "Open in new tab ↗", the new tab serving the **remote dsh UI through the tunnel**), a "Disconnect" button (with "Also stop remote dsh" checked by default); sessions kept by other local processes are marked "external" and read-only
@@ -529,3 +547,4 @@ The session table (`~/.dsh/remote-sessions.json`) is shared both ways: the panel
 - **Connect stuck in provisioning**: watch the panel log; a first provisioning downloads Node and dsh (minutes) — run `doctor` to pre-check the host
 - **No status pill in the remote window**: make sure the session connected on 0.6.x or later (older sessions get the component backfilled at reconnect; a reused live remote process shows it only after its next restart); with the session cookie, the remote `/api/dsh-remote-handoff/meta` should return 200, 503 = session runtime materials missing
 - **Remote plugin install fails**: read the pnpm error in the panel log; the registry comes from the provisioning benchmark cache; concurrent provisioning/install on the same remote account makes the later one wait on the flock, timing out after 15 minutes with "another bootstrap is in progress"
+- **Installing a GitHub plugin reports "GitHub connection timeout"**: dsh probes `github:` specs over HTTPS (`git ls-remote`) — SSH (port 22) working does not mean HTTPS (port 443) works. Give the launcher a proxy: in CLI, set `DSH_REMOTE_PROXY` (see [Common workflows](#common-workflows)); in the plugin panel, use the ⚙ gear button next to the host input or on a session row (the proxy preset fills it in one click). The config takes effect on the **next connect** — a running session must be disconnected (with "Also stop remote dsh" checked) and reconnected before the variables are injected
