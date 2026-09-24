@@ -55,7 +55,6 @@
     "build:plugin": "tsx scripts/build-plugin.ts",
     "check:plugin": "tsx scripts/check-plugin.ts",
     "dev:plugin": "tsx scripts/dev-plugin.ts",
-    "prepare": "node scripts/prepare.mjs",
     "prepublishOnly": "tsx scripts/build-plugin.ts && tsx scripts/check-plugin.ts",
     "setup:hooks": "node scripts/setup-hooks.mjs"
   },

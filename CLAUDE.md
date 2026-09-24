@@ -15,7 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 两形态共享同一套 session/ 编排——插件不是精简版。参照 VS Code Remote-SSH / Zed / JetBrains Gateway 的做法——代码与会话都在远端，本机只做呈现。
 
-**开发流程没有构建步骤。** `tsconfig.json` 是 `noEmit: true` + `allowImportingTsExtensions: true`，源码以 `.ts` 形式经 tsx 直接运行。不要在开发流程里加打包产物或 `outDir`。**打包是分发独立动作**：`scripts/package.ts`（CLI 平台包，产物 `dist/`，gitignored）与 `scripts/build-plugin.ts`（插件双入口，产物 `lib/`）都只在分发前跑。插件入口例外于「tsx 直跑」：dsh loader 经纯 ESM import 加载插件、不走 tsx，所以插件形态必须用构建产物。**`lib/` 已纳入版本控制**（不再 gitignored）：`prepare` 脚本只做 hook 安装、不做构建，避免 pnpm 11 对 git-hosted 包的 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` 拦截。构建由 pre-commit hook 自动完成（`pnpm install` 时自动安装），也可手动 `pnpm run build:plugin`。
+**开发流程没有构建步骤。** `tsconfig.json` 是 `noEmit: true` + `allowImportingTsExtensions: true`，源码以 `.ts` 形式经 tsx 直接运行。不要在开发流程里加打包产物或 `outDir`。**打包是分发独立动作**：`scripts/package.ts`（CLI 平台包，产物 `dist/`，gitignored）与 `scripts/build-plugin.ts`（插件双入口，产物 `lib/`）都只在分发前跑。插件入口例外于「tsx 直跑」：dsh loader 经纯 ESM import 加载插件、不走 tsx，所以插件形态必须用构建产物。**`lib/` 已纳入版本控制**（不再 gitignored）：仓库**不声明任何生命周期脚本**（`prepare`/`postinstall` 都没有）——pnpm 11 对声明了安装类脚本的 git-hosted 包直接报 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`，且只看 `package.json` 字段、不看脚本内容做什么。构建由 pre-commit hook 自动完成（clone 后手动跑一次 `pnpm run setup:hooks` 安装），也可手动 `pnpm run build:plugin`。
 
 ### 重要：0.4.0 是架构重写；0.3.x 的插件形态不要复活
 
@@ -25,7 +25,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 常用命令
 
-**本机开发默认 pnpm 11.7.0**（与 dsh 官方仓库对齐，`package.json` 的 `packageManager` 钉版本）：装依赖用 `pnpm install`，跑本地二进制用 `pnpm exec`。不要用 npm——dsh 各包的 peer 钉死具体版本，npm 在残留旧树上做增量解析必报 ERESOLVE。pnpm 11 的三个坑已处理进 [pnpm-workspace.yaml](pnpm-workspace.yaml)：包管理器设置迁到了这里（package.json 的 `pnpm` 字段已废弃）；构建脚本改用 `allowBuilds` 映射逐包放行（ssh2/cpu-features 的原生加密绑定、esbuild 平台二进制校验）；`minimumReleaseAge` 默认 24h 会拦截当天发布的 dsh RC，故显式置 0。放行构建脚本后机器上会出现 `sshcrypto.node`——两个打包脚本（build-plugin/package）的 esbuild 调用都加了 `.node: empty` loader（单文件 bundle 带不走原生件，empty 让 ssh2 的 try/catch 回落纯 JS；没这个 loader 时打包直接报「No loader is configured for .node files」）。**`prepare` 只做 hook 安装、不做构建**：`scripts/prepare.mjs` 检测到 `.git/` 时自动安装 pre-commit hook，非 git 环境（tarball 安装）静默跳过——不会触发 pnpm 11 的 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`。`lib/` 已纳入版本控制，构建由 pre-commit hook 自动完成（或手动 `pnpm run build:plugin`）。**远端分工不变**：dsh 本体 npm、插件 store pnpm 10 系——与官方 dsh 语义一致（官方对已发布包的消费入口是 `npx @deepseek-ai/dsh`，运行期插件/profile 管理才走 pnpm；远端 pin 10 系是因为 11 系对未决策的 allowBuilds 致命报错而远端无人交互），不要把远端 dsh 本体改成 pnpm 安装。
+**本机开发默认 pnpm 11.7.0**（与 dsh 官方仓库对齐，`package.json` 的 `packageManager` 钉版本）：装依赖用 `pnpm install`，跑本地二进制用 `pnpm exec`。不要用 npm——dsh 各包的 peer 钉死具体版本，npm 在残留旧树上做增量解析必报 ERESOLVE。pnpm 11 的三个坑已处理进 [pnpm-workspace.yaml](pnpm-workspace.yaml)：包管理器设置迁到了这里（package.json 的 `pnpm` 字段已废弃）；构建脚本改用 `allowBuilds` 映射逐包放行（ssh2/cpu-features 的原生加密绑定、esbuild 平台二进制校验）；`minimumReleaseAge` 默认 24h 会拦截当天发布的 dsh RC，故显式置 0。放行构建脚本后机器上会出现 `sshcrypto.node`——两个打包脚本（build-plugin/package）的 esbuild 调用都加了 `.node: empty` loader（单文件 bundle 带不走原生件，empty 让 ssh2 的 try/catch 回落纯 JS；没这个 loader 时打包直接报「No loader is configured for .node files」）。**禁止声明生命周期脚本**：`prepare`/`postinstall` 等一概不要加——pnpm 11 对声明了安装类脚本的 git-hosted 包直接报 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`，拦截只看 `package.json` 字段、不看脚本内容（实测踩过：加回「只装 hook、非 git 环境静默跳过」的 prepare 也把网页安装打挂了）。clone 后手动跑一次 `pnpm run setup:hooks` 安装 pre-commit hook，之后 `src/`、`scripts/`、`tests/` 有改动时提交自动构建 `lib/`；`lib/` 已纳入版本控制，也可手动 `pnpm run build:plugin`。**远端分工不变**：dsh 本体 npm、插件 store pnpm 10 系——与官方 dsh 语义一致（官方对已发布包的消费入口是 `npx @deepseek-ai/dsh`，运行期插件/profile 管理才走 pnpm；远端 pin 10 系是因为 11 系对未决策的 allowBuilds 致命报错而远端无人交互），不要把远端 dsh 本体改成 pnpm 安装。
 
 ```bash
 # 类型检查
@@ -69,7 +69,7 @@ pnpm exec tsx scripts/dev-plugin.ts --smoke  # 隔离 DSH_HOME 沙箱：安装�
 pnpm exec tsx scripts/dev-plugin.ts          # 常驻沙箱，打印带令牌的 URL 供浏览器联调
 pnpm exec tsx scripts/dev-plugin.ts --sync   # 产物同步进沙箱（宿主半重启生效，浏览器半刷新生效）
 
-# git hooks（pnpm install 自动安装；若需手动重装或 prepare 未触发时使用）
+# git hooks（clone 后手动跑一次；pre-commit 在暂存区含 src/、scripts/、tests/ 改动时自动构建 lib/）
 pnpm run setup:hooks
 ```
 
