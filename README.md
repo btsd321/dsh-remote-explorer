@@ -213,6 +213,14 @@ Foundation   hosts/   util/
 pnpm run typecheck
 ```
 
+> **⚠️ Contributors: install the git hook once after cloning — do not commit without it.**
+>
+> ```bash
+> pnpm run setup:hooks
+> ```
+>
+> `pnpm install` no longer builds anything: the `prepare` script was deliberately removed, because pnpm 11 refuses to install git-hosted packages that declare any lifecycle script (`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`). The plugin artifacts (`lib/`) are committed to the repository, and the pre-commit hook rebuilds them automatically whenever `src/`, `scripts/`, or `tests/` change. **If you skip `setup:hooks` and also forget to run `pnpm run build:plugin` manually, your commit ships a stale `lib/` — everyone installing from GitHub then silently gets outdated plugin code.** Without the hook, always run `pnpm run build:plugin` and include the updated `lib/` in the same commit.
+
 Code style guide is in [docs/type_script_style.md](docs/type_script_style.md) — read it before writing any code.
 
 ## Packaging

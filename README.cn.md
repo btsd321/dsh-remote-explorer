@@ -213,6 +213,14 @@ pnpm exec tsx src/cli/bin.ts list --ssh-config /path/to/config
 pnpm run typecheck
 ```
 
+> **⚠️ 贡献者注意：clone 后必须先装 git 钩子，不要装完依赖就直接提交。**
+>
+> ```bash
+> pnpm run setup:hooks
+> ```
+>
+> `pnpm install` 不再触发任何构建：`prepare` 脚本已被刻意移除——pnpm 11 会拒装任何声明了生命周期脚本的 git-hosted 包（`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`）。插件产物 `lib/` 已纳入版本控制，pre-commit 钩子会在 `src/`、`scripts/`、`tests/` 有改动时自动重新构建。**如果跳过 `setup:hooks` 又忘了手动构建，提交的 `lib/` 就是陈旧的——所有从 GitHub 安装的用户会静默拿到过期的插件代码。** 未装钩子时，提交前务必手动跑 `pnpm run build:plugin`，并把更新后的 `lib/` 与源码改动放进同一个提交。
+
 代码规范见 [docs/type_script_style.md](docs/type_script_style.md)，写任何代码前先读。
 
 ## 打包
