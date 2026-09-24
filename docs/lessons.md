@@ -41,7 +41,7 @@
 
 **4. 所有远端路径由 [src/provision/remote-paths.ts](../src/provision/remote-paths.ts) 统一提供**，任何模块不得自己拼。构造远端路径一律用 `/` 拼字符串，**不要用 `node:path` 的 `join`**——本机可能是 Windows，会产出反斜杠。
 
-**6b. 远端安装与 dsh 版本必须显式指定，不要依赖 dist-tag。** registry 上 `@deepseek-ai/dsh` 的 `latest` 指向 0.1.5-rc.2，比 `alpha` 的 0.1.7-alpha.1 旧。[src/provision/provisioner.ts](../src/provision/provisioner.ts) 会先把标签解析成具体版本，安装命令里绝不出现标签。
+**6b. 远端安装与 dsh 版本必须显式指定，不要依赖 dist-tag。** registry 上 `@deepseek-ai/dsh` 的 `latest` 指向 0.1.5-rc.2，比 `rc` 的 0.1.7-rc.1 旧。[src/provision/provisioner.ts](../src/provision/provisioner.ts) 会先把标签解析成具体版本，安装命令里绝不出现标签。
 
 **9. 远端 Node 必须用 v24 系，且装完要做稳定性自检。** v22.23.2 在 aarch64 上起进程崩溃率 35%（V8 初始化 isolate 随机失败，报 OOM 但内存充足）。`npm install` 要起几十次 node，必然失败，且报错会误导到最后一个失败的包。[src/provision/probe.ts](../src/provision/probe.ts) 的 `checkNodeStability()` 强制自检，容错次数为 0。
 

@@ -20,7 +20,7 @@
  *   npx tsx scripts/dev-plugin.ts --smoke    # 构建 → 安装/同步 → 启动 → 探针 → 杀掉（CI 用）
  *   npx tsx scripts/dev-plugin.ts --sync     # 只把 lib/ 覆盖进沙箱 profile（不启动）
  *   --fresh 清空沙箱重装；--port 默认 50599；--profile 默认 web；
- *   --dsh-version 默认 0.1.7-alpha.1；--dsh-bin <路径> 跳过 npx 用本地 dsh；
+ *   --dsh-version 默认 0.1.7-rc.1；--dsh-bin <路径> 跳过 npx 用本地 dsh；
  *   --install-spec <pnpm spec> 换安装源（发布演练：npm pack 的 tgz 绝对路径）
  */
 
@@ -43,8 +43,8 @@ const SANDBOX_HOME = join(REPO_ROOT, '.dev-harness', 'home');
 /** 默认沙箱端口（避开常用端口；与参考插件的沙箱端口策略一致） */
 const DEFAULT_PORT = 50_599;
 
-/** 默认 dsh 版本（与本仓库远端引导用的 alpha 线一致） */
-const DEFAULT_DSH_VERSION = '0.1.7-alpha.1';
+/** 默认 dsh 版本（与本仓库远端引导用的 rc 线一致） */
+const DEFAULT_DSH_VERSION = '0.1.7-rc.1';
 
 /** 安装步骤超时（首次 npx 要下载整个 dsh 发行包，留足余量） */
 const INSTALL_TIMEOUT_MS = 600_000;
