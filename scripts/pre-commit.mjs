@@ -13,10 +13,15 @@
  */
 
 import { execSync } from 'node:child_process';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+/**
+ * 获取仓库根目录。
+ * hook 被复制到 .git/hooks/ 后 import.meta.url 不再指向 scripts/，
+ * 所以用 git rev-parse 定位，兼容符号链接和复制两种安装方式。
+ */
+const REPO_ROOT = execSync('git rev-parse --show-toplevel', {
+  encoding: 'utf-8',
+}).trim();
 
 /** 触发重新构建的路径前缀 */
 const TRIGGER_PREFIXES = [
