@@ -4,15 +4,17 @@
  *              四个公开操作 + 三个私有辅助（remotePluginRows / remoteRegistry /
  *              sessionIo）。对 SessionSupervisor 的依赖经回调注入，不直接 import。
  *
- * 关注点分离：supervisor 负责会话簿记（登记表/快照/回调接线/查找），本模块
- * 只关心「在已就绪会话上操作远端 pnpm store」。两者可独立演进。
+ * 所有 pnpm 操作在主机级 host profile 目录（`base/profiles/<platform>/`）执行，
+ * 与 dsh 官方 plugin-manager 的操作目录完全一致。session profile 只是 symlink
+ * 到 host profile，不存在双真源问题。
  */
 
 import type { RemoteSession } from '../session/session-manager.js';
 import { toErrorMessage } from '../util/errors.js';
 import { quote } from '../util/shell-quote.js';
 import {
-  readPluginStoreManifest, syncSessionManifest, writePluginStoreManifest,
+  readPluginStoreManifest, writePluginStoreManifest, syncHostProfileManifest,
+  DEFAULT_PLATFORM,
   type ManifestIo, type PluginStoreManifest,
 } from '../provision/plugin-store.js';
 import type { RemotePluginInfo, SupervisorErrorCode } from './supervisor.js';
@@ -57,15 +59,14 @@ export interface PluginStoreHost {
 /**
  * 远端插件包管理器。
  *
- * 承接原 supervisor.ts 中的 listRemotePlugins / installRemotePlugin /
- * removeRemotePlugin / toggleRemotePlugin 四个公开方法及三个私有辅助。
+ * 所有操作在主机级 host profile 目录执行，与 dsh 官方 plugin-manager 一致。
  * 对会话的访问经 PluginStoreHost 接口注入，不持有会话登记簿。
  */
 export class RemotePluginStore {
   constructor(private readonly host: PluginStoreHost) {}
 
   /**
-   * 远端插件清单：读远端 profile 的 manifest 与 node_modules 版本/bundle 标记。
+   * 远端插件清单：读 host profile 的 manifest 与 node_modules 版本/bundle 标记。
    *
    * @param sessionId - 会话 id
    * @returns 清单
@@ -73,8 +74,9 @@ export class RemotePluginStore {
   async listRemotePlugins(sessionId: string): Promise<RemotePluginInfo[]> {
     const session = this.host.getReadySession(sessionId);
     const io = this.sessionIo(session);
-    const manifest = await readPluginStoreManifest(io, session.remotePaths);
-    const rows = await this.remotePluginRows(session, session.remotePaths.pluginsStoreNodeModules);
+    const paths = session.remotePaths;
+    const manifest = await readPluginStoreManifest(io, paths);
+    const rows = await this.remotePluginRows(session, paths.hostProfileNodeModules(DEFAULT_PLATFORM));
     const bundles = manifest.dsh?.profile?.bundles ?? [];
     // 清单 = deps ∪ bundles：不经 pnpm 的直落包（handoff）只在 bundles 里
     const names = new Set([...Object.keys(manifest.dependencies ?? {}), ...bundles]);
@@ -94,14 +96,8 @@ export class RemotePluginStore {
   /**
    * 远端安装插件：对齐 dsh 官方 installBundle 流程。
    *
-   * 官方流程（packages/boot/plugin-manager/src/index.ts installBundle）：
-   * 1. 在 profile 目录执行 pnpm add
-   * 2. reconcile：检查新装的依赖是否声明 dsh.bundle.patch，有则追加到 bundles
-   * 3. selectBundle(true) + reload()
-   *
-   * 我们在 profile 目录执行 pnpm，profile 的 node_modules 是指向 store 的 symlink，
-   * 所以 pnpm 实际安装到 store 的 node_modules，同时更新 profile 的 package.json。
-   * 之后 reconcile bundles 并通过 syncSessionManifest 把变更同步到 store manifest。
+   * 在 host profile 目录执行 pnpm add（与 dsh 官方 plugin-manager 一致），
+   * 成功后 reconcile bundles（声明 dsh.bundle.patch 的新依赖追加进 bundles）。
    *
    * @param sessionId - 会话 id
    * @param spec - pnpm 安装规格（包名@版本等）
@@ -110,17 +106,13 @@ export class RemotePluginStore {
   async installRemotePlugin(sessionId: string, spec: string): Promise<RemotePluginInfo[]> {
     const session = this.host.getReadySession(sessionId);
     const paths = session.remotePaths;
-    const profileDir = paths.sessionProfile(sessionId);
+    const profileDir = paths.hostProfileDir(DEFAULT_PLATFORM);
     this.host.pushLog(sessionId, 'info', `远端安装插件 ${spec}`);
     const registry = await this.remoteRegistry(session);
 
-    // 步骤 1：在 profile 目录执行 pnpm add（与 dsh 官方一致）
-    // profile 的 node_modules 是 symlink → store，pnpm 实际安装到 store nm
-    // 同时更新 profile 的 package.json（添加 dependencies），使 dsh 原生 UI 也看到安装
+    // 在 host profile 目录执行 pnpm add（与 dsh 官方一致）
     const command = [
       `cd ${quote(profileDir)}`,
-      // pnpm 不认 npm 的 --no-audit/--no-fund（实测 Unknown options）；
-      // pnpm add 默认不审计不fund，只传 registry
       `pnpm add ${quote(spec)}${registry ? ` --registry=${quote(registry)}` : ''}`,
     ].join('\n');
     try {
@@ -133,52 +125,33 @@ export class RemotePluginStore {
       throw this.host.makeError('remote_plugin', `远端安装 ${spec} 失败：${toErrorMessage(error)}`);
     }
 
-    // 步骤 2：reconcile — 新依赖里声明 bundle patch 的追加进 bundles
-    // 读 profile 的 package.json（pnpm add 刚更新了它）来检查新依赖
+    // reconcile：新依赖里声明 bundle patch 的追加进 bundles
     const io = this.sessionIo(session);
-    const profileManifestRaw = await io.exec(`cat ${quote(`${profileDir}/package.json`)}`, {
-      allowNonZeroExit: true,
-    });
-    let profileManifest: PluginStoreManifest;
-    try {
-      profileManifest = JSON.parse(profileManifestRaw.stdout) as PluginStoreManifest;
-    } catch {
-      profileManifest = {};
-    }
-    const rows = await this.remotePluginRows(session, paths.pluginsStoreNodeModules);
-    const bundles = [...(profileManifest.dsh?.profile?.bundles ?? [])];
+    const manifest = await readPluginStoreManifest(io, paths);
+    const rows = await this.remotePluginRows(session, paths.hostProfileNodeModules(DEFAULT_PLATFORM));
+    const bundles = [...(manifest.dsh?.profile?.bundles ?? [])];
     let changed = false;
-    for (const name of Object.keys(profileManifest.dependencies ?? {})) {
+    for (const name of Object.keys(manifest.dependencies ?? {})) {
       if (rows.get(name)?.bundle === true && !bundles.includes(name)) {
         bundles.push(name);
         changed = true;
       }
     }
-    // 步骤 3：如果 bundles 有变化，写回 profile 的 package.json 并 sync 到 store
     if (changed) {
-      const updatedManifest: PluginStoreManifest = {
-        ...profileManifest,
-        dsh: { ...profileManifest.dsh, profile: { ...profileManifest.dsh?.profile, bundles } },
-      };
-      await io.writeFile(`${profileDir}/package.json`, `${JSON.stringify(updatedManifest, undefined, 2)}\n`);
+      await writePluginStoreManifest(io, paths, {
+        ...manifest,
+        dsh: { ...manifest.dsh, profile: { ...manifest.dsh?.profile, bundles } },
+      });
     }
-    const synced = await syncSessionManifest(io, paths, sessionId);
-    this.host.pushLog(sessionId, 'info', `远端插件 ${spec} 安装完成`
-      + (synced ? '（本会话已 hmr 热生效；其他会话下次连接同步）' : ''));
+    this.host.pushLog(sessionId, 'info', `远端插件 ${spec} 安装完成（hmr 热生效）`);
     return this.listRemotePlugins(sessionId);
   }
 
   /**
    * 远端卸载插件：对齐 dsh 官方 removeBundle 流程。
    *
-   * 官方流程（packages/boot/plugin-manager/src/index.ts removeBundle）：
-   * 1. 先从 profile package.json 的 bundles 列表中移除（selectBundle(false)）
-   * 2. HMR reload 让运行时卸载该 bundle
-   * 3. 在 profile 目录执行 pnpm remove（更新 profile package.json 的 dependencies）
-   *
-   * 我们在 profile 目录执行 pnpm，profile 的 node_modules 是指向 store 的 symlink，
-   * 所以 pnpm 实际清理的是 store 的 node_modules，同时更新 profile 的 package.json。
-   * 之后 syncSessionManifest 把 profile 的变更反向同步到 store manifest。
+   * 1. 先从 bundles 列表中移除（触发 hmr 热卸载）
+   * 2. 在 host profile 目录执行 pnpm remove（与 dsh 官方一致）
    *
    * @param sessionId - 会话 id
    * @param name - 包名
@@ -187,27 +160,24 @@ export class RemotePluginStore {
   async removeRemotePlugin(sessionId: string, name: string): Promise<RemotePluginInfo[]> {
     const session = this.host.getReadySession(sessionId);
     const paths = session.remotePaths;
-    const profileDir = paths.sessionProfile(sessionId);
+    const profileDir = paths.hostProfileDir(DEFAULT_PLATFORM);
     this.host.pushLog(sessionId, 'info', `远端卸载插件 ${name}`);
 
-    // 步骤 1+2：先从 bundles 中移除并 sync（触发 hmr 热卸载）
+    // 步骤 1：先从 bundles 中移除（触发 hmr 热卸载）
     const io = this.sessionIo(session);
-    const storeManifest = await readPluginStoreManifest(io, paths);
-    const storeBundles = storeManifest.dsh?.profile?.bundles ?? [];
-    if (storeBundles.includes(name)) {
+    const manifest = await readPluginStoreManifest(io, paths);
+    const bundles = manifest.dsh?.profile?.bundles ?? [];
+    if (bundles.includes(name)) {
       await writePluginStoreManifest(io, paths, {
-        ...storeManifest,
+        ...manifest,
         dsh: {
-          ...storeManifest.dsh,
-          profile: { ...storeManifest.dsh?.profile, bundles: storeBundles.filter(item => item !== name) },
+          ...manifest.dsh,
+          profile: { ...manifest.dsh?.profile, bundles: bundles.filter(item => item !== name) },
         },
       });
-      await syncSessionManifest(io, paths, sessionId);
     }
 
-    // 步骤 3：在 profile 目录执行 pnpm remove（与 dsh 官方一致）
-    // profile 的 node_modules 是 symlink → store，pnpm 实际清理 store nm
-    // 同时更新 profile 的 package.json（移除 dependencies），使 dsh 原生 UI 也看到卸载
+    // 步骤 2：在 host profile 目录执行 pnpm remove（与 dsh 官方一致）
     try {
       await session.exec(`cd ${quote(profileDir)}\npnpm remove ${quote(name)}`, {
         pathPrefix: session.provisionResult.node.binDir,
@@ -218,14 +188,14 @@ export class RemotePluginStore {
       throw this.host.makeError('remote_plugin', `远端卸载 ${name} 失败：${toErrorMessage(error)}`);
     }
 
-    // pnpm remove 更新了 profile 的 package.json，反向同步到 store
-    await syncSessionManifest(io, paths, sessionId);
-    this.host.pushLog(sessionId, 'info', `远端插件 ${name} 已卸载（本会话已 hmr 热卸载；其他会话下次连接同步）`);
+    // 自愈：确保 manifest 与 nm 状态一致
+    await syncHostProfileManifest(io, paths);
+    this.host.pushLog(sessionId, 'info', `远端插件 ${name} 已卸载（hmr 热卸载）`);
     return this.listRemotePlugins(sessionId);
   }
 
   /**
-   * 远端插件启停：只改 profile 清单的 bundles 列表，hmr 热生效。
+   * 远端插件启停：只改 host profile 清单的 bundles 列表，hmr 热生效。
    *
    * @param sessionId - 会话 id
    * @param name - 包名
@@ -250,14 +220,13 @@ export class RemotePluginStore {
         },
       },
     });
-    await syncSessionManifest(io, paths, sessionId);
-    this.host.pushLog(sessionId, 'info', `远端插件 ${name} 已${enabled ? '启用' : '停用'}（本会话 hmr 热生效）`);
+    this.host.pushLog(sessionId, 'info', `远端插件 ${name} 已${enabled ? '启用' : '停用'}（hmr 热生效）`);
     return this.listRemotePlugins(sessionId);
   }
 
   /**
    * 会话的窄 IO 适配：经 RemoteSession 的 exec/writeRemoteFile 委托
-   * 读写 store 与 session manifest，不触碰 transport 本体。
+   * 读写 host profile manifest，不触碰 transport 本体。
    *
    * @param session - 就绪会话
    * @returns ManifestIo 适配器
@@ -273,7 +242,7 @@ export class RemotePluginStore {
    * 某 node_modules 目录的 名称→版本/bundle标记 投影（一条远端脚本取全）。
    *
    * @param session - 就绪会话
-   * @param nodeModules - 目标目录（store 的 node_modules）
+   * @param nodeModules - 目标目录（host profile 的 node_modules）
    * @returns 映射；目录缺失时为空
    */
   private async remotePluginRows(session: RemoteSession, nodeModules: string): Promise<Map<string, { version: string; bundle: boolean }>> {
