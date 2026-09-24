@@ -24,20 +24,13 @@ import { INITIAL_STATE, type SessionState } from '../session/lifecycle-state.js'
 import { computeSessionId } from '../util/session-id.js';
 import { normalizeRemoteCwd, validateRemoteCwd } from '../util/remote-cwd.js';
 import { toErrorMessage } from '../util/errors.js';
-import { quote } from '../util/shell-quote.js';
-import {
-  readPluginStoreManifest, syncSessionManifest, writePluginStoreManifest,
-  type ManifestIo,
-} from '../provision/plugin-store.js';
+import { RemotePluginStore, type PluginStoreHost } from './remote-plugin-store.js';
 
 /** 每会话日志缓冲上限（超出丢最旧；面板按 seq 增量拉取，够用即可） */
 const MAX_LOG_ENTRIES = 1_000;
 
 /** 快照里附带的日志尾部条数（列表视图用，详情走增量接口） */
 const LOG_TAIL_SIZE = 20;
-
-/** 远端插件 pnpm 操作超时（毫秒）。装一个中型包分钟级足够 */
-const REMOTE_PLUGIN_TIMEOUT_MS = 600_000;
 
 /** 日志条目类别（只允许 info/warn/error + state 生命周期） */
 export type LogKind =
@@ -228,11 +221,25 @@ interface SupervisedSession {
  */
 export class SessionSupervisor {
   private readonly sessions = new Map<string, SupervisedSession>();
+  /** 远端插件包管理器（从本类拆出，经回调注入会话访问能力） */
+  private readonly pluginStore: RemotePluginStore;
 
   /**
    * @param defaults - 插件配置提供的默认值
    */
-  constructor(private readonly defaults: SupervisorDefaults) {}
+  constructor(private readonly defaults: SupervisorDefaults) {
+    // 构造 host 适配器：把监督器的内部能力投影成 PluginStoreHost 窄接口，
+    // 让 RemotePluginStore 不直接依赖 SessionSupervisor 类
+    const host: PluginStoreHost = {
+      getReadySession: (sessionId) => this.requireReadySession(sessionId).session,
+      pushLog: (sessionId, kind, text) => {
+        const record = this.sessions.get(sessionId);
+        if (record !== undefined) this.push(record, kind, text);
+      },
+      makeError: (code, message) => new SupervisorError(code, message),
+    };
+    this.pluginStore = new RemotePluginStore(host);
+  }
 
   /**
    * 非阻塞发起连接。
@@ -537,6 +544,8 @@ export class SessionSupervisor {
     return rest;
   }
 
+  // ── 远端插件管理（委托给 RemotePluginStore，保持公开 API 不变） ──────────
+
   /**
    * 远端插件清单：读远端 profile 的 manifest 与 node_modules 版本/bundle 标记。
    *
@@ -544,29 +553,11 @@ export class SessionSupervisor {
    * @returns 清单；会话不存在/未就绪时抛监督器错误
    */
   async listRemotePlugins(sessionId: string): Promise<RemotePluginInfo[]> {
-    const { session } = this.requireReadySession(sessionId);
-    const io = this.sessionIo(session);
-    const manifest = await readPluginStoreManifest(io, session.remotePaths);
-    const rows = await this.remotePluginRows(session, session.remotePaths.pluginsStoreNodeModules);
-    const bundles = manifest.dsh?.profile?.bundles ?? [];
-    // 清单 = deps ∪ bundles：不经 pnpm 的直落包（handoff）只在 bundles 里
-    const names = new Set([...Object.keys(manifest.dependencies ?? {}), ...bundles]);
-    const result: RemotePluginInfo[] = [];
-    for (const name of names) {
-      const row = rows.get(name);
-      result.push({
-        name,
-        version: row?.version ?? manifest.dependencies?.[name] ?? '?',
-        bundle: row?.bundle ?? bundles.includes(name),
-        enabled: bundles.includes(name),
-      });
-    }
-    return result;
+    return this.pluginStore.listRemotePlugins(sessionId);
   }
 
   /**
-   * 远端安装插件：profile 目录内 pnpm add，成功后本地复刻 reconcile 语义
-   * （声明 dsh.bundle.patch 的新依赖追加进 bundles，hmr 热加载）。
+   * 远端安装插件：profile 目录内 pnpm add，成功后 reconcile bundles。
    *
    * @param sessionId - 会话 id
    * @param spec - pnpm 安装规格（包名@版本等）
@@ -574,89 +565,18 @@ export class SessionSupervisor {
    * @throws SupervisorError('remote_plugin') pnpm 失败
    */
   async installRemotePlugin(sessionId: string, spec: string): Promise<RemotePluginInfo[]> {
-    const { record, session } = this.requireReadySession(sessionId);
-    const paths = session.remotePaths;
-    this.push(record, 'info', `远端安装插件 ${spec}`);
-    const registry = await this.remoteRegistry(session);
-    const command = [
-      `cd ${quote(paths.pluginsStore)}`,
-      // pnpm 不认 npm 的 --no-audit/--no-fund（实测 Unknown options）；
-      // pnpm add 默认不审计不fund，只传 registry
-      `pnpm add ${quote(spec)}${registry ? ` --registry=${quote(registry)}` : ''}`,
-    ].join('\n');
-    try {
-      await session.exec(command, {
-        pathPrefix: session.provisionResult.node.binDir,
-        timeoutMs: REMOTE_PLUGIN_TIMEOUT_MS,
-      });
-    } catch (error) {
-      this.push(record, 'error', `远端安装插件失败：${toErrorMessage(error)}`);
-      throw new SupervisorError('remote_plugin', `远端安装 ${spec} 失败：${toErrorMessage(error)}`);
-    }
-    // reconcile：新依赖里声明 bundle 的追加进 store bundles；再合并进本机活
-    // 会话 manifest（hmr 热加载 bundle 层）。其他会话下次连接时同步
-    const io = this.sessionIo(session);
-    const manifest = await readPluginStoreManifest(io, paths);
-    const rows = await this.remotePluginRows(session, paths.pluginsStoreNodeModules);
-    const bundles = manifest.dsh?.profile?.bundles ?? [];
-    let changed = false;
-    for (const name of Object.keys(manifest.dependencies ?? {})) {
-      if (rows.get(name)?.bundle === true && !bundles.includes(name)) {
-        bundles.push(name);
-        changed = true;
-      }
-    }
-    if (changed) {
-      await writePluginStoreManifest(io, paths, {
-        ...manifest,
-        dsh: { ...manifest.dsh, profile: { ...manifest.dsh?.profile, bundles } },
-      });
-    }
-    const synced = await syncSessionManifest(io, paths, sessionId);
-    this.push(record, 'info', `远端插件 ${spec} 安装完成`
-      + (synced ? '（本会话已 hmr 热生效；其他会话下次连接同步）' : ''));
-    return this.listRemotePlugins(sessionId);
+    return this.pluginStore.installRemotePlugin(sessionId, spec);
   }
 
   /**
    * 远端卸载插件：pnpm remove + 从 bundles 摘除。
-   *
-   * 启用中的 bundle 被摘除后由 hmr 热卸载（base bundle 默认启用 hmr）；
-   * 若远端 dsh 老于 hmr 引入，表现为需重连会话才生效（文档注明）。
    *
    * @param sessionId - 会话 id
    * @param name - 包名
    * @returns 卸载后的清单
    */
   async removeRemotePlugin(sessionId: string, name: string): Promise<RemotePluginInfo[]> {
-    const { record, session } = this.requireReadySession(sessionId);
-    const paths = session.remotePaths;
-    this.push(record, 'info', `远端卸载插件 ${name}`);
-    try {
-      await session.exec(`cd ${quote(paths.pluginsStore)}\npnpm remove ${quote(name)}`, {
-        pathPrefix: session.provisionResult.node.binDir,
-        timeoutMs: REMOTE_PLUGIN_TIMEOUT_MS,
-      });
-    } catch (error) {
-      this.push(record, 'error', `远端卸载插件失败：${toErrorMessage(error)}`);
-      throw new SupervisorError('remote_plugin', `远端卸载 ${name} 失败：${toErrorMessage(error)}`);
-    }
-    const io = this.sessionIo(session);
-    const manifest = await readPluginStoreManifest(io, paths);
-    const bundles = manifest.dsh?.profile?.bundles ?? [];
-    if (bundles.includes(name)) {
-      await writePluginStoreManifest(io, paths, {
-        ...manifest,
-        dsh: {
-          ...manifest.dsh,
-          profile: { ...manifest.dsh?.profile, bundles: bundles.filter(item => item !== name) },
-        },
-      });
-    }
-    const synced = await syncSessionManifest(io, paths, sessionId);
-    this.push(record, 'info', `远端插件 ${name} 已卸载`
-      + (synced ? '（本会话已 hmr 热卸载；其他会话下次连接同步）' : ''));
-    return this.listRemotePlugins(sessionId);
+    return this.pluginStore.removeRemotePlugin(sessionId, name);
   }
 
   /**
@@ -668,41 +588,10 @@ export class SessionSupervisor {
    * @returns 操作后的清单
    */
   async toggleRemotePlugin(sessionId: string, name: string, enabled: boolean): Promise<RemotePluginInfo[]> {
-    const { record, session } = this.requireReadySession(sessionId);
-    const paths = session.remotePaths;
-    const io = this.sessionIo(session);
-    const manifest = await readPluginStoreManifest(io, paths);
-    const bundles = manifest.dsh?.profile?.bundles ?? [];
-    const has = bundles.includes(name);
-    if (has === enabled) return this.listRemotePlugins(sessionId);
-    await writePluginStoreManifest(io, paths, {
-      ...manifest,
-      dsh: {
-        ...manifest.dsh,
-        profile: {
-          ...manifest.dsh?.profile,
-          bundles: enabled ? [...bundles, name] : bundles.filter(item => item !== name),
-        },
-      },
-    });
-    await syncSessionManifest(io, paths, sessionId);
-    this.push(record, 'info', `远端插件 ${name} 已${enabled ? '启用' : '停用'}（本会话 hmr 热生效）`);
-    return this.listRemotePlugins(sessionId);
+    return this.pluginStore.toggleRemotePlugin(sessionId, name, enabled);
   }
 
-  /**
-   * 会话的窄 IO 适配：监督器经 RemoteSession 的 exec/writeRemoteFile 委托
-   * 读写 store 与 session manifest，不触碰 transport 本体。
-   *
-   * @param session - 就绪会话
-   * @returns ManifestIo 适配器
-   */
-  private sessionIo(session: RemoteSession): ManifestIo {
-    return {
-      exec: (command, options) => session.exec(command, options),
-      writeFile: (path, content) => session.writeRemoteFile(path, content),
-    };
-  }
+  // ── 内部辅助 ────────────────────────────────────────────────────────────
 
   /**
    * 取一个本进程登记且已就绪的会话。
@@ -725,50 +614,4 @@ export class SessionSupervisor {
     return { record, session: record.session };
   }
 
-  /**
-   * 某 node_modules 目录的 名称→版本/bundle标记 投影（一条远端脚本取全）。
-   *
-   * @param session - 就绪会话
-   * @param nodeModules - 目标目录（store 的 node_modules）
-   * @returns 映射；目录缺失时为空
-   */
-  private async remotePluginRows(session: RemoteSession, nodeModules: string): Promise<Map<string, { version: string; bundle: boolean }>> {
-    const script = [
-      `cd ${quote(nodeModules)} 2>/dev/null || exit 0`,
-      `for d in */ @*/*/; do`,
-      `  [ -f "$d/package.json" ] || continue`,
-      `  v=$(sed -n 's/^  "version": "\\([^"]*\\)".*/\\1/p' "$d/package.json" | head -1)`,
-      `  b=no`,
-      `  grep -q '"dsh"' "$d/package.json" && grep -q '"patch"' "$d/package.json" && b=yes`,
-      `  printf '%s\\t%s\\t%s\\n' "$d" "$v" "$b"`,
-      `done`,
-    ].join('\n');
-    const result = await session.exec(script, { allowNonZeroExit: true });
-    const map = new Map<string, { version: string; bundle: boolean }>();
-    for (const line of result.stdout.split('\n')) {
-      const parts = line.split('\t');
-      const name = (parts[0] ?? '').replace(/\/$/, '').trim();
-      if (name === '') continue;
-      map.set(name, { version: (parts[1] ?? '').trim(), bundle: (parts[2] ?? '').trim() === 'yes' });
-    }
-    return map;
-  }
-
-  /**
-   * 远端 npm registry 偏好：读引导期 mirror-cache 的 npm 选中项。
-   *
-   * @param session - 就绪会话
-   * @returns baseUrl；缓存缺失时 undefined（pnpm 用自身默认）
-   */
-  private async remoteRegistry(session: RemoteSession): Promise<string | undefined> {
-    try {
-      const result = await session.exec(`cat ${quote(session.remotePaths.mirrorCache)}`, {
-        allowNonZeroExit: true,
-      });
-      const cache = JSON.parse(result.stdout) as { npm?: { baseUrl?: string } };
-      return cache.npm?.baseUrl;
-    } catch {
-      return undefined;
-    }
-  }
 }
