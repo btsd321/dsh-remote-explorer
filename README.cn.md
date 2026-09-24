@@ -120,6 +120,16 @@ pnpm exec tsx src/cli/bin.ts list --ssh-config /path/to/config
 - 同一会话的多个本机 CLI 共享凭据路径（反向端口先到先得，后来的视图自动让位）。
 - 已知残余风险：远端同权限用户可借你的通道消耗额度（拿不到 key 本身）。多用户远端主机上请知悉：代理以每会话令牌、限速与路径白名单提高借用门槛，但无法完全阻断同权限用户。
 
+### 远端访问 GitHub 的代理（DSH_REMOTE_PROXY）
+
+远端 dsh 由本工具拉起，启动环境默认不带任何代理变量——无公网的远端主机上装 GitHub 插件（dsh 内部走 HTTPS 的 `git ls-remote`）会裸连超时，即使 SSH（22 端口）能通。在本机设置 `DSH_REMOTE_PROXY` 即可修复：启动器会把 `http_proxy`/`https_proxy`/`ALL_PROXY`（大小写共六个键）注入远端 dsh 进程环境，值指向 SSH 反向隧道在远端暴露的代理端口（如 `http://127.0.0.1:18890`）：
+
+```bash
+DSH_REMOTE_PROXY=http://127.0.0.1:18890 DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect myhost
+```
+
+dsh 自身会把代理变量透传给它拉起的 `git`/`pnpm` 子进程，装插件与拉依赖都会走同一代理。不设 `DSH_REMOTE_PROXY` 则什么都不注入，有公网的机器零影响。插件形态还支持按主机配置自定义环境变量（面板的齿轮按钮，存 `~/.dsh/remote-host-env.json`），优先级高于该兜底变量。
+
 ## 远端落盘隔离
 
 对标 VS Code `~/.vscode-server` 的单根自治模型：本工具在远端的一切落盘都在 `~/.dsh-remote-explorer/btsd321/` 内（安装、每会话状态、npm 缓存、临时文件），**从不写入**远端 `~/.dsh`（官方 dsh 的家）与 `~/.npm`（远端 npm 使用者共享的缓存）。远端 dsh 的 skill 目录也重定向到会话内（`DSH_AGENTS_HOME`），不读机器全局的 `~/.agents`。

@@ -55,6 +55,7 @@ import {
   type LifecycleConfig, type SessionEvent, type SessionState,
 } from './lifecycle-state.js';
 import { removeSession, upsertSession } from './session-registry.js';
+import { assertSafeEnvKeys, collectProxyEnv } from './proxy-env.js';
 import { generateProxyToken } from '../credential/token.js';
 import { TunnelProxyCredential } from '../credential/tunnel-proxy.js';
 import { readProxySecret, writeProxySecret, type ProxySecret } from '../credential/proxy-secret.js';
@@ -122,6 +123,17 @@ export interface OpenSessionOptions {
    * 优先级 password > promptPassword > 内置终端提示；CLI 不传，行为不变
    */
   promptPassword?: PasswordPromptFn;
+  /**
+   * 注入远端 dsh 进程的额外环境变量（插件形态的 per-host 齿轮配置）。
+   *
+   * 调用方（插件 supervisor）传入的用户自定义环境变量，键已在读取侧过滤、
+   * 进本层后再过一次 assertSafeEnvKeys 校验（键名会直接拼进远端启动命令，
+   * 非法键名 = 命令注入）。合并优先级：本层还会把 collectProxyEnv()（本机
+   * DSH_REMOTE_PROXY 兜底，最低优先）与 credential.remoteEnv()（凭据占位
+   * 键如 DEEPSEEK_API_KEY，最高优先）并进同一份注入环境——后者不被它覆盖，
+   * 防止用户 env 意外挤掉占位令牌导致远端 dsh 报 MISSING_CREDENTIAL
+   */
+  extraEnv?: Record<string, string>;
   /**
    * 转发失败告警回调（插件形态接进会话日志缓冲）。
    * 不传时 LocalForward 直写 stderr（CLI 形态既有行为）
@@ -830,22 +842,46 @@ export class RemoteSession {
    * 端口分配有固有竞态（探到空闲与实际绑定之间存在窗口），
    * 所以失败后换端口重试一次。
    *
+   * 环境注入三层合并（后者覆盖前者同名键）：
+   * `collectProxyEnv()`（本机 DSH_REMOTE_PROXY 兜底）< `options.extraEnv`
+   * （per-host 用户配置）< `credential.remoteEnv()`（凭据占位键最高优先，
+   * 防被用户 env 覆盖导致远端报 MISSING_CREDENTIAL）。
+   *
    * @param transport - 传输实例
    * @param provisioned - 引导结果
    * @param sessionId - 会话 id
-   * @param options - 打开选项（进度回调）
+   * @param options - 打开选项（进度回调与用户自定义 env）
    * @param port - 预分配的 web 端口
    * @param credential - 凭据策略；存在则占位凭据进环境
    * @returns 远端进程信息
+   * @throws RemoteError('EXEC_FAILED') 用户 env 键名非法或启动失败
    */
   private static async launch(
     transport: RemoteTransport,
     provisioned: ProvisionResult,
     sessionId: string,
-    options: Pick<OpenSessionOptions, 'onStageStart' | 'onStageDone'>,
+    options: Pick<OpenSessionOptions, 'onStageStart' | 'onStageDone' | 'extraEnv'>,
     port: number,
     credential: TunnelProxyCredential | undefined,
   ): Promise<RemoteProcessInfo> {
+    // 合并前先校验用户 env 的键名：remote-process.ts 的 envAssignments 把
+    // 键名不经 quote 直接插值进 shell 命令，非法键名 = 命令注入；保留键
+    // （DSH_HOME/DSH_AGENTS_HOME/PATH）被用户值覆盖会破坏会话隔离契约
+    assertSafeEnvKeys(options.extraEnv ?? {}, `主机 ${transport.hostAlias}`);
+    const extraEnv: Record<string, string> = {
+      ...collectProxyEnv(),
+      ...(options.extraEnv ?? {}),
+      ...(credential ? credential.remoteEnv() : {}),
+    };
+    // 只打键名不打值：值可能含代理认证信息或敏感 token
+    const injectedEnvKeys = Object.keys(extraEnv);
+    if (injectedEnvKeys.length > 0) {
+      log.info('将注入远端 dsh 的环境变量', {
+        hostAlias: transport.hostAlias,
+        keys: injectedEnvKeys.join(','),
+      });
+    }
+
     const tried: number[] = [port];
     let lastError: unknown;
 
@@ -860,7 +896,7 @@ export class RemoteSession {
           nodeBinDir: provisioned.node.binDir,
           port,
           ...(provisioned.profile.patchFile ? { patchFile: provisioned.profile.patchFile } : {}),
-          ...(credential ? { extraEnv: credential.remoteEnv() } : {}),
+          ...(Object.keys(extraEnv).length > 0 ? { extraEnv } : {}),
         });
         options.onStageDone?.(`pid ${info.pid}`);
         return info;
@@ -1018,7 +1054,13 @@ export class RemoteSession {
         // 凭据材料保持不变（落盘的令牌与反向端口），占位凭据继续生效
         const exclude = this.credential ? [this.credential.reversePort] : [];
         const [port] = await allocateRemotePorts(next, 1, { exclude });
-        this.process = await RemoteSession.launch(next, this.provisioned, this.sessionId, {}, port!, this.credential);
+        // 重连重启远端进程时同样注入用户 env（代理等，open() 的同一合并语义）；
+        // 不传 stage 回调——重连是后台行为，不向前端重复报阶段进度（既有语义）
+        this.process = await RemoteSession.launch(
+          next, this.provisioned, this.sessionId,
+          { ...(this.options.extraEnv !== undefined ? { extraEnv: this.options.extraEnv } : {}) },
+          port!, this.credential,
+        );
       }
 
       // 重挂反向转发：旧句柄随旧传输失效，代理实例不动
