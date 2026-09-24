@@ -48,9 +48,13 @@ If you already run dsh (Web/Desktop) on this machine, install this tool into dsh
 dsh plugin --profile web add dsh-remote-explorer
 # When dsh is not on PATH:
 npx --yes @deepseek-ai/dsh plugin --profile web add dsh-remote-explorer
+# From a GitHub source (pre-built artifacts are committed; no extra config needed):
+dsh plugin --profile web add github:btsd321/dsh-remote-explorer
 # From a local checkout (build the plugin artifacts first):
 pnpm run build:plugin && dsh plugin --profile web add /path/to/repo
 ```
+
+> **Note for pnpm 11+ users:** This package ships pre-built plugin artifacts (`lib/`) in the repository and has no `prepare` script, so git-hosted installation works out of the box without configuring `allowBuilds`. If you install from a local checkout, remember to run `pnpm run build:plugin` before adding.
 
 Restart `dsh web` after installing. The plugin provides three surfaces:
 

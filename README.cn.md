@@ -48,9 +48,13 @@ pnpm exec tsx src/cli/bin.ts list
 dsh plugin --profile web add dsh-remote-explorer
 # dsh 不在 PATH 时：
 npx --yes @deepseek-ai/dsh plugin --profile web add dsh-remote-explorer
+# 从 GitHub 源码安装（预构建产物已提交，无需额外配置）：
+dsh plugin --profile web add github:btsd321/dsh-remote-explorer
 # 本地源码安装（先构建插件产物）：
 pnpm run build:plugin && dsh plugin --profile web add /path/to/repo
 ```
+
+> **pnpm 11+ 用户注意：** 本包已将预构建的插件产物（`lib/`）纳入版本控制，且不含 `prepare` 脚本，git-hosted 安装开箱即用，无需配置 `allowBuilds`。从本地 checkout 安装时，请先跑 `pnpm run build:plugin`。
 
 装完重启 `dsh web`。插件提供三个入口：
 
