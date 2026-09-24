@@ -19,7 +19,8 @@ import { writeRemoteTextFile } from '../transport/write-text.js';
 import { HANDOFF_PKG_NAME } from '../handoff/protocol.js';
 import { loadHandoffPayload } from '../handoff/payload.js';
 import {
-  ensurePluginStore, readPluginStoreManifest, transportIo, writePluginStoreManifest,
+  ensureHostProfile, readPluginStoreManifest, transportIo, writePluginStoreManifest,
+  DEFAULT_PLATFORM,
 } from './plugin-store.js';
 import type { RemoteContext } from './remote-context.js';
 
@@ -77,9 +78,9 @@ export async function installHandoffBundle(
   dshVersion: string,
 ): Promise<boolean> {
   const { transport, paths } = ctx;
-  await ensurePluginStore(ctx, dshVersion);
+  await ensureHostProfile(ctx, dshVersion);
 
-  const pkgDir = `${paths.pluginsStoreNodeModules}/${HANDOFF_PKG_NAME}`;
+  const pkgDir = `${paths.hostProfileNodeModules(DEFAULT_PLATFORM)}/${HANDOFF_PKG_NAME}`;
   const marker = await transport.exec(
     `test -f ${quote(`${pkgDir}/package.json`)} && echo EXISTS || true`,
     { allowNonZeroExit: true },
