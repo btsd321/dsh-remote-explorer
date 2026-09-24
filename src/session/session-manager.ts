@@ -244,6 +244,38 @@ function transportStageLabel(transportType: TransportType | undefined): string {
 }
 
 /**
+ * RemoteSession 构造所需的内部依赖集合。
+ *
+ * 将原本散落的 10 个位置参数收进单一对象，避免长参数列表导致的
+ * 可读性与维护性问题。仅在本文件内部使用，不对外导出。
+ */
+interface SessionInternals {
+  /** 当前传输实例（重连时会被替换） */
+  transport: RemoteTransport;
+  /** 引导结果 */
+  provisioned: ProvisionResult;
+  /** 远端进程信息 */
+  process: RemoteProcessInfo;
+  /** 正向隧道 */
+  forward: LocalForward;
+  /** 凭据材料；undefined 表示该会话不带凭据路径 */
+  secret: ProxySecret | undefined;
+  /** 凭据代理实例；无凭据路径时 undefined */
+  credential: TunnelProxyCredential | undefined;
+  /** 初始的反向转发句柄；挂在 transport 上，重连时重挂 */
+  reverseHandle: ReverseHandle | undefined;
+  /** 重连配置 */
+  reconnectConfig: ReconnectConfig;
+  /** 生命周期参数 */
+  lifecycleConfig: LifecycleConfig;
+  /**
+   * 会话级密码提供器：首次连接交互提示（或 --password 固定值），
+   * 重连静默复用缓存；close 时清空
+   */
+  passwords: PasswordProvider | undefined;
+}
+
+/**
  * 一个已打开的远程会话。
  *
  * 通过 {@link openSession} 创建，不要直接 new——构造后还需要一系列
@@ -256,35 +288,39 @@ export class RemoteSession {
   /** 重连串行化：避免多次心跳失败并发触发重连 */
   private reconnecting: Promise<void> | undefined;
 
+  // --- 以下字段由 SessionInternals 注入 ---
+  private transport: RemoteTransport;
+  private provisioned: ProvisionResult;
+  private process: RemoteProcessInfo;
+  private readonly forward: LocalForward;
+  private readonly secret: ProxySecret | undefined;
+  private credential: TunnelProxyCredential | undefined;
+  private reverseHandle: ReverseHandle | undefined;
+  private readonly reconnectConfig: ReconnectConfig;
+  private readonly lifecycleConfig: LifecycleConfig;
+  private readonly passwords: PasswordProvider | undefined;
+
   /**
    * @param sessionId - 会话 id
    * @param options - 打开选项
-   * @param transport - 当前传输实例（重连时会被替换）
-   * @param provisioned - 引导结果
-   * @param process - 远端进程信息
-   * @param forward - 正向隧道
-   * @param secret - 凭据材料；undefined 表示该会话不带凭据路径
-   * @param credential - 凭据代理实例；无凭据路径时 undefined
-   * @param reverseHandle - 初始的反向转发句柄；挂在 transport 上，重连时重挂
-   * @param reconnectConfig - 重连配置
-   * @param lifecycleConfig - 生命周期参数
-   * @param passwords - 会话级密码提供器：首次连接交互提示（或 --password 固定值），
-   *                    重连静默复用缓存；close 时清空
+   * @param internals - 内部依赖集合（传输、引导结果、进程信息、隧道、凭据等）
    */
   private constructor(
     readonly sessionId: string,
     private readonly options: OpenSessionOptions,
-    private transport: RemoteTransport,
-    private provisioned: ProvisionResult,
-    private process: RemoteProcessInfo,
-    private readonly forward: LocalForward,
-    private readonly secret: ProxySecret | undefined,
-    private credential: TunnelProxyCredential | undefined,
-    private reverseHandle: ReverseHandle | undefined,
-    private readonly reconnectConfig: ReconnectConfig,
-    private readonly lifecycleConfig: LifecycleConfig,
-    private readonly passwords: PasswordProvider | undefined,
-  ) {}
+    internals: SessionInternals,
+  ) {
+    this.transport = internals.transport;
+    this.provisioned = internals.provisioned;
+    this.process = internals.process;
+    this.forward = internals.forward;
+    this.secret = internals.secret;
+    this.credential = internals.credential;
+    this.reverseHandle = internals.reverseHandle;
+    this.reconnectConfig = internals.reconnectConfig;
+    this.lifecycleConfig = internals.lifecycleConfig;
+    this.passwords = internals.passwords;
+  }
 
   /**
    * 窄 exec 委托：监督器的远端插件管理复用当前传输。
@@ -410,11 +446,18 @@ export class RemoteSession {
       );
 
       // 6. 构造会话对象并注册
-      session = new RemoteSession(
-        sessionId, options, transport, provisionCtx.provisioned, processInfo,
-        tunnelCtx.forward, probeCtx.secret, provisionCtx.credential,
-        tunnelCtx.reverseHandle, reconnectConfig, lifecycleConfig, passwords,
-      );
+      session = new RemoteSession(sessionId, options, {
+        transport,
+        provisioned: provisionCtx.provisioned,
+        process: processInfo,
+        forward: tunnelCtx.forward,
+        secret: probeCtx.secret,
+        credential: provisionCtx.credential,
+        reverseHandle: tunnelCtx.reverseHandle,
+        reconnectConfig,
+        lifecycleConfig,
+        passwords,
+      });
       session.apply({ type: 'connect-ready' });
       session.register();
       session.startHeartbeat();
