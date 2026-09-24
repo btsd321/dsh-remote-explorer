@@ -14,19 +14,17 @@
 
 import * as React from 'react';
 import type { ReactNode } from 'react';
-import type { LogEntry } from '../plugin/supervisor.js';
 import type { RemoteExplorerLocaleKey } from './locales.js';
 import {
-  fetchSessionLog, fetchSessions, fetchWslDistros, messageOf, postConnect, postDisconnect,
-  type PanelSession, type WslDistroSummary,
+  fetchWslDistros, messageOf, postConnect, postDisconnect,
+  type WslDistroSummary,
 } from './api.js';
 import { openRemoteWindow, OVERLAY_INTENT_ORIGIN } from './remote-window.js';
 import { renderSessionRow } from './ssh-panel.js';
 import { createLogger } from '../util/logger.js';
 import { inputStyle, buttonStyle } from './styles.js';
-import {
-  SESSIONS_POLL_MS, LOG_POLL_MS, HANDOFF_COUNTDOWN_SECONDS, DESKTOP,
-} from './constants.js';
+import { DESKTOP, HANDOFF_COUNTDOWN_SECONDS } from './constants.js';
+import { useSessionPolling } from './use-session-polling.js';
 
 const logger = createLogger('wsl-panel');
 
@@ -61,17 +59,33 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
 
   // ---- 数据状态 ----
   const [distros, setDistros] = React.useState<WslDistroSummary[]>([]);
-  const [sessions, setSessions] = React.useState<PanelSession[]>([]);
-  const [loadError, setLoadError] = React.useState('');
-  const [selectedId, setSelectedId] = React.useState<string | null>(null);
-  const [log, setLog] = React.useState<LogEntry[]>([]);
   const [stopRemote, setStopRemote] = React.useState(true);
-  const lastSeq = React.useRef(0);
   const logBoxRef = React.useRef<HTMLDivElement | null>(null);
 
-  // ---- 窗口形态交接 ----
-  const pendingNav = React.useRef<{ sessionId: string; mode: 'current' | 'new' | 'window' } | null>(null);
-  const [countdown, setCountdown] = React.useState<{ url: string; seconds: number } | null>(null);
+  // ---- 会话轮询（提取到共享 Hook，消除与 ssh-panel 的重复） ----
+  const {
+    sessions, loadError, setLoadError, selectedId, setSelectedId, log,
+    pendingNav, countdown, setCountdown,
+  } = useSessionPolling({
+    onSessionReady: (ready) => {
+      // Hook 保证调用时 ready.url 已定义；此处再守一次满足类型检查
+      if (ready.url === undefined) return;
+      // 会话就绪：一次性日志 + 触发窗口交接
+      logger.info('会话就绪，触发窗口交接', { mode: pendingNav.current?.mode, url: ready.url, sessionId: ready.sessionId });
+      if (pendingNav.current?.mode === 'window') {
+        openRemoteWindow({
+          sessionId: ready.sessionId,
+          url: ready.url,
+          hostAlias: ready.hostAlias,
+        });
+      } else if (pendingNav.current?.mode === 'current') {
+        setCountdown({ url: ready.url, seconds: HANDOFF_COUNTDOWN_SECONDS });
+      }
+    },
+    onSessionError: (sessionId) => {
+      logger.info('会话连接失败', { sessionId });
+    },
+  });
 
   // 发行版列表：挂载时拉一次；「刷新」按钮带 refresh=1
   const loadDistros = React.useCallback(async (refresh: boolean): Promise<void> => {
@@ -80,85 +94,8 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
     } catch (error) {
       setLoadError(messageOf(error));
     }
-  }, []);
+  }, [setLoadError]);
   React.useEffect(() => { void loadDistros(false); }, [loadDistros]);
-
-  // 会话列表轮询（挂载期 2s 一次）
-  React.useEffect(() => {
-    let stopped = false;
-    const tick = async (): Promise<void> => {
-      try {
-        const next = await fetchSessions();
-        if (stopped) return;
-        setSessions(next);
-        setLoadError('');
-        // 交接：会话就绪后按形态分流
-        const pending = pendingNav.current;
-        if (pending !== null) {
-          const ready = next.find(item => item.sessionId === pending.sessionId
-            && !item.connecting && item.url !== undefined);
-          if (ready?.url !== undefined) {
-            // 会话就绪：一次性日志 + 触发窗口交接
-            logger.info('会话就绪，触发窗口交接', { mode: pending.mode, url: ready.url, sessionId: ready.sessionId });
-            pendingNav.current = null;
-            if (pending.mode === 'window') {
-              openRemoteWindow({
-                sessionId: ready.sessionId,
-                url: ready.url,
-                hostAlias: ready.hostAlias,
-              });
-            } else if (pending.mode === 'current') {
-              setCountdown({ url: ready.url, seconds: HANDOFF_COUNTDOWN_SECONDS });
-            }
-          } else if (next.some(item => item.sessionId === pending.sessionId
-            && item.connectError !== undefined)) {
-            logger.info('会话连接失败', { sessionId: pending.sessionId });
-            pendingNav.current = null;
-          }
-          // 连接中状态不输出日志（每 2s 轮询，避免刷屏）
-        }
-      } catch (error) {
-        if (!stopped) setLoadError(messageOf(error));
-      }
-    };
-    void tick();
-    const timer = setInterval(() => { void tick(); }, SESSIONS_POLL_MS);
-    return () => { stopped = true; clearInterval(timer); };
-  }, []);
-
-  // 倒计时滴答
-  React.useEffect(() => {
-    if (countdown === null) return;
-    if (countdown.seconds <= 0) {
-      window.location.href = countdown.url;
-      return;
-    }
-    const timer = setTimeout(() => {
-      setCountdown(previous => (previous === null ? null : { ...previous, seconds: previous.seconds - 1 }));
-    }, 1_000);
-    return () => { clearTimeout(timer); };
-  }, [countdown]);
-
-  // 选中会话的日志增量轮询
-  React.useEffect(() => {
-    if (selectedId === null) { setLog([]); lastSeq.current = 0; return; }
-    let stopped = false;
-    lastSeq.current = 0;
-    setLog([]);
-    const tick = async (): Promise<void> => {
-      try {
-        const result = await fetchSessionLog(selectedId, lastSeq.current);
-        if (stopped) return;
-        if (result.log.length > 0) {
-          lastSeq.current = result.log[result.log.length - 1]?.seq ?? lastSeq.current;
-          setLog(previous => [...previous, ...result.log]);
-        }
-      } catch { /* 会话可能刚被移除；下一轮列表刷新会纠正选中态 */ }
-    };
-    void tick();
-    const timer = setInterval(() => { void tick(); }, LOG_POLL_MS);
-    return () => { stopped = true; clearInterval(timer); };
-  }, [selectedId]);
 
   // 日志自动滚底
   React.useEffect(() => {

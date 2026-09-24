@@ -24,19 +24,16 @@
 import * as React from 'react';
 import type { ReactNode } from 'react';
 import type { SshHostSummary } from '../hosts/ssh-config-parser.js';
-import type { LogEntry } from '../plugin/supervisor.js';
 import type { RemoteExplorerLocaleKey } from './locales.js';
 import {
-  fetchHosts, fetchSessionLog, fetchSessions, messageOf, postConnect, postDisconnect,
-  type PanelSession,
+  fetchHosts, messageOf, postConnect, postDisconnect, type PanelSession,
 } from './api.js';
 import { openRemoteWindow, OVERLAY_INTENT_ORIGIN } from './remote-window.js';
 import { RemotePluginsSection } from './panel-plugins.js';
 import { STATE_COLORS, STATE_LABEL_KEYS } from '../util/session-display.js';
 import { inputStyle, buttonStyle } from './styles.js';
-import {
-  SESSIONS_POLL_MS, LOG_POLL_MS, HANDOFF_COUNTDOWN_SECONDS, DESKTOP,
-} from './constants.js';
+import { DESKTOP, HANDOFF_COUNTDOWN_SECONDS } from './constants.js';
+import { useSessionPolling } from './use-session-polling.js';
 
 /** localStorage 里「上次远端目录」的键前缀（按主机别名记忆） */
 const LAST_CWD_KEY_PREFIX = 'dsh-remote-explorer:lastCwd:';
@@ -71,24 +68,31 @@ export function SshSessionPanel(props: SshSessionPanelProps): ReactNode {
 
   // ---- 数据状态 ----
   const [hosts, setHosts] = React.useState<SshHostSummary[]>([]);
-  const [sessions, setSessions] = React.useState<PanelSession[]>([]);
-  const [loadError, setLoadError] = React.useState('');
-  const [selectedId, setSelectedId] = React.useState<string | null>(null);
-  const [log, setLog] = React.useState<LogEntry[]>([]);
   const [stopRemote, setStopRemote] = React.useState(true);
-  const lastSeq = React.useRef(0);
   const logBoxRef = React.useRef<HTMLDivElement | null>(null);
 
-  // ---- 窗口形态交接 ----
-  /**
-   * 本次发起连接选择的窗口形态：
-   * - current = 就绪后同标签自动切入远端（浏览器端，VS Code Connect Current Window）
-   * - new = 就绪后会话行按钮开新标签（浏览器端，弹窗拦截不允许无手势开标签）
-   * - window = 就绪后开整窗浮动桌面（桌面端，remote-window.tsx 的覆盖浮层）
-   */
-  const pendingNav = React.useRef<{ sessionId: string; mode: 'current' | 'new' | 'window' } | null>(null);
-  /** 同标签自动导航的倒计时（可取消）；null = 无待跳转 */
-  const [countdown, setCountdown] = React.useState<{ url: string; seconds: number } | null>(null);
+  // ---- 会话轮询（提取到共享 Hook，消除与 wsl-panel 的重复） ----
+  const {
+    sessions, loadError, setLoadError, selectedId, setSelectedId, log,
+    pendingNav, countdown, setCountdown,
+  } = useSessionPolling({
+    onSessionReady: (ready) => {
+      // Hook 保证调用时 ready.url 已定义；此处再守一次满足类型检查
+      if (ready.url === undefined) return;
+      // 桌面端直接开整窗浮层；浏览器端「当前标签」起倒计时，「新标签」
+      // 不起（弹窗拦截不允许无手势开标签），会话行按钮接管
+      if (pendingNav.current?.mode === 'window') {
+        openRemoteWindow({
+          sessionId: ready.sessionId,
+          url: ready.url,
+          hostAlias: ready.hostAlias,
+        });
+      } else if (pendingNav.current?.mode === 'current') {
+        setCountdown({ url: ready.url, seconds: HANDOFF_COUNTDOWN_SECONDS });
+      }
+    },
+    // 失败不空等：错误已在表单区呈现
+  });
 
   // 主机列表：挂载时拉一次；「刷新」按钮带 refresh=1 让宿主重读 ssh config
   const loadHosts = React.useCallback(async (refresh: boolean): Promise<void> => {
@@ -97,83 +101,8 @@ export function SshSessionPanel(props: SshSessionPanelProps): ReactNode {
     } catch (error) {
       setLoadError(messageOf(error));
     }
-  }, []);
+  }, [setLoadError]);
   React.useEffect(() => { void loadHosts(false); }, [loadHosts]);
-
-  // 会话列表轮询（挂载期 2s 一次）
-  React.useEffect(() => {
-    let stopped = false;
-    const tick = async (): Promise<void> => {
-      try {
-        const next = await fetchSessions();
-        if (stopped) return;
-        setSessions(next);
-        setLoadError('');
-        // 交接：会话就绪后按形态分流——桌面端直接开整窗浮层（无倒计时，
-        // 浮层展开即盖住本面板）；浏览器端「当前标签」起倒计时，「新标签」
-        // 不起（弹窗拦截不允许无手势开标签），会话行按钮接管
-        const pending = pendingNav.current;
-        if (pending !== null) {
-          const ready = next.find(item => item.sessionId === pending.sessionId
-            && !item.connecting && item.url !== undefined);
-          if (ready?.url !== undefined) {
-            pendingNav.current = null;
-            if (pending.mode === 'window') {
-              openRemoteWindow({
-                sessionId: ready.sessionId,
-                url: ready.url,
-                hostAlias: ready.hostAlias,
-              });
-            } else if (pending.mode === 'current') {
-              setCountdown({ url: ready.url, seconds: HANDOFF_COUNTDOWN_SECONDS });
-            }
-          } else if (next.some(item => item.sessionId === pending.sessionId
-            && item.connectError !== undefined)) {
-            pendingNav.current = null; // 失败不空等：错误已在表单区呈现
-          }
-        }
-      } catch (error) {
-        if (!stopped) setLoadError(messageOf(error));
-      }
-    };
-    void tick();
-    const timer = setInterval(() => { void tick(); }, SESSIONS_POLL_MS);
-    return () => { stopped = true; clearInterval(timer); };
-  }, []);
-
-  // 倒计时滴答：归零即同标签切入远端（VS Code Connect Current Window 的等价物）
-  React.useEffect(() => {
-    if (countdown === null) return;
-    if (countdown.seconds <= 0) {
-      window.location.href = countdown.url;
-      return;
-    }
-    const timer = setTimeout(() => {
-      setCountdown(previous => (previous === null ? null : { ...previous, seconds: previous.seconds - 1 }));
-    }, 1_000);
-    return () => { clearTimeout(timer); };
-  }, [countdown]);
-
-  // 选中会话的日志增量轮询（1.5s，?since=seq 追加）
-  React.useEffect(() => {
-    if (selectedId === null) { setLog([]); lastSeq.current = 0; return; }
-    let stopped = false;
-    lastSeq.current = 0;
-    setLog([]);
-    const tick = async (): Promise<void> => {
-      try {
-        const result = await fetchSessionLog(selectedId, lastSeq.current);
-        if (stopped) return;
-        if (result.log.length > 0) {
-          lastSeq.current = result.log[result.log.length - 1]?.seq ?? lastSeq.current;
-          setLog(previous => [...previous, ...result.log]);
-        }
-      } catch { /* 会话可能刚被移除；下一轮列表刷新会纠正选中态 */ }
-    };
-    void tick();
-    const timer = setInterval(() => { void tick(); }, LOG_POLL_MS);
-    return () => { stopped = true; clearInterval(timer); };
-  }, [selectedId]);
 
   // 日志自动滚底
   React.useEffect(() => {
