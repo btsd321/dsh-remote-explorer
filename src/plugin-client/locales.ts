@@ -10,6 +10,7 @@ export type RemoteExplorerLocaleKey =
   | 'sshSectionIntro' | 'wslSectionIntro'
   | 'menuSsh' | 'menuWsl'
   | 'host' | 'hostPlaceholder' | 'refreshHosts'
+  | 'hostPickerNoMatch' | 'hostDisconnectExternal'
   | 'cwd' | 'cwdPlaceholder'
   | 'advanced' | 'localPort' | 'forceRestart' | 'refreshMirrors'
   | 'nodeVersion' | 'dshVersion' | 'privateKey'
@@ -49,6 +50,8 @@ export const zh: Record<RemoteExplorerLocaleKey, string> = {
   host: '主机',
   hostPlaceholder: 'ssh config 别名，或 user@host[:port]',
   refreshHosts: '刷新主机列表',
+  hostPickerNoMatch: '没有匹配的主机（也可直填 user@host[:port]）',
+  hostDisconnectExternal: '该主机的会话由其他本机进程维持，请在对应进程或 CLI 中断开',
   cwd: '远端目录',
   cwdPlaceholder: '/home/you/project（留空 = 远端家目录）',
   advanced: '高级选项',
@@ -154,6 +157,8 @@ export const en: Record<RemoteExplorerLocaleKey, string> = {
   host: 'Host',
   hostPlaceholder: 'ssh config alias, or user@host[:port]',
   refreshHosts: 'Refresh host list',
+  hostPickerNoMatch: 'No matching host (you can also type user@host[:port])',
+  hostDisconnectExternal: 'The sessions of this host are maintained by other local processes; disconnect from that process or the CLI',
   cwd: 'Remote directory',
   cwdPlaceholder: '/home/you/project (empty = remote home)',
   advanced: 'Advanced',
