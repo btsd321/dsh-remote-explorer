@@ -23,8 +23,7 @@
 import { RemoteError } from '../util/errors.js';
 import { quote } from '../util/shell-quote.js';
 import { writeRemoteTextFile } from '../transport/write-text.js';
-import type { RemotePaths } from './remote-paths.js';
-import type { RemoteTransport } from '../transport/types.js';
+import type { RemoteContext } from './remote-context.js';
 
 /** 会话内使用的 profile 名 */
 export const SESSION_PROFILE_NAME = 'remote';
@@ -69,15 +68,13 @@ export interface PatchEntry {
  * 幂等：profile 已存在则跳过初始化，但 patch 文件每次都重写——
  * 端口与令牌每次会话都可能变。
  *
- * @param transport - 已连接的传输
- * @param paths - 远端路径集合
+ * @param ctx - 远端执行上下文
  * @param options - 选项
  * @returns 准备结果
  * @throws RemoteError('EXEC_FAILED') 初始化失败
  */
 export async function prepareSessionProfile(
-  transport: RemoteTransport,
-  paths: RemotePaths,
+  ctx: RemoteContext,
   options: {
     /** 会话 id */
     sessionId: string;
@@ -94,6 +91,7 @@ export async function prepareSessionProfile(
   },
 ): Promise<ProfileResult> {
   const { sessionId, dshBin, nodeBinDir, signal } = options;
+  const { transport, paths } = ctx;
   const dshHome = paths.sessionHome(sessionId);
   const profileDir = paths.sessionProfile(sessionId);
   const runtimeDir = paths.sessionRuntime(sessionId);

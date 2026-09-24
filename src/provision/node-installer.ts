@@ -16,6 +16,7 @@ import { RemoteError } from '../util/errors.js';
 import { quote } from '../util/shell-quote.js';
 import { INSTALL_LOCK_WAIT_SECONDS, lockInstallCommand } from './install-lock.js';
 import { assertNodeStable, checkNodeStability } from './probe.js';
+import type { RemoteContext } from './remote-context.js';
 import type { RemotePaths } from './remote-paths.js';
 import type { RemoteArch, RemoteOs, RemoteTransport } from '../transport/types.js';
 
@@ -65,16 +66,14 @@ export interface NodeInstallResult {
  * 未装则下载安装。两种路径都会做稳定性自检——复用的也要检，
  * 因为同一个二进制在不同时刻的表现可能不同（实测崩溃是随机的）。
  *
- * @param transport - 已连接的传输
- * @param paths - 远端路径集合
+ * @param ctx - 远端执行上下文
  * @param options - 安装选项
  * @returns 安装结果
  * @throws RemoteError('NODE_UNSTABLE') 稳定性自检不合格
  * @throws RemoteError('EXEC_FAILED') 下载或解包失败
  */
 export async function ensureNode(
-  transport: RemoteTransport,
-  paths: RemotePaths,
+  ctx: RemoteContext,
   options: {
     /** 目标版本，含 v 前缀 */
     version: string;
@@ -89,6 +88,7 @@ export async function ensureNode(
   },
 ): Promise<NodeInstallResult> {
   const { version, mirrorBaseUrl, signal } = options;
+  const { transport, paths } = ctx;
   const nodeBin = paths.nodeBin(version);
   const binDir = paths.nodeBinDir(version);
 
@@ -114,7 +114,7 @@ export async function ensureNode(
       );
     }
     options.onProgress?.(`下载 Node ${version}`);
-    await downloadAndExtract(transport, paths, version, mirrorBaseUrl, signal);
+    await downloadAndExtract(ctx, version, mirrorBaseUrl, signal);
 
     // 装完立即验证版本，避免镜像给错文件时把问题留到后面
     const verify = await transport.exec(`${quote(nodeBin)} -v`, {
@@ -143,20 +143,19 @@ export async function ensureNode(
 /**
  * 下载并解包 Node 发行版。
  *
- * @param transport - 已连接的传输
- * @param paths - 远端路径集合
+ * @param ctx - 远端执行上下文
  * @param version - 目标版本
  * @param mirrorBaseUrl - 镜像 baseUrl
  * @param signal - 取消信号
  * @throws RemoteError('PLATFORM_UNSUPPORTED') 平台无对应发行版
  */
 async function downloadAndExtract(
-  transport: RemoteTransport,
-  paths: RemotePaths,
+  ctx: RemoteContext,
   version: string,
   mirrorBaseUrl: string,
   signal?: AbortSignal,
 ): Promise<void> {
+  const { transport, paths } = ctx;
   const platform = transport.platform;
   const osSegment = OS_SEGMENT[platform.os];
   const archSegment = ARCH_SEGMENT[platform.arch];

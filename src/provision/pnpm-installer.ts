@@ -15,8 +15,7 @@
 import { RemoteError } from '../util/errors.js';
 import { quote } from '../util/shell-quote.js';
 import { installLockHint, lockInstallCommand } from './install-lock.js';
-import type { RemotePaths } from './remote-paths.js';
-import type { RemoteTransport } from '../transport/types.js';
+import type { RemoteContext } from './remote-context.js';
 
 /**
  * pin 的 pnpm 版本。
@@ -42,15 +41,13 @@ export interface PnpmInstallResult {
 /**
  * 确保远端有可用的 pin 版本 pnpm。
  *
- * @param transport - 已连接的传输
- * @param paths - 远端路径集合
+ * @param ctx - 远端执行上下文
  * @param options - 安装选项
  * @returns 安装结果
  * @throws RemoteError('EXEC_FAILED') 安装失败或装后版本不符
  */
 export async function ensurePnpm(
-  transport: RemoteTransport,
-  paths: RemotePaths,
+  ctx: RemoteContext,
   options: {
     /** npm registry baseUrl */
     registryUrl: string;
@@ -63,6 +60,7 @@ export async function ensurePnpm(
   },
 ): Promise<PnpmInstallResult> {
   const { registryUrl, nodeBinDir, signal } = options;
+  const { transport, paths } = ctx;
   const version = DEFAULT_PNPM_VERSION;
 
   // 1. 已装且版本相符则复用（pnpm -v 一条命令）

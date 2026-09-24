@@ -24,6 +24,7 @@
 import { RemoteError, toErrorMessage } from '../util/errors.js';
 import { quote } from '../util/shell-quote.js';
 import { INSTALL_LOCK_WAIT_SECONDS, installLockHint, lockInstallCommand } from './install-lock.js';
+import type { RemoteContext } from './remote-context.js';
 import type { RemotePaths } from './remote-paths.js';
 import type { RemoteTransport } from '../transport/types.js';
 
@@ -52,15 +53,13 @@ export interface DshInstallResult {
  *
  * 已装则复用（执行 `dsh --version` 比对，对标 Zed 的做法），未装则安装。
  *
- * @param transport - 已连接的传输
- * @param paths - 远端路径集合
+ * @param ctx - 远端执行上下文
  * @param options - 安装选项
  * @returns 安装结果
  * @throws RemoteError('EXEC_FAILED') 安装失败或装后版本不符
  */
 export async function ensureDsh(
-  transport: RemoteTransport,
-  paths: RemotePaths,
+  ctx: RemoteContext,
   options: {
     /** 目标 dsh 版本，如 `0.1.7-rc.1` */
     version: string;
@@ -74,6 +73,7 @@ export async function ensureDsh(
     onProgress?: (message: string) => void;
   },
 ): Promise<DshInstallResult> {
+  const { transport, paths } = ctx;
   const { version, registryUrl, nodeBinDir, signal } = options;
   const installDir = paths.dshDir(version);
   const dshBin = paths.dshBin(version);
@@ -145,14 +145,13 @@ export async function ensureDsh(
  * 供 CLI 在用户未显式指定版本时解析——但解析结果会被显式传下去，
  * 安装命令里绝不出现 dist-tag（见文件头第 1 点）。
  *
- * @param transport - 已连接的传输
+ * @param ctx - 远端执行上下文
  * @param options - 查询选项
  * @returns 具体版本号
  * @throws RemoteError('EXEC_FAILED') 查询失败或标签不存在
  */
 export async function resolveDshVersion(
-  transport: RemoteTransport,
-  paths: RemotePaths,
+  ctx: RemoteContext,
   options: {
     /** dist-tag，如 `latest` 或 `alpha` */
     tag: string;
@@ -164,6 +163,7 @@ export async function resolveDshVersion(
     signal?: AbortSignal;
   },
 ): Promise<string> {
+  const { transport, paths } = ctx;
   const { tag, registryUrl, nodeBinDir, signal } = options;
   const result = await runWithPath(
     transport,

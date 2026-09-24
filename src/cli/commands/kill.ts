@@ -104,7 +104,7 @@ export async function runKill(options: KillCommandOptions): Promise<number> {
       progress.start(`停止会话 ${sessionId}`);
       // 本机会话表里若有记录，用它的端口作为 pid 失效时的兜底定位手段
       const known = listSessions().find(record => record.sessionId === sessionId);
-      const didStop = await stopRemoteDsh(transport, paths, {
+      const didStop = await stopRemoteDsh({ transport, paths }, {
         sessionId,
         ...(known ? { port: known.remotePort } : {}),
       });

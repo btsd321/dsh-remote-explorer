@@ -21,8 +21,7 @@ import { loadHandoffPayload } from '../handoff/payload.js';
 import {
   ensurePluginStore, readPluginStoreManifest, transportIo, writePluginStoreManifest,
 } from './plugin-store.js';
-import type { RemotePaths } from './remote-paths.js';
-import type { RemoteTransport } from '../transport/types.js';
+import type { RemoteContext } from './remote-context.js';
 
 /**
  * handoff 合成包的 bundle patch：bundle 层在 boot 里就是**一层 patch**——宿主半
@@ -68,18 +67,17 @@ function renderHandoffPackageJson(): string {
 /**
  * 安装/自愈 store 里的 handoff 合成包并登记启用。
  *
- * @param transport - 已连接的传输
- * @param paths - 远端路径集合
+ * @param ctx - 远端执行上下文
  * @param dshVersion - 会话使用的 dsh 版本（store 回退链接锚定）
  * @returns true = 本次新装包目录；false = 已存在（内容仍重写自愈）
  * @throws Error 产物载荷缺失（开发流程没跑过 build-plugin）
  */
 export async function installHandoffBundle(
-  transport: RemoteTransport,
-  paths: RemotePaths,
+  ctx: RemoteContext,
   dshVersion: string,
 ): Promise<boolean> {
-  await ensurePluginStore(transport, paths, dshVersion);
+  const { transport, paths } = ctx;
+  await ensurePluginStore(ctx, dshVersion);
 
   const pkgDir = `${paths.pluginsStoreNodeModules}/${HANDOFF_PKG_NAME}`;
   const marker = await transport.exec(
