@@ -15,7 +15,7 @@ import { WslTransport } from '../../transport/wsl-transport.js';
 import type { RemoteTransport } from '../../transport/types.js';
 import type { TransportType } from '../../session/session-manager.js';
 import {
-  checkNodeStability,
+  checkNodeStability as probeNodeStability,
   probeRemote,
   type ProbeResult,
 } from '../../provision/probe.js';
@@ -78,41 +78,17 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
 
   switch (options.transportType ?? 'ssh') {
     case 'wsl': {
-    // WSL 模式：检查 WSL 可用性与发行版存在性
-    progress.start('检查 WSL 可用性');
-    const wslOk = await isWslAvailable();
-    if (!wslOk) {
-      progress.fail('WSL 不可用');
-      findings.push({ item: 'WSL 可用性', verdict: 'fail', detail: 'wsl.exe 不存在或无法响应；请确认 WSL 已安装并启用' });
-      report(findings);
-      return 1;
-    }
-    progress.done('WSL 可用');
-    findings.push({ item: 'WSL 可用性', verdict: 'ok', detail: 'wsl.exe 正常响应' });
+      // WSL 模式：检查 WSL 可用性与发行版存在性
+      const wslFatal = await checkWslAvailability(progress, findings);
+      if (wslFatal) { report(findings); return 1; }
 
-    // 检查指定发行版是否存在
-    const distroName = options.distroName ?? '';
-    progress.start(`检查发行版 ${distroName}`);
-    const distros = await listWslDistros();
-    const found = distros.find(d => d.name === distroName);
-    if (!found) {
-      progress.fail(`发行版 ${distroName} 不存在`);
-      const available = distros.map(d => d.name).join('、') || '无';
-      findings.push({ item: '发行版存在性', verdict: 'fail', detail: `未找到 ${distroName}；可用：${available}` });
-      report(findings);
-      return 1;
-    }
-    progress.done(`${found.state}（WSL ${found.version}）`);
-    findings.push({
-      item: '发行版存在性',
-      verdict: 'ok',
-      detail: `${found.name} ${found.state}（WSL ${found.version}${found.isDefault ? '，默认' : ''}）`,
-    });
+      const distroFatal = await checkDistro(options.distroName ?? '', progress, findings);
+      if (distroFatal) { report(findings); return 1; }
 
-    transport = new WslTransport({
-      distroName,
-      ...(options.wslUser ? { user: options.wslUser } : {}),
-    });
+      transport = new WslTransport({
+        distroName: options.distroName ?? '',
+        ...(options.wslUser ? { user: options.wslUser } : {}),
+      });
       break;
     }
     case 'ssh': {
@@ -134,183 +110,38 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
   }
 
   try {
-    // 2. 建立连接
-    progress.start(options.transportType === 'wsl' ? '连接 WSL 发行版' : '建立 SSH 连接');
-    try {
-      await transport.connect();
-      progress.done(`${transport.platform.rawOs} ${transport.platform.rawArch}`);
-      findings.push({
-        item: '连接与平台',
-        verdict: 'ok',
-        detail: `${transport.platform.os}/${transport.platform.arch}`
-          + `（uname: ${transport.platform.rawOs} ${transport.platform.rawArch}）`,
-      });
-    } catch (error) {
-      progress.fail(toErrorMessage(error));
-      findings.push({ item: '连接与平台', verdict: 'fail', detail: toErrorMessage(error) });
-      report(findings);
-      return 1;
-    }
+    // 建立连接并记录平台信息
+    const connFatal = await checkConnection(transport, progress, findings);
+    if (connFatal) { report(findings); return 1; }
 
-    // 3. 探测远端环境
-    progress.start('探测远端环境');
-    let probe: ProbeResult;
-    try {
-      probe = await probeRemote(transport);
-      progress.done(`home=${probe.homeDir}`);
-    } catch (error) {
-      progress.fail(toErrorMessage(error));
-      findings.push({ item: '远端环境', verdict: 'fail', detail: toErrorMessage(error) });
-      report(findings);
-      return 1;
-    }
+    // 探测远端环境（home 目录、基础工具等）
+    const probe = await checkProbe(transport, progress, findings);
+    if (!probe) { report(findings); return 1; }
 
     const paths = createRemotePaths(probe.homeDir);
 
-    // 基础命令
-    const missing: string[] = [];
-    if (!probe.tools.hasCurl && !probe.tools.hasWget) missing.push('curl/wget');
-    if (!probe.tools.hasTar) missing.push('tar');
-    if (!probe.tools.hasXz) missing.push('xz');
-    findings.push({
-      item: '基础命令',
-      verdict: missing.length === 0 ? 'ok' : 'warn',
-      detail: missing.length === 0
-        ? [
-            probe.tools.hasCurl ? 'curl' : '',
-            probe.tools.hasWget ? 'wget' : '',
-            'tar',
-            probe.tools.hasXz ? 'xz' : '',
-          ].filter(Boolean).join('、')
-        : `缺少 ${missing.join('、')}`,
-    });
+    // 基础命令检查
+    checkBasicCommands(probe, findings);
 
-    // 磁盘
-    if (probe.availableBytes !== undefined) {
-      const gb = probe.availableBytes / 1_000_000_000;
-      findings.push({
-        item: '磁盘余量',
-        verdict: gb >= 1.5 ? 'ok' : 'fail',
-        detail: `家目录可用 ${gb.toFixed(1)} GB`
-          + (gb >= 1.5 ? dim('（引导需约 0.7 GB）') : '，不足以引导（需约 0.7 GB 并留余量）'),
-      });
-    }
+    // 磁盘余量
+    checkDiskSpace(probe, findings);
 
     // 已装运行时
-    findings.push({
-      item: '已装 Node',
-      verdict: probe.managedNodes.length > 0 ? 'ok' : 'warn',
-      detail: probe.managedNodes.length > 0
-        ? probe.managedNodes.map(node => node.version).join('、')
-        : '尚未安装（首次 connect 时会自动装）',
-    });
-    findings.push({
-      item: '已装 dsh',
-      verdict: probe.managedDsh.length > 0 ? 'ok' : 'warn',
-      detail: probe.managedDsh.length > 0
-        ? probe.managedDsh.map(dsh => dsh.version).join('、')
-        : '尚未安装（首次 connect 时会自动装）',
-    });
+    checkInstalledRuntimes(probe, findings);
 
-    // 4. Node 稳定性自检（只有装了才能测）
-    for (const node of probe.managedNodes) {
-      progress.start(`Node ${node.version} 稳定性自检`);
-      try {
-        const stability = await checkNodeStability(transport, node.path);
-        if (stability.isStable) {
-          progress.done(`${stability.attempts} 次全部成功`);
-          findings.push({
-            item: `Node ${node.version} 稳定性`,
-            verdict: 'ok',
-            detail: `起进程 ${stability.attempts} 次，0 次失败`,
-          });
-        } else {
-          const rate = Math.round((stability.failures / stability.attempts) * 100);
-          progress.fail(`${stability.failures}/${stability.attempts} 次失败`);
-          findings.push({
-            item: `Node ${node.version} 稳定性`,
-            verdict: 'fail',
-            detail: `起进程 ${stability.attempts} 次失败 ${stability.failures} 次（${rate}%）。`
-              + 'aarch64 上的已知问题，会导致 npm install 失败，请改用 v24 系',
-          });
-        }
-      } catch (error) {
-        progress.fail(toErrorMessage(error));
-        findings.push({
-          item: `Node ${node.version} 稳定性`,
-          verdict: 'warn',
-          detail: `自检未能完成：${toErrorMessage(error)}`,
-        });
-      }
-    }
+    // Node 稳定性自检
+    await checkNodeStabilityChecks(transport, probe, progress, findings);
 
-    // 5. 镜像测速
-    for (const kind of ['node', 'npm'] as const) {
-      const label = kind === 'node' ? 'Node 发行版镜像' : 'npm registry';
-      progress.start(`${label}测速`);
-      try {
-        const selection = await selectMirror(transport, kind, {
-          cachePath: paths.mirrorCache,
-          force: options.refreshMirrors,
-        });
-        if (selection.fromCache) {
-          progress.skip(`命中缓存：${selection.selected.name}`);
-          findings.push({
-            item: label,
-            verdict: 'ok',
-            detail: `${selection.selected.name}（缓存；加 --refresh-mirrors 重测）`,
-          });
-        } else {
-          progress.done(`选中 ${selection.selected.name}`);
-          findings.push({
-            item: label,
-            verdict: 'ok',
-            detail: formatMirrorResults(selection.results),
-          });
-        }
-      } catch (error) {
-        progress.fail(toErrorMessage(error));
-        findings.push({
-          item: label,
-          verdict: 'fail',
-          detail: toErrorMessage(error).split('\n').join(' '),
-        });
-      }
-    }
+    // 镜像测速
+    await checkMirror(transport, paths, options, progress, findings);
 
-    // 6. 通道配额（仅 SSH 传输有通道配额概念）
-    if (transport instanceof SshTransport) {
-      const usage = transport.channelUsage;
-      findings.push({
-        item: 'SSH 通道',
-        verdict: 'ok',
-        detail: `管理类已用 ${usage.admin}，转发类已用 ${usage.forward}，无等待`,
-      });
-    }
+    // 通道配额（仅 SSH）
+    checkChannelQuota(transport, findings);
 
-    // 7. SFTP 子系统：内部文件传输的主路径（settings 镜像、patch 落盘走它，
-    //    比 printf-over-exec 快且二进制安全）。不可用不阻断会话——文本写入
-    //    会自动回退 shell 重定向，但回退路径受命令长度限制，值得显式提示
-    progress.start('SFTP 子系统探测');
-    try {
-      await transport.checkSftp();
-      progress.done('可用');
-      findings.push({
-        item: 'SFTP 子系统',
-        verdict: 'ok',
-        detail: '可用（会话已池化，内部文件传输走主路径）',
-      });
-    } catch (error) {
-      progress.fail(toErrorMessage(error));
-      findings.push({
-        item: 'SFTP 子系统',
-        verdict: 'warn',
-        detail: `不可用（${toErrorMessage(error).split('\n').join(' ')}）；`
-          + '文本写入将回退 printf-over-exec，大文件与二进制传输不可用',
-      });
-    }
+    // SFTP 子系统
+    await checkSftp(transport, progress, findings);
 
-    // 8. 隔离检查：本工具在远端的占用清单 + 确认不触碰官方 dsh 的家
+    // 隔离检查
     findings.push(await checkIsolation(transport, paths));
 
     println();
@@ -325,6 +156,298 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
     clearPasswords?.();
   }
 }
+
+// ---------------------------------------------------------------------------
+// 各诊断检查函数
+// ---------------------------------------------------------------------------
+
+/**
+ * 检查 WSL 可用性。
+ *
+ * @returns true 表示致命错误，runDoctor 应提前退出
+ */
+async function checkWslAvailability(
+  progress: ProgressReporter,
+  findings: Finding[],
+): Promise<boolean> {
+  progress.start('检查 WSL 可用性');
+  const wslOk = await isWslAvailable();
+  if (!wslOk) {
+    progress.fail('WSL 不可用');
+    findings.push({ item: 'WSL 可用性', verdict: 'fail', detail: 'wsl.exe 不存在或无法响应；请确认 WSL 已安装并启用' });
+    return true;
+  }
+  progress.done('WSL 可用');
+  findings.push({ item: 'WSL 可用性', verdict: 'ok', detail: 'wsl.exe 正常响应' });
+  return false;
+}
+
+/**
+ * 检查指定 WSL 发行版是否存在。
+ *
+ * @returns true 表示致命错误，runDoctor 应提前退出
+ */
+async function checkDistro(
+  distroName: string,
+  progress: ProgressReporter,
+  findings: Finding[],
+): Promise<boolean> {
+  progress.start(`检查发行版 ${distroName}`);
+  const distros = await listWslDistros();
+  const found = distros.find(d => d.name === distroName);
+  if (!found) {
+    progress.fail(`发行版 ${distroName} 不存在`);
+    const available = distros.map(d => d.name).join('、') || '无';
+    findings.push({ item: '发行版存在性', verdict: 'fail', detail: `未找到 ${distroName}；可用：${available}` });
+    return true;
+  }
+  progress.done(`${found.state}（WSL ${found.version}）`);
+  findings.push({
+    item: '发行版存在性',
+    verdict: 'ok',
+    detail: `${found.name} ${found.state}（WSL ${found.version}${found.isDefault ? '，默认' : ''}）`,
+  });
+  return false;
+}
+
+/**
+ * 建立传输连接并记录平台信息。
+ *
+ * @returns true 表示致命错误，runDoctor 应提前退出
+ */
+async function checkConnection(
+  transport: RemoteTransport,
+  progress: ProgressReporter,
+  findings: Finding[],
+): Promise<boolean> {
+  const label = transport instanceof WslTransport ? '连接 WSL 发行版' : '建立 SSH 连接';
+  progress.start(label);
+  try {
+    await transport.connect();
+    progress.done(`${transport.platform.rawOs} ${transport.platform.rawArch}`);
+    findings.push({
+      item: '连接与平台',
+      verdict: 'ok',
+      detail: `${transport.platform.os}/${transport.platform.arch}`
+        + `（uname: ${transport.platform.rawOs} ${transport.platform.rawArch}）`,
+    });
+    return false;
+  } catch (error) {
+    progress.fail(toErrorMessage(error));
+    findings.push({ item: '连接与平台', verdict: 'fail', detail: toErrorMessage(error) });
+    return true;
+  }
+}
+
+/**
+ * 探测远端环境（home 目录、基础工具清单等）。
+ *
+ * @returns 探测结果；null 表示致命错误
+ */
+async function checkProbe(
+  transport: RemoteTransport,
+  progress: ProgressReporter,
+  findings: Finding[],
+): Promise<ProbeResult | null> {
+  progress.start('探测远端环境');
+  try {
+    const probe = await probeRemote(transport);
+    progress.done(`home=${probe.homeDir}`);
+    return probe;
+  } catch (error) {
+    progress.fail(toErrorMessage(error));
+    findings.push({ item: '远端环境', verdict: 'fail', detail: toErrorMessage(error) });
+    return null;
+  }
+}
+
+/**
+ * 检查远端基础命令（curl/wget、tar、xz）是否可用。
+ */
+function checkBasicCommands(probe: ProbeResult, findings: Finding[]): void {
+  const missing: string[] = [];
+  if (!probe.tools.hasCurl && !probe.tools.hasWget) missing.push('curl/wget');
+  if (!probe.tools.hasTar) missing.push('tar');
+  if (!probe.tools.hasXz) missing.push('xz');
+  findings.push({
+    item: '基础命令',
+    verdict: missing.length === 0 ? 'ok' : 'warn',
+    detail: missing.length === 0
+      ? [
+          probe.tools.hasCurl ? 'curl' : '',
+          probe.tools.hasWget ? 'wget' : '',
+          'tar',
+          probe.tools.hasXz ? 'xz' : '',
+        ].filter(Boolean).join('、')
+      : `缺少 ${missing.join('、')}`,
+  });
+}
+
+/**
+ * 检查家目录磁盘余量。
+ */
+function checkDiskSpace(probe: ProbeResult, findings: Finding[]): void {
+  if (probe.availableBytes !== undefined) {
+    const gb = probe.availableBytes / 1_000_000_000;
+    findings.push({
+      item: '磁盘余量',
+      verdict: gb >= 1.5 ? 'ok' : 'fail',
+      detail: `家目录可用 ${gb.toFixed(1)} GB`
+        + (gb >= 1.5 ? dim('（引导需约 0.7 GB）') : '，不足以引导（需约 0.7 GB 并留余量）'),
+    });
+  }
+}
+
+/**
+ * 报告已安装的 Node 与 dsh 运行时版本。
+ */
+function checkInstalledRuntimes(probe: ProbeResult, findings: Finding[]): void {
+  findings.push({
+    item: '已装 Node',
+    verdict: probe.managedNodes.length > 0 ? 'ok' : 'warn',
+    detail: probe.managedNodes.length > 0
+      ? probe.managedNodes.map(node => node.version).join('、')
+      : '尚未安装（首次 connect 时会自动装）',
+  });
+  findings.push({
+    item: '已装 dsh',
+    verdict: probe.managedDsh.length > 0 ? 'ok' : 'warn',
+    detail: probe.managedDsh.length > 0
+      ? probe.managedDsh.map(dsh => dsh.version).join('、')
+      : '尚未安装（首次 connect 时会自动装）',
+  });
+}
+
+/**
+ * 对每个已安装的 Node 版本执行稳定性自检。
+ */
+async function checkNodeStabilityChecks(
+  transport: RemoteTransport,
+  probe: ProbeResult,
+  progress: ProgressReporter,
+  findings: Finding[],
+): Promise<void> {
+  for (const node of probe.managedNodes) {
+    progress.start(`Node ${node.version} 稳定性自检`);
+    try {
+      const stability = await probeNodeStability(transport, node.path);
+      if (stability.isStable) {
+        progress.done(`${stability.attempts} 次全部成功`);
+        findings.push({
+          item: `Node ${node.version} 稳定性`,
+          verdict: 'ok',
+          detail: `起进程 ${stability.attempts} 次，0 次失败`,
+        });
+      } else {
+        const rate = Math.round((stability.failures / stability.attempts) * 100);
+        progress.fail(`${stability.failures}/${stability.attempts} 次失败`);
+        findings.push({
+          item: `Node ${node.version} 稳定性`,
+          verdict: 'fail',
+          detail: `起进程 ${stability.attempts} 次失败 ${stability.failures} 次（${rate}%）。`
+            + 'aarch64 上的已知问题，会导致 npm install 失败，请改用 v24 系',
+        });
+      }
+    } catch (error) {
+      progress.fail(toErrorMessage(error));
+      findings.push({
+        item: `Node ${node.version} 稳定性`,
+        verdict: 'warn',
+        detail: `自检未能完成：${toErrorMessage(error)}`,
+      });
+    }
+  }
+}
+
+/**
+ * 镜像测速（Node 发行版 + npm registry）。
+ */
+async function checkMirror(
+  transport: RemoteTransport,
+  paths: RemotePaths,
+  options: DoctorOptions,
+  progress: ProgressReporter,
+  findings: Finding[],
+): Promise<void> {
+  for (const kind of ['node', 'npm'] as const) {
+    const label = kind === 'node' ? 'Node 发行版镜像' : 'npm registry';
+    progress.start(`${label}测速`);
+    try {
+      const selection = await selectMirror(transport, kind, {
+        cachePath: paths.mirrorCache,
+        force: options.refreshMirrors,
+      });
+      if (selection.fromCache) {
+        progress.skip(`命中缓存：${selection.selected.name}`);
+        findings.push({
+          item: label,
+          verdict: 'ok',
+          detail: `${selection.selected.name}（缓存；加 --refresh-mirrors 重测）`,
+        });
+      } else {
+        progress.done(`选中 ${selection.selected.name}`);
+        findings.push({
+          item: label,
+          verdict: 'ok',
+          detail: formatMirrorResults(selection.results),
+        });
+      }
+    } catch (error) {
+      progress.fail(toErrorMessage(error));
+      findings.push({
+        item: label,
+        verdict: 'fail',
+        detail: toErrorMessage(error).split('\n').join(' '),
+      });
+    }
+  }
+}
+
+/**
+ * 检查 SSH 通道配额使用情况（仅 SSH 传输有通道配额概念）。
+ */
+function checkChannelQuota(transport: RemoteTransport, findings: Finding[]): void {
+  if (transport instanceof SshTransport) {
+    const usage = transport.channelUsage;
+    findings.push({
+      item: 'SSH 通道',
+      verdict: 'ok',
+      detail: `管理类已用 ${usage.admin}，转发类已用 ${usage.forward}，无等待`,
+    });
+  }
+}
+
+/**
+ * 探测 SFTP 子系统是否可用。
+ */
+async function checkSftp(
+  transport: RemoteTransport,
+  progress: ProgressReporter,
+  findings: Finding[],
+): Promise<void> {
+  progress.start('SFTP 子系统探测');
+  try {
+    await transport.checkSftp();
+    progress.done('可用');
+    findings.push({
+      item: 'SFTP 子系统',
+      verdict: 'ok',
+      detail: '可用（会话已池化，内部文件传输走主路径）',
+    });
+  } catch (error) {
+    progress.fail(toErrorMessage(error));
+    findings.push({
+      item: 'SFTP 子系统',
+      verdict: 'warn',
+      detail: `不可用（${toErrorMessage(error).split('\n').join(' ')}）；`
+        + '文本写入将回退 printf-over-exec，大文件与二进制传输不可用',
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 辅助函数
+// ---------------------------------------------------------------------------
 
 /**
  * 隔离检查：本工具在远端的落盘清单，以及对官方 dsh 家目录的确认。
