@@ -226,6 +226,36 @@ export async function postRemotePluginAction(
 }
 
 /**
+ * 拉某主机的自定义环境变量配置（面板齿轮按钮维护，仅存宿主侧）。
+ *
+ * @param hostAlias - 主机别名（ssh config 别名或 user@host[:port]）
+ * @returns 该主机的环境变量键值对；未配置过返回空对象
+ * @throws ApiError bad_usage / http_error
+ */
+export async function fetchHostEnv(hostAlias: string): Promise<Record<string, string>> {
+  const result = await request<{ env: Record<string, string> }>(
+    `/host-env?hostAlias=${encodeURIComponent(hostAlias)}`,
+  );
+  return result.env;
+}
+
+/**
+ * 保存某主机的自定义环境变量配置（存宿主侧，下一次连接该主机时注入远端 dsh 进程）。
+ *
+ * @param hostAlias - 主机别名
+ * @param env - 环境变量键值对；键名须匹配 /^[A-Za-z_][A-Za-z0-9_]*$/，
+ *              DSH_HOME/DSH_AGENTS_HOME/PATH 为保留键，值不得含控制字符
+ * @throws ApiError bad_usage（校验失败，中文消息透传到弹窗展示）
+ */
+export async function postHostEnv(hostAlias: string, env: Record<string, string>): Promise<void> {
+  await request<{ ok: true }>('/host-env', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ hostAlias, env }),
+  });
+}
+
+/**
  * 拉 WSL 发行版列表。
  *
  * @param refresh - true 时让宿主重新执行 wsl --list --verbose

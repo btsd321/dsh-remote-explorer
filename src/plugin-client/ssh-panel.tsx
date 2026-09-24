@@ -30,6 +30,7 @@ import {
 } from './api.js';
 import { openRemoteWindow, OVERLAY_INTENT_ORIGIN } from './remote-window.js';
 import { RemotePluginsSection } from './panel-plugins.js';
+import { HostEnvDialog } from './host-env-dialog.js';
 import { STATE_COLORS, STATE_LABEL_KEYS } from '../util/session-display.js';
 import { inputStyle, buttonStyle } from './styles.js';
 import { DESKTOP, HANDOFF_COUNTDOWN_SECONDS } from './constants.js';
@@ -65,6 +66,15 @@ export function SshSessionPanel(props: SshSessionPanelProps): ReactNode {
   const [refreshMirrors, setRefreshMirrors] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [formError, setFormError] = React.useState('');
+
+  // ---- 环境变量配置弹窗（宿主侧 per-host 持久化，连接时注入远端 dsh） ----
+  /** 弹窗目标主机别名；null = 关闭 */
+  const [envDialogHost, setEnvDialogHost] = React.useState<string | null>(null);
+
+  /** 关闭环境变量弹窗（useCallback 保证引用稳定，弹窗 Esc 监听不重挂） */
+  const closeEnvDialog = React.useCallback((): void => {
+    setEnvDialogHost(null);
+  }, []);
 
   // ---- 数据状态 ----
   const [hosts, setHosts] = React.useState<SshHostSummary[]>([]);
@@ -207,6 +217,10 @@ export function SshSessionPanel(props: SshSessionPanelProps): ReactNode {
               />
               <button type="button" style={buttonStyle} title={t('refreshHosts')}
                 onClick={() => { void loadHosts(true); }}>↻</button>
+              {/* 齿轮：配置当前主机的环境变量（hostAlias 取输入值 trim，空时禁用） */}
+              <button type="button" style={buttonStyle} title={t('hostEnvOpen')}
+                disabled={host.trim() === ''}
+                onClick={() => { setEnvDialogHost(host.trim()); }}>⚙</button>
             </span>
           </label>
           <datalist id="dsh-remote-explorer-hosts">
@@ -317,6 +331,7 @@ export function SshSessionPanel(props: SshSessionPanelProps): ReactNode {
               {sessions.map(session => renderSessionRow(session, selectedId, t, DESKTOP, {
                 onSelect: setSelectedId,
                 onDisconnect: target => { void onDisconnect(target); },
+                onConfigureEnv: hostAlias => { setEnvDialogHost(hostAlias); },
               }))}
             </div>
           )}
@@ -347,6 +362,11 @@ export function SshSessionPanel(props: SshSessionPanelProps): ReactNode {
             ))}
         </div>
       </section>
+
+      {/* ---- 环境变量配置弹窗（固定定位浮层盖在面板上；保存与生效语义见弹窗内提示） ---- */}
+      {envDialogHost !== null
+        ? <HostEnvDialog hostAlias={envDialogHost} t={t} onClose={closeEnvDialog} />
+        : null}
     </div>
   );
 }
@@ -357,6 +377,8 @@ export interface RowActions {
   onSelect: (sessionId: string) => void;
   /** 断开 */
   onDisconnect: (target: string) => void;
+  /** 打开该主机的环境变量配置弹窗；未提供时不渲染行内齿轮（wsl-panel 复用本行渲染，暂未接入） */
+  onConfigureEnv?: (hostAlias: string) => void;
 }
 
 /**
@@ -380,6 +402,8 @@ export function renderSessionRow(
   const stateLabel = t((STATE_LABEL_KEYS[stateTag] ?? 'stateIdle') as RemoteExplorerLocaleKey);
   const stateColor = STATE_COLORS[stateTag] ?? '#9ca3af';
   const missingKeys = session.missingKeyEnvs ?? [];
+  // 提前收窄到局部 const：可选回调的 !== undefined 判定才能穿透进 onClick 闭包
+  const configureEnv = actions.onConfigureEnv;
   return (
     <div
       key={session.sessionId}
@@ -468,20 +492,43 @@ export function renderSessionRow(
       {session.external === true
         ? null
         : (
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              actions.onDisconnect(session.sessionId);
-            }}
-            style={{
-              background: 'transparent', color: 'inherit', fontSize: 12,
-              border: '1px solid rgba(127,127,127,0.5)', borderRadius: 6,
-              padding: '2px 8px', cursor: 'pointer',
-            }}
-          >
-            {t('disconnect')}
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                actions.onDisconnect(session.sessionId);
+              }}
+              style={{
+                background: 'transparent', color: 'inherit', fontSize: 12,
+                border: '1px solid rgba(127,127,127,0.5)', borderRadius: 6,
+                padding: '2px 8px', cursor: 'pointer',
+              }}
+            >
+              {t('disconnect')}
+            </button>
+            {/* 齿轮：配置该主机环境变量。external 会话不给行内入口（env 由对应
+                进程的宿主侧配置管理），同一别名仍可经表单齿轮配置 */}
+            {configureEnv !== undefined
+              ? (
+                <button
+                  type="button"
+                  title={t('hostEnvOpen')}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    configureEnv(session.hostAlias);
+                  }}
+                  style={{
+                    background: 'transparent', color: 'inherit', fontSize: 12,
+                    border: '1px solid rgba(127,127,127,0.5)', borderRadius: 6,
+                    padding: '2px 8px', cursor: 'pointer',
+                  }}
+                >
+                  ⚙
+                </button>
+              )
+              : null}
+          </>
         )}
     </div>
   );
