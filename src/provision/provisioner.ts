@@ -67,9 +67,9 @@ export interface ProvisionResult {
  * 默认安装的 dsh 版本。
  *
  * 固定具体版本而非 `latest`：registry 上 `latest` 指向 0.1.5-rc.2，
- * 比 `rc` 的 0.1.7-rc.1 旧（P0 实测），依赖标签会拿到意外的版本。
+ * 比 `rc` 的 0.1.7-rc.2 旧（P0 实测），依赖标签会拿到意外的版本。
  */
-export const DEFAULT_DSH_VERSION = '0.1.7-rc.1';
+export const DEFAULT_DSH_VERSION = '0.1.7-rc.2';
 
 /** 看起来像 dist-tag 而非版本号的判据：不以数字开头 */
 const TAG_PATTERN = /^[a-z]/i;

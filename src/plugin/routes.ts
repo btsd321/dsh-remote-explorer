@@ -5,8 +5,10 @@
  *              认证 401），**不注册裸 webServer 路由**——裸路由无任何鉴权，
  *              宿主若配 0.0.0.0 会把会话元数据与写操作暴露到全网卡。
  *
- * 冒烟判读：不带凭据 curl `/api/dsh-remote-explorer/ping` 得 **401** = 路由已
- * 注册且受保护；404 = 插件没挂上或 connection 服务缺席。
+ * 冒烟判读（实测修正）：不带凭据 curl `/api/dsh-remote-explorer/ping` 得 401
+ * 只证明 /api 鉴权门在工作——对未注册路由同样 401，不能当挂载证据；带会话
+ * Cookie 得 **200** 才是路由已注册的证明，带 Cookie 仍 404 = 插件没挂上
+ * 或 connection 服务缺席。
  *
  * connection 是反应式注入（ctx.inject）：它可能晚于本插件到达，绝不让面板
  * 路由阻塞插件激活；纯 headless 组合没有该服务，回调永不执行，自然降级。

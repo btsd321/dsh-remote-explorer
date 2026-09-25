@@ -467,6 +467,8 @@ pnpm exec tsx scripts/dev-plugin.ts --sync   # 只同步产物进沙箱
 
 装完重启 `dsh web`（dsh 契约：包替换需重启进程才加载新代码）。卸载：`dsh plugin --profile web remove dsh-remote-explorer`。
 
+> **pnpm 11.7+ 构建脚本审批门**：pnpm 11.7 把「带安装脚本的依赖未决策」当致命错误，本包依赖树里的 `cpu-features`/`esbuild`/`ssh2` 会让首次 `dsh plugin add` 报 `ERR_PNPM_IGNORED_BUILDS` 失败（与安装源无关）。插件运行期不需要它们的构建产物（产物预构建、ssh2 回落纯 JS）。**推荐在 dsh 网页版插件管理页安装**（自带批准并重试）；CLI 路径见下方故障排查「add 报 ERR_PNPM_IGNORED_BUILDS」。
+
 ### 三个入口
 
 **左导航「远程 SSH 会话」**（全局面板，与「插件」按钮平级；0.6.x 起从 Settings 迁出——设置页只放偏好，工作流面板独立成面）：
@@ -540,7 +542,8 @@ pnpm exec tsx scripts/dev-plugin.ts --sync   # 只同步产物进沙箱
 
 ### 故障排查
 
-- **装完面板没出现**：确认重启了 dsh；`curl http://127.0.0.1:<端口>/api/dsh-remote-explorer/ping` 不带凭据应得 **401**（= 插件已挂载且路由受保护），404 = 插件没激活（查 profile `package.json` 的 `dsh.profile.bundles`）
+- **装完面板没出现**：确认重启了 dsh；`curl http://127.0.0.1:<端口>/api/dsh-remote-explorer/ping` **带会话 Cookie** 应得 200（这才是路由注册的证据）；不带凭据的 401 只证明 `/api` 鉴权门在工作、对未注册路由同样返回，不能当挂载证据；带 Cookie 仍 404 = 插件没激活（查 profile `package.json` 的 `dsh.profile.bundles` 是否含本包）
+- **`add` 报 ERR_PNPM_IGNORED_BUILDS（pnpm 11.7+）**：`cpu-features`/`esbuild`/`ssh2` 三个构建脚本待决策，插件运行期不需要它们的构建产物。处理：① 编辑 `~/.dsh/profiles/web/pnpm-workspace.yaml`，把三个待决策的 `allowBuilds` 项改成 `false`；② 删掉 `~/.dsh/profiles/web/package.json` 里 `dependencies` 中半提交的 `dsh-remote-explorer` 条目（失败后残留；不删直接重试会退出 0 但不激活——dsh CLI 在 0.1.7-rc.1/rc.2 都有此行为）；③ 重跑 add。或直接在 dsh 网页版插件管理页安装（自带批准并重试）
 - **pnpm 未找到（exit 127）**：`npm i -g pnpm`
 - **peer 依赖警告**：`autoInstallPeers: false` 下属预期，运行时经 profile 安装回退链接共享宿主实例，不影响使用
 - **连接一直卡在引导**：面板日志区看阶段输出；远端首次引导要下载 Node 与 dsh（数分钟），`doctor` 可先诊断

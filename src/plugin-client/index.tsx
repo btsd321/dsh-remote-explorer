@@ -58,8 +58,10 @@ const LOCALE_NS = 'dshRemoteExplorer';
  */
 const PANEL_ID = 'remote-sessions' as MainPanelId;
 
-/** 左导航按钮排序（第一方「插件」为 0，本插件让出一档） */
-const PANEL_ORDER = 10;
+/** 左导航按钮排序（第一方「插件」为 0；schedule 的 TaskManagerIcon 占 10——
+ *  dsh 0.1.7-rc.2 起随 web 组合提供（默认禁用、用户可开启），同号会让
+ *  两者排序取决于注册顺序，故本插件再让一档到 20） */
+const PANEL_ORDER = 20;
 
 /** 插件名（与宿主半一致；浏览器半的注册 id 是包名，由构建脚本的外壳承载） */
 export const name = 'dsh-remote-explorer';
