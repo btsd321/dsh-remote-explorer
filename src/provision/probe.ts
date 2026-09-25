@@ -35,7 +35,7 @@ export interface RemoteTools {
 export interface InstalledRuntime {
   /** 绝对路径 */
   path: string;
-  /** 版本号（如 v24.21.0 或 0.1.7-rc.1） */
+  /** 版本号（如 v24.21.0 或 0.1.7-rc.2） */
   version: string;
 }
 

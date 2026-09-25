@@ -112,12 +112,14 @@ export async function prepareSessionProfile(
   if (!hostExists) {
     options.onProgress?.('初始化主机级 profile');
     // 用 --dump-config 触发初始化而不真正启动：它会建好 profile 目录后打印
-    // 组合结果并退出，是最轻的初始化手段（P0 验证可用）。
-    // DSH_HOME 指向 base（不是 session），让 dsh 在 base/profiles/web/ 下创建 profile
+    // 组合结果并退出，是最轻的初始化手段。
+    // DSH_HOME 指向 base（不是 session），让 dsh 在 base/profiles/web/ 下创建 profile。
+    // 不带 --from-default-profile：dsh 0.1.5-rc.3 起内置 profile 禁止作为
+    // from-default-profile 目标（"shipped and cannot be a custom profile
+    // target"），纯 --profile web 即按内置模板初始化（0.1.7-rc.1/rc.2 实测）
     const init = [
       quote(dshBin),
       '--profile', quote(SESSION_PROFILE_NAME),
-      '--from-default-profile', quote(SESSION_PROFILE_NAME),
       '--dump-config',
     ].join(' ');
 

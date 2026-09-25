@@ -54,7 +54,7 @@ dsh plugin --profile web add github:btsd321/dsh-remote-explorer
 pnpm run build:plugin && dsh plugin --profile web add /path/to/repo
 ```
 
-> **pnpm 11+ 用户注意：** 本包已将预构建的插件产物（`lib/`）纳入版本控制，且不含 `prepare` 脚本，git-hosted 安装开箱即用，无需配置 `allowBuilds`。从本地 checkout 安装时，请先跑 `pnpm run build:plugin`。
+> **pnpm 11.7+ 用户注意（构建脚本审批门）：** pnpm 11.7 把「带安装脚本的依赖未决策」当致命错误，而本包依赖树里有三个（`cpu-features`、经 tsx 带入的 `esbuild`、`ssh2`）——首次 `dsh plugin add` 会报 `ERR_PNPM_IGNORED_BUILDS` 失败，与安装源无关。插件运行期**不需要**它们的构建产物：产物预构建（`lib/` 已入库），ssh2 回落纯 JS。**推荐做法：** 在 dsh 网页版的插件管理页安装——页面自带「批准并重试」流程。**CLI 做法：** 首次失败后，把 `~/.dsh/profiles/web/pnpm-workspace.yaml` 里三个待决策的 `allowBuilds` 项改成 `false`，再把 `~/.dsh/profiles/web/package.json` 的 `dependencies` 里半提交的 `dsh-remote-explorer` 条目删掉（失败后它会残留在那里，直接重试会退出 0 但插件不激活——dsh CLI 在 0.1.7-rc.1/rc.2 都如此），然后重跑 add 命令。
 
 装完重启 `dsh web`。插件提供三个入口：
 
