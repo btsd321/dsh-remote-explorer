@@ -59,7 +59,7 @@ pnpm run build:plugin && dsh plugin --profile web add /path/to/repo
 装完重启 `dsh web`。插件提供三个入口：
 
 - **左导航「远程 SSH 会话」全局面板**：选主机、连接（桌面端单按钮弹整窗浮动桌面 webview——打开即隐藏主桌面、远程 web 界面铺满整窗、返回/关闭/停止走远端侧栏状态 pill；浏览器端当前标签切入 / 新标签双入口）、断开、远端插件管理、实时进度日志；远端窗口侧栏有状态 pill，可返回管理页或关闭/停止连接
-- **slash 命令** `/remote-ssh`：`hosts | connect <别名> [远端目录] | status | disconnect <别名|会话id> [--keep-remote]`
+- **slash 命令** `/remote-explorer`：`hosts | connect <别名> [远端目录] | status | disconnect <别名|会话id> [--keep-remote]`
 - **agent 工具** `remote_hosts_list / remote_connect / remote_status / remote_kill`（受 dsh 的工具审批门槛约束）
 
 插件与 CLI 共享同一套会话编排与远端落盘（`~/.dsh-remote-explorer/btsd321/`），会话表互通：`dsh-remote-explorer status` 能看到插件维持的会话，插件面板也能看到 CLI 维持的会话（标记「外部」只读）。两点差异：**会话生命周期挂在宿主 dsh 进程上**——dsh 退出默认连远端一起停（profile patch 里 `keepRemoteOnDispose: true` 可保留）；LLM key 取自启动 dsh 的进程环境。详见[使用指南](docs/usage-cn.md)。
