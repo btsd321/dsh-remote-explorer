@@ -484,10 +484,10 @@ Restart `dsh web` after installing (dsh contract: package replacement requires a
 **Slash command** (chat composer):
 
 ```
-/remote-ssh hosts                             list ssh config hosts
-/remote-ssh connect <alias> [remote-dir]      start connecting in the background (returns immediately)
-/remote-ssh status                            session list and states
-/remote-ssh disconnect <alias|session-id> [--keep-remote]
+/remote-explorer hosts                             list ssh config hosts
+/remote-explorer connect <alias> [remote-dir]      start connecting in the background (returns immediately)
+/remote-explorer status                            session list and states
+/remote-explorer disconnect <alias|session-id> [--keep-remote]
 ```
 
 **Agent tools** (callable by the model, behind dsh's regular tool-approval gate): `remote_hosts_list`, `remote_connect`, `remote_status`, `remote_kill`. All non-blocking: connect returns the session id immediately and the model polls status for progress. **Tools never accept a password parameter** — hosts needing password auth go through the panel or the CLI.
