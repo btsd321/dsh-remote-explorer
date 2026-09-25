@@ -54,7 +54,7 @@ dsh plugin --profile web add github:btsd321/dsh-remote-explorer
 pnpm run build:plugin && dsh plugin --profile web add /path/to/repo
 ```
 
-> **Note for pnpm 11+ users:** This package ships pre-built plugin artifacts (`lib/`) in the repository and has no `prepare` script, so git-hosted installation works out of the box without configuring `allowBuilds`. If you install from a local checkout, remember to run `pnpm run build:plugin` before adding.
+> **Note for pnpm 11.7+ users (build-script approval gate):** pnpm 11.7 treats *undecided* dependency build scripts as a hard failure, and this package's dependency tree carries three (`cpu-features`, `esbuild` via tsx, `ssh2`) — the first `dsh plugin add` fails with `ERR_PNPM_IGNORED_BUILDS` regardless of the install source. None of them are needed at plugin runtime: the artifacts are pre-built (`lib/`, committed) and ssh2 falls back to pure JS. **Recommended:** install through the dsh web GUI's plugin manager page — it offers a built-in approve-and-retry flow. **CLI alternative:** after the failed add, set the three pending `allowBuilds` entries to `false` in `~/.dsh/profiles/web/pnpm-workspace.yaml`, remove the half-committed `dsh-remote-explorer` entry from `dependencies` in `~/.dsh/profiles/web/package.json` (the failed add leaves it there, and a plain retry exits 0 without activating the plugin — a dsh CLI quirk present in 0.1.7-rc.1/rc.2), then re-run the add command.
 
 Restart `dsh web` after installing. The plugin provides three surfaces:
 

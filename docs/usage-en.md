@@ -468,6 +468,8 @@ pnpm exec tsx scripts/dev-plugin.ts --sync   # sync artifacts into the sandbox o
 
 Restart `dsh web` after installing (dsh contract: package replacement requires a process restart to load new code). Uninstall: `dsh plugin --profile web remove dsh-remote-explorer`.
 
+> **pnpm 11.7+ build-script approval gate:** pnpm 11.7 treats *undecided* dependency build scripts as a hard failure, and this package's dependency tree carries three (`cpu-features`, `esbuild` via tsx, `ssh2`) — the first `dsh plugin add` fails with `ERR_PNPM_IGNORED_BUILDS` regardless of the install source. None are needed at plugin runtime (artifacts pre-built; ssh2 falls back to pure JS). **Prefer installing through the dsh web GUI's plugin manager page** (built-in approve-and-retry); the CLI workaround is in [Troubleshooting](#troubleshooting).
+
 ### The three surfaces
 
 **Left navigation "Remote SSH Sessions"** (global panel, level with the "Plugins" button; moved out of Settings in 0.6.x — Settings holds preferences, workflow panels get their own surface):
@@ -541,7 +543,8 @@ The session table (`~/.dsh/remote-sessions.json`) is shared both ways: the panel
 
 ### Troubleshooting
 
-- **Global panel missing after install**: make sure dsh was restarted and look for the "Remote SSH Sessions" button in the left navigation; `curl http://127.0.0.1:<port>/api/dsh-remote-explorer/ping` without credentials should return **401** (= plugin mounted and route protected), 404 = plugin not active (check `dsh.profile.bundles` in the profile's `package.json`)
+- **Global panel missing after install**: make sure dsh was restarted and look for the "Remote SSH Sessions" button in the left navigation; `curl http://127.0.0.1:<port>/api/dsh-remote-explorer/ping` **with the session cookie** should return **200** — that is the actual proof the route is registered. A credential-less 401 only proves the `/api` auth gate is up (it 401s unknown routes too, so it is not evidence of mounting); still 404 with the cookie = plugin not active (check `dsh.profile.bundles` in the profile's `package.json`)
+- **`add` fails with ERR_PNPM_IGNORED_BUILDS (pnpm 11.7+)**: three build scripts await a decision (`cpu-features`/`esbuild`/`ssh2`), none needed at plugin runtime. Fix: ① edit `~/.dsh/profiles/web/pnpm-workspace.yaml` and set the three pending `allowBuilds` entries to `false`; ② remove the half-committed `dsh-remote-explorer` entry from `dependencies` in `~/.dsh/profiles/web/package.json` (the failed add leaves it there, and a plain retry exits 0 without activating the plugin — a dsh CLI quirk present in 0.1.7-rc.1/rc.2); ③ re-run the add. Or simply install through the dsh web GUI's plugin manager page (built-in approve-and-retry)
 - **pnpm not found (exit 127)**: `npm i -g pnpm` (only needed for local `dsh plugin add/remove`; the remote store uses the pnpm provisioning installs on the remote)
 - **Peer dependency warnings**: expected under `autoInstallPeers: false`; at runtime peers resolve through the profile's installation fallback links to the host's copies — harmless
 - **Connect stuck in provisioning**: watch the panel log; a first provisioning downloads Node and dsh (minutes) — run `doctor` to pre-check the host

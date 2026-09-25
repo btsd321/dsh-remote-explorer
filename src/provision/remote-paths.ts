@@ -117,7 +117,7 @@ export interface RemotePaths {
 
   /**
    * 某 dsh 版本的安装目录。
-   * @param version - dsh 版本号，如 `0.1.7-rc.1`
+   * @param version - dsh 版本号，如 `0.1.7-rc.2`
    */
   dshDir(version: string): string;
 

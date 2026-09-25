@@ -10,7 +10,7 @@
  * 三个必须显式处理的点（1、2 为 P0 实测，3 为隔离要求）：
  *
  * 1. **版本号必须显式指定。** `@deepseek-ai/dsh` 的 dist-tags 是
- *    `latest: 0.1.5-rc.2`、`rc: 0.1.7-rc.1`——装 `latest` 会拿到比
+ *    `latest: 0.1.5-rc.2`、`rc: 0.1.7-rc.2`——装 `latest` 会拿到比
  *    预期更旧的版本，不能依赖默认标签。
  * 2. **PATH 必须含 node 的 bin 目录。** npm 自身的 shebang 是
  *    `#!/usr/bin/env node`，不加 PATH 直接报 `env: 'node': No such file or directory`。
@@ -61,7 +61,7 @@ export interface DshInstallResult {
 export async function ensureDsh(
   ctx: RemoteContext,
   options: {
-    /** 目标 dsh 版本，如 `0.1.7-rc.1` */
+    /** 目标 dsh 版本，如 `0.1.7-rc.2` */
     version: string;
     /** npm registry baseUrl */
     registryUrl: string;
