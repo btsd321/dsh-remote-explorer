@@ -483,10 +483,10 @@ pnpm exec tsx scripts/dev-plugin.ts --sync   # 只同步产物进沙箱
 **slash 命令**（聊天输入框）：
 
 ```
-/remote-ssh hosts                             列出 ssh config 主机
-/remote-ssh connect <别名> [远端目录]          后台发起连接（立即返回）
-/remote-ssh status                            会话列表与状态
-/remote-ssh disconnect <别名|会话id> [--keep-remote]
+/remote-explorer hosts                             列出 ssh config 主机
+/remote-explorer connect <别名> [远端目录]          后台发起连接（立即返回）
+/remote-explorer status                            会话列表与状态
+/remote-explorer disconnect <别名|会话id> [--keep-remote]
 ```
 
 **agent 工具**（模型可调用，受 dsh 的工具审批门槛约束）：`remote_hosts_list`、`remote_connect`、`remote_status`、`remote_kill`。全部非阻塞语义：connect 立即返回会话 id，模型用 status 轮询进度。**工具永不接受密码参数**——需要密码认证的主机走面板或 CLI。
