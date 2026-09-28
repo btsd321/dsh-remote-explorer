@@ -13,8 +13,8 @@
  *
  * 命名纪律（scripts/check-plugin.ts 强制）：命令名必须匹配
  * /^[a-z][a-z0-9_-]*$/——非法字符会让整个 dsh 启动失败（参考插件踩过：
- * 带点号的命令名掀翻了 Desktop）。`remote` 与内置命令（compact/feedback/goal）
- * 不冲突；同时保留 `remote-ssh` 作为别名指向同一处理器，兼容旧用法。
+ * 带点号的命令名掀翻了 Desktop）。`remote-explorer` 与内置命令（compact/feedback/goal）
+ * 不冲突。
  *
  * commands 是可选服务（headless 组合可能没有）：ctx.get 取不到就静默跳过，
  * 绝不属性直取——那会在缺服务的组合里直接抛错。
@@ -29,9 +29,7 @@ import { toErrorMessage } from '../util/errors.js';
 import { SessionSupervisor, SupervisorError, type SessionSnapshot } from './supervisor.js';
 
 /**
- * 注册 /remote 命令及 /remote-ssh 别名。
- *
- * cordis 不支持命令别名机制，因此注册两个命令指向同一处理器。
+ * 注册 /remote-explorer 命令。
  *
  * @param ctx - 插件上下文
  * @param supervisor - 会话监督器
@@ -41,7 +39,6 @@ export function registerCommands(ctx: Context, supervisor: SessionSupervisor): (
   const commands = ctx.get('commands');
   if (commands === undefined) return () => { /* 该组合没有命令服务，跳过 */ };
 
-  // 共享处理器：/remote 与 /remote-ssh 行为完全一致
   const handler = async ({ rawInput }: { rawInput: string }): Promise<{ kind: 'success' | 'error'; text: string }> => {
     const args = rawInput.trim().split(/\s+/).filter(part => part !== '');
     const action = args[0] ?? 'help';
@@ -66,17 +63,9 @@ export function registerCommands(ctx: Context, supervisor: SessionSupervisor): (
   };
 
   const disposers = [
-    // 主命令
     commands.register({
-      name: 'remote',
+      name: 'remote-explorer',
       description: '管理远程 dsh 会话：hosts | wsl | connect <别名> [远端目录] | status | disconnect <别名|会话id> [--keep-remote]',
-      input: { hint: '<hosts|wsl|connect|status|disconnect> …' },
-      handler,
-    }),
-    // 向后兼容别名：旧文档与肌肉记忆仍可用 /remote-ssh
-    commands.register({
-      name: 'remote-ssh',
-      description: '/remote 的别名（向后兼容）',
       input: { hint: '<hosts|wsl|connect|status|disconnect> …' },
       handler,
     }),
@@ -88,14 +77,13 @@ export function registerCommands(ctx: Context, supervisor: SessionSupervisor): (
 
 /** 用法文本（无参数或未知子动作时返回） */
 const USAGE = [
-  '/remote — 管理远程 dsh 会话',
+  '/remote-explorer — 管理远程 dsh 会话',
   '  hosts                             列出 ~/.ssh/config 的主机别名',
   '  wsl                               列出本机已安装的 WSL 发行版',
   '  connect <别名> [远端目录]          后台连接并启动远端 dsh（进度看 status）',
   '  status                            会话列表与状态',
   '  disconnect <别名|会话id> [--keep-remote]   断开（默认连远端一起停）',
   '远端目录示例：/home/youruser（Git Bash 里用双斜杠 //home/youruser）',
-  '注：/remote-ssh 是 /remote 的向后兼容别名',
 ].join('\n');
 
 /**

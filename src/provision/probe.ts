@@ -8,12 +8,13 @@
  * + SIGTRAP，但机器有 13G 空闲内存、cgroup 无限制——不是真 OOM，而是 VA 空间与
  * ASLR 交互导致的随机失败。`npm install` 要起几十次 node 子进程，35% 的单次崩溃率
  * 意味着整装几乎必败，且报错会误导到最后一个失败的包（当时是 koffi）。
- * v24.11.1 在同一台机器上 0/60 失败，故决策锁定 v24 系。
+ * v24.11.1 在同一台机器上 0/60 失败，故决策锁定 v24 系（默认 v24.21.0，Node 24 LTS）。
  *
  * 结论：装完 Node 必须自检，不合格就换版本，别等 npm install 跑一半再回溯。
  */
 
 import { RemoteError } from '../util/errors.js';
+import { formatBytes } from '../util/format.js';
 import { quote } from '../util/shell-quote.js';
 import { BASE_DIR_NAME } from './remote-paths.js';
 import type { RemotePlatform, RemoteTransport } from '../transport/types.js';
@@ -34,7 +35,7 @@ export interface RemoteTools {
 export interface InstalledRuntime {
   /** 绝对路径 */
   path: string;
-  /** 版本号（如 v24.11.1 或 0.1.7-rc.1） */
+  /** 版本号（如 v24.21.0 或 0.1.7-rc.2） */
   version: string;
 }
 
@@ -294,14 +295,4 @@ function hasTool(output: string, name: string): boolean {
   return collect(output, 'TOOL=').includes(name);
 }
 
-/**
- * 格式化字节数为人类可读文本。
- *
- * @param bytes - 字节数
- * @returns 如 "1.4 GB"
- */
-function formatBytes(bytes: number): string {
-  const gb = bytes / 1_000_000_000;
-  if (gb >= 1) return `${gb.toFixed(1)} GB`;
-  return `${Math.round(bytes / 1_000_000)} MB`;
-}
+

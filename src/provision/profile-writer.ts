@@ -23,18 +23,15 @@
 import { RemoteError } from '../util/errors.js';
 import { quote } from '../util/shell-quote.js';
 import { writeRemoteTextFile } from '../transport/write-text.js';
-import type { RemotePaths } from './remote-paths.js';
-import type { RemoteTransport } from '../transport/types.js';
-
-/** 会话内使用的 profile 名 */
-export const SESSION_PROFILE_NAME = 'remote';
+import type { RemoteContext } from './remote-context.js';
 
 /**
- * 初始化 profile 用的内置模板名。
+ * 会话内使用的 profile 名。
  *
- * 用 `web` 因为我们要的正是浏览器 UI 那套组合。
+ * 与 dsh 官方模板 `web` 对齐——dsh 启动时 `--profile web` 在
+ * `$DSH_HOME/profiles/web/` 找到 symlink，指向主机级共享 profile。
  */
-const TEMPLATE_PROFILE = 'web';
+export const SESSION_PROFILE_NAME = 'web';
 
 /**
  * profile 初始化超时（毫秒）。
@@ -69,15 +66,13 @@ export interface PatchEntry {
  * 幂等：profile 已存在则跳过初始化，但 patch 文件每次都重写——
  * 端口与令牌每次会话都可能变。
  *
- * @param transport - 已连接的传输
- * @param paths - 远端路径集合
+ * @param ctx - 远端执行上下文
  * @param options - 选项
  * @returns 准备结果
  * @throws RemoteError('EXEC_FAILED') 初始化失败
  */
 export async function prepareSessionProfile(
-  transport: RemoteTransport,
-  paths: RemotePaths,
+  ctx: RemoteContext,
   options: {
     /** 会话 id */
     sessionId: string;
@@ -94,6 +89,7 @@ export async function prepareSessionProfile(
   },
 ): Promise<ProfileResult> {
   const { sessionId, dshBin, nodeBinDir, signal } = options;
+  const { transport, paths } = ctx;
   const dshHome = paths.sessionHome(sessionId);
   const profileDir = paths.sessionProfile(sessionId);
   const runtimeDir = paths.sessionRuntime(sessionId);
@@ -103,29 +99,33 @@ export async function prepareSessionProfile(
     ...(signal ? { signal } : {}),
   });
 
-  // 2. profile 是否已存在。判据是 package.json——它承载 dsh.profile 清单，
-  //    没有它 dsh 不认这个目录是 profile
-  const marker = `${profileDir}/package.json`;
-  const check = await transport.exec(
-    `test -f ${quote(marker)} && echo EXISTS || true`,
+  // 2. 确保 host profile 已初始化（首次连接时用 dsh --dump-config 初始化），
+  //    然后创建 session profile → host profile 的 symlink。
+  const hostProfileDir = paths.hostProfileDir(SESSION_PROFILE_NAME);
+  const hostMarker = `${hostProfileDir}/package.json`;
+  const hostCheck = await transport.exec(
+    `test -f ${quote(hostMarker)} && echo EXISTS || true`,
     { allowNonZeroExit: true, ...(signal ? { signal } : {}) },
   );
-  const reused = check.stdout.includes('EXISTS');
+  const hostExists = hostCheck.stdout.includes('EXISTS');
 
-  if (!reused) {
-    options.onProgress?.('初始化会话 profile');
+  if (!hostExists) {
+    options.onProgress?.('初始化主机级 profile');
     // 用 --dump-config 触发初始化而不真正启动：它会建好 profile 目录后打印
-    // 组合结果并退出，是最轻的初始化手段（P0 验证可用）
+    // 组合结果并退出，是最轻的初始化手段。
+    // DSH_HOME 指向 base（不是 session），让 dsh 在 base/profiles/web/ 下创建 profile。
+    // 不带 --from-default-profile：dsh 0.1.5-rc.3 起内置 profile 禁止作为
+    // from-default-profile 目标（"shipped and cannot be a custom profile
+    // target"），纯 --profile web 即按内置模板初始化（0.1.7-rc.1/rc.2 实测）
     const init = [
       quote(dshBin),
       '--profile', quote(SESSION_PROFILE_NAME),
-      '--from-default-profile', quote(TEMPLATE_PROFILE),
       '--dump-config',
     ].join(' ');
 
     try {
       await transport.exec(`${init} >/dev/null`, {
-        env: { DSH_HOME: dshHome },
+        env: { DSH_HOME: paths.base },
         pathPrefix: nodeBinDir,
         timeoutMs: INIT_TIMEOUT_MS,
         ...(signal ? { signal } : {}),
@@ -133,24 +133,42 @@ export async function prepareSessionProfile(
     } catch (error) {
       throw new RemoteError(
         'EXEC_FAILED',
-        `在主机 ${transport.hostAlias} 上初始化会话 profile 失败（DSH_HOME=${dshHome}）`,
+        `在主机 ${transport.hostAlias} 上初始化主机级 profile 失败`,
         { cause: error, hostAlias: transport.hostAlias },
       );
     }
 
-    // 初始化后确认 profile 真的建出来了——dump-config 成功但目录没建，
-    // 说明 dsh 的 profile 语义与预期不符，必须立刻暴露而不是等启动时才失败
     const verify = await transport.exec(
-      `test -f ${quote(marker)} && echo EXISTS || true`,
+      `test -f ${quote(hostMarker)} && echo EXISTS || true`,
       { allowNonZeroExit: true, ...(signal ? { signal } : {}) },
     );
     if (!verify.stdout.includes('EXISTS')) {
       throw new RemoteError(
         'EXEC_FAILED',
-        `初始化后主机 ${transport.hostAlias} 上仍未生成 profile：${marker}`,
+        `初始化后主机 ${transport.hostAlias} 上仍未生成 host profile：${hostMarker}`,
         { hostAlias: transport.hostAlias },
       );
     }
+  }
+
+  // 3. session profile → host profile 的 symlink（幂等）
+  //    dsh 启动时 --profile web 在 $DSH_HOME/profiles/web/ 找到此 symlink
+  const sessionMarker = `${profileDir}/package.json`;
+  const sessionCheck = await transport.exec(
+    `test -L ${quote(profileDir)} && echo SYMLINK || test -f ${quote(sessionMarker)} && echo EXISTS || true`,
+    { allowNonZeroExit: true, ...(signal ? { signal } : {}) },
+  );
+  const reused = sessionCheck.stdout.includes('SYMLINK') || sessionCheck.stdout.includes('EXISTS');
+
+  if (!sessionCheck.stdout.includes('SYMLINK')) {
+    // 老会话遗留的真实 profile 目录或不存在 → 替换为 symlink
+    const parentDir = profileDir.substring(0, profileDir.lastIndexOf('/'));
+    const linkScript = [
+      `mkdir -p ${quote(parentDir)}`,
+      `[ -d ${quote(profileDir)} ] && rm -rf ${quote(profileDir)}`,
+      `ln -sfn ${quote(hostProfileDir)} ${quote(profileDir)}`,
+    ].join('\n');
+    await transport.exec(linkScript, { allowNonZeroExit: true, ...(signal ? { signal } : {}) });
   }
 
   // 3. 写 patch 文件（每次重写：端口与令牌每次会话都可能变）。

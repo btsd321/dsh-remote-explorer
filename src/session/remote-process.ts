@@ -26,7 +26,7 @@ import { createLogger } from '../util/logger.js';
 import { getWslExePath } from '../hosts/wsl-distro-parser.js';
 import { isRemotePortListening } from '../tunnel/port-allocator.js';
 import { buildStartCommand } from '../provision/profile-writer.js';
-import type { RemotePaths } from '../provision/remote-paths.js';
+import type { RemoteContext } from '../provision/remote-context.js';
 import type { RemoteTransport } from '../transport/types.js';
 
 const log = createLogger('remote-process');
@@ -62,15 +62,13 @@ export interface RemoteProcessInfo {
 /**
  * 启动远端 dsh 并等待其就绪。
  *
- * @param transport - 已连接的传输
- * @param paths - 远端路径集合
+ * @param ctx - 远端执行上下文
  * @param options - 启动参数
  * @returns 进程信息（含令牌）
  * @throws RemoteError('EXEC_FAILED') 启动失败或超时未就绪
  */
 export async function startRemoteDsh(
-  transport: RemoteTransport,
-  paths: RemotePaths,
+  ctx: RemoteContext,
   options: {
     /** 会话 id */
     sessionId: string;
@@ -98,6 +96,7 @@ export async function startRemoteDsh(
     signal?: AbortSignal;
   },
 ): Promise<RemoteProcessInfo> {
+  const { transport, paths } = ctx;
   const { sessionId, port, signal } = options;
   const logFile = paths.sessionLogFile(sessionId);
   const pidFile = paths.sessionPidFile(sessionId);
@@ -258,18 +257,17 @@ export async function startRemoteDsh(
  * 判据是「pid 存活 + 端口在监听 + 日志里有令牌」三者齐全。缺少免认证 HTTP
  * 探活端点，这是目前能做到的最强判断（见文件头第 4 点）。
  *
- * @param transport - 已连接的传输
- * @param paths - 远端路径集合
+ * @param ctx - 远端执行上下文
  * @param sessionId - 会话 id
  * @param signal - 取消信号
  * @returns 可用则返回进程信息，否则 undefined
  */
 export async function probeExistingSession(
-  transport: RemoteTransport,
-  paths: RemotePaths,
+  ctx: RemoteContext,
   sessionId: string,
   signal?: AbortSignal,
 ): Promise<RemoteProcessInfo | undefined> {
+  const { transport, paths } = ctx;
   const pidFile = paths.sessionPidFile(sessionId);
   const logFile = paths.sessionLogFile(sessionId);
 
@@ -296,14 +294,12 @@ export async function probeExistingSession(
  * 优先用 pid 文件；pid 文件缺失或已失效时按监听端口定位。
  * **绝不使用 `pkill -f`**——见文件头第 3 点。
  *
- * @param transport - 已连接的传输
- * @param paths - 远端路径集合
+ * @param ctx - 远端执行上下文
  * @param options - 选项
  * @returns 是否确实停止了一个进程
  */
 export async function stopRemoteDsh(
-  transport: RemoteTransport,
-  paths: RemotePaths,
+  ctx: RemoteContext,
   options: {
     /** 会话 id */
     sessionId: string;
@@ -313,6 +309,7 @@ export async function stopRemoteDsh(
     signal?: AbortSignal;
   },
 ): Promise<boolean> {
+  const { transport, paths } = ctx;
   const { sessionId, signal } = options;
   const pidFile = paths.sessionPidFile(sessionId);
 

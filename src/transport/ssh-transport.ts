@@ -33,14 +33,18 @@ import {
 import { RemoteError, toErrorMessage } from '../util/errors.js';
 import { quote } from '../util/shell-quote.js';
 import { ChannelPool, type ChannelLease, type ChannelPoolConfig } from './channel-pool.js';
+import {
+  COMMAND_PREVIEW_LEN,
+  STDERR_PREVIEW_LEN,
+  buildCommandWithEnv,
+  parsePlatformOutput,
+} from './platform.js';
 import type {
   ExecOptions,
   ExecResult,
   FileTransfer,
-  RemoteArch,
   RemoteChannel,
   RemoteFileOptions,
-  RemoteOs,
   RemotePlatform,
   RemoteTransport,
   ReverseConnection,
@@ -152,26 +156,6 @@ export function isAuthFailure(error: unknown): boolean {
 
 /** 反向转发时远端必须监听的地址——绝不能对外暴露 */
 const REVERSE_BIND_ADDR = '127.0.0.1';
-
-/**
- * `uname -m` 输出到 Node 架构命名的映射。
- *
- * 用 Record 收口，新增架构时编译器会提示补齐分支。
- */
-const ARCH_MAP: Record<string, RemoteArch> = {
-  aarch64: 'arm64',
-  arm64: 'arm64',
-  x86_64: 'x64',
-  amd64: 'x64',
-  armv7l: 'armv7l',
-  armv7: 'armv7l',
-};
-
-/** `uname -s` 输出到远端 OS 的映射 */
-const OS_MAP: Record<string, RemoteOs> = {
-  Linux: 'linux',
-  Darwin: 'darwin',
-};
 
 /**
  * 基于 ssh2 的远端传输。
@@ -979,25 +963,18 @@ export class SshTransport implements RemoteTransport {
     const result = await this.exec('uname -s && uname -m', {
       ...(signal ? { signal } : {}),
     });
-    const [rawOs = '', rawArch = ''] = result.stdout.trim().split('\n').map(line => line.trim());
-    const os = OS_MAP[rawOs];
-    const arch = ARCH_MAP[rawArch];
-    if (!os) {
-      throw new RemoteError(
-        'PLATFORM_UNSUPPORTED',
-        `主机 ${this.hostAlias} 的系统 ${rawOs || '(空)'} 不受支持；远端只支持 Linux 与 macOS`,
-        { hostAlias: this.hostAlias },
-      );
+    try {
+      return parsePlatformOutput(result.stdout, `主机 ${this.hostAlias}`);
+    } catch (error) {
+      if (error instanceof RemoteError) {
+        // 补充 hostAlias 上下文（parsePlatformOutput 不感知传输层实例）
+        throw new RemoteError(error.code, error.message, {
+          cause: error.cause,
+          hostAlias: this.hostAlias,
+        });
+      }
+      throw error;
     }
-    if (!arch) {
-      throw new RemoteError(
-        'PLATFORM_UNSUPPORTED',
-        `主机 ${this.hostAlias} 的架构 ${rawArch || '(空)'} 不受支持；`
-          + `支持 ${Object.keys(ARCH_MAP).join('、')}`,
-        { hostAlias: this.hostAlias },
-      );
-    }
-    return { os, arch, rawOs, rawArch };
   }
 
   /**
@@ -1041,7 +1018,7 @@ export class SshTransport implements RemoteTransport {
         finish({
           error: new RemoteError(
             'EXEC_FAILED',
-            `主机 ${this.hostAlias} 上的命令超时（${timeoutMs}ms）：${command.slice(0, 120)}`,
+            `主机 ${this.hostAlias} 上的命令超时（${timeoutMs}ms）：${command.slice(0, COMMAND_PREVIEW_LEN)}`,
             { hostAlias: this.hostAlias },
           ),
         });
@@ -1089,7 +1066,7 @@ export class SshTransport implements RemoteTransport {
       throw new RemoteError(
         'EXEC_FAILED',
         `主机 ${this.hostAlias} 上的命令返回 ${result.exitCode ?? `信号 ${result.signal}`}：`
-          + `${command.slice(0, 120)}\n${result.stderr.trim().slice(0, 400)}`,
+          + `${command.slice(0, COMMAND_PREVIEW_LEN)}\n${result.stderr.trim().slice(0, STDERR_PREVIEW_LEN)}`,
         { hostAlias: this.hostAlias },
       );
     }
@@ -1097,10 +1074,7 @@ export class SshTransport implements RemoteTransport {
   }
 
   /**
-   * 给命令加上 `env K=V` 前缀。
-   *
-   * 不用 ssh2 的 `env` 选项：那要求服务端 `AcceptEnv` 放行，
-   * 而多数 sshd 默认只允许 `LANG`/`LC_*`，静默丢弃其余变量。
+   * 给命令加上 `env K=V` 前缀（委托给共享模块 {@link buildCommandWithEnv}）。
    *
    * @param command - 原始命令
    * @param env - 环境变量；值会被完整转义，不做变量展开
@@ -1112,20 +1086,7 @@ export class SshTransport implements RemoteTransport {
     env?: Record<string, string>,
     pathPrefix?: string,
   ): string {
-    const assignments: string[] = [];
-
-    if (pathPrefix !== undefined && pathPrefix.length > 0) {
-      // `"$PATH"` 必须留在引号外由外层 shell 展开——把它塞进 quote() 会
-      // 变成字面量，远端 PATH 就只剩这一个目录，连 rm/mkdir 都找不到。
-      // 目录本身仍然转义，防注入。
-      assignments.push(`PATH=${quote(pathPrefix)}:"$PATH"`);
-    }
-    for (const [key, value] of Object.entries(env ?? {})) {
-      assignments.push(`${key}=${quote(value)}`);
-    }
-
-    if (assignments.length === 0) return command;
-    return `env ${assignments.join(' ')} ${command}`;
+    return buildCommandWithEnv(command, env, pathPrefix);
   }
 
   /**

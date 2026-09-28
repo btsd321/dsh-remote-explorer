@@ -5,8 +5,10 @@
  *              认证 401），**不注册裸 webServer 路由**——裸路由无任何鉴权，
  *              宿主若配 0.0.0.0 会把会话元数据与写操作暴露到全网卡。
  *
- * 冒烟判读：不带凭据 curl `/api/dsh-remote-explorer/ping` 得 **401** = 路由已
- * 注册且受保护；404 = 插件没挂上或 connection 服务缺席。
+ * 冒烟判读（实测修正）：不带凭据 curl `/api/dsh-remote-explorer/ping` 得 401
+ * 只证明 /api 鉴权门在工作——对未注册路由同样 401，不能当挂载证据；带会话
+ * Cookie 得 **200** 才是路由已注册的证明，带 Cookie 仍 404 = 插件没挂上
+ * 或 connection 服务缺席。
  *
  * connection 是反应式注入（ctx.inject）：它可能晚于本插件到达，绝不让面板
  * 路由阻塞插件激活；纯 headless 组合没有该服务，回调永不执行，自然降级。
@@ -22,6 +24,7 @@ import { listHosts, refreshConfig } from '../hosts/ssh-config-parser.js';
 import { listWslDistros, refreshWslCache } from '../hosts/wsl-distro-parser.js';
 import { toErrorMessage } from '../util/errors.js';
 import { SessionSupervisor, SupervisorError, type ConnectRequest, type SessionSnapshot } from './supervisor.js';
+import { readHostEnv, validateHostEnv, writeHostEnv } from './host-env-store.js';
 
 /**
  * 构建期注入的包版本号（scripts/build-plugin.ts 的 esbuild define）。
@@ -170,6 +173,52 @@ function buildRoutes(supervisor: SessionSupervisor): RouteDef[] {
             return Response.json({ plugins: await supervisor.toggleRemotePlugin(session, name, enabled) });
           }
           return Response.json({ code: 'bad_usage', message: `未知动作 ${action}` }, { status: 400 });
+        } catch (error) {
+          return supervisorError(error);
+        }
+      },
+    },
+    {
+      // per-host 环境变量（面板齿轮配置，本机 ~/.dsh/remote-host-env.json）：
+      // GET ?hostAlias=X 读回；POST {hostAlias, env} 整组保存。
+      // 值可能含代理认证信息——读写两侧都只打键名不打值
+      path: `${ROUTE_PREFIX}/host-env`,
+      methods: ['GET', 'POST'],
+      fetch: async (request) => {
+        try {
+          if (request.method === 'GET') {
+            const hostAlias = new URL(request.url).searchParams.get('hostAlias') ?? '';
+            if (hostAlias === '') {
+              return Response.json({ code: 'bad_usage', message: '缺少 hostAlias 参数' }, { status: 400 });
+            }
+            return Response.json({ env: readHostEnv(hostAlias) });
+          }
+          const body = await readJsonBody(request);
+          const hostAlias = stringField(body, 'hostAlias');
+          if (hostAlias === undefined) {
+            return Response.json({ code: 'bad_usage', message: '缺少 hostAlias 字段' }, { status: 400 });
+          }
+          // 形状收窄：env 必须是对象且键值都是 string（语义校验交给 validateHostEnv）
+          const envRaw: unknown = body.env;
+          if (typeof envRaw !== 'object' || envRaw === null || Array.isArray(envRaw)) {
+            return Response.json({ code: 'bad_usage', message: 'env 必须是对象' }, { status: 400 });
+          }
+          const env: Record<string, string> = {};
+          for (const [key, value] of Object.entries(envRaw)) {
+            if (typeof value !== 'string') {
+              return Response.json(
+                { code: 'bad_usage', message: `env['${key}'] 的值必须是字符串` },
+                { status: 400 },
+              );
+            }
+            env[key] = value;
+          }
+          const validation = validateHostEnv(env);
+          if (validation !== undefined) {
+            return Response.json({ code: 'bad_usage', message: validation }, { status: 400 });
+          }
+          writeHostEnv(hostAlias, env);
+          return Response.json({ ok: true });
         } catch (error) {
           return supervisorError(error);
         }

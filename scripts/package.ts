@@ -99,7 +99,7 @@ interface Artifact {
  *
  * 官方命名：win32 → `node-vX-win-x64.zip`；其余 → `node-vX-linux-arm64.tar.gz`。
  *
- * @param version - Node 版本（形如 v24.11.1）
+ * @param version - Node 版本（形如 v24.21.0）
  * @param target - 目标平台
  * @returns 文件名
  */

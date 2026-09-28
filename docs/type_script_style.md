@@ -249,7 +249,7 @@ get currentTransport(): RemoteTransport | undefined {
 
 - **插件 Config 用 schemastery**（`@deepseek-ai/schemastery`，zod 风格 API；dsh loader 拒绝真 zod），全字段给 default（3.18 无 enum/optional API）
 - **跨进程边界的其余数据**（远端命令输出、manifest JSON、路由请求体）用校验函数与容错解析：`validateRemoteCwd` 拒绝 MSYS 改写路径、manifest `JSON.parse` 失败回落空清单并说明原因——解析失败要么明确报错要么明确降级，不静默吞掉
-- **形状同步靠 `import type`**：面板/路由消费的类型从 `supervisor.ts` / `session-manager.ts` 类型导入，编译期强制同步，不手写第二份
+- **形状同步靠 `import type`**：面板/路由消费的类型从 `supervisor.ts` / `remote-plugin-store.ts` / `session-manager.ts` 类型导入，编译期强制同步，不手写第二份
 
 ---
 

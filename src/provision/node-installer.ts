@@ -6,7 +6,8 @@
  * 版本策略（决策 10）：默认锁定 v24 系。P0 实测 v22.23.2 在 aarch64 上起进程
  * 崩溃率 35%（V8 初始化 isolate 随机失败，报 OOM 但机器内存充足），
  * 而 v24.11.1 在同一台机器上 0/60 失败。dsh 的 engines 是
- * `^22.19.0 || >=24.0.0`，v24 在范围内。
+ * `^22.19.0 || >=24.0.0`，v24 在范围内。默认跟随 Node 24 LTS（Krypton）
+ * 最新版，当前为 v24.21.0。
  *
  * 目录隔离：每个版本装到 `~/.dsh-remote-explorer/btsd321/node/<版本>/`，多版本并存。
  * 升级时不覆盖旧版本，避免「运行中的进程占着文件」这类故障。
@@ -16,16 +17,17 @@ import { RemoteError } from '../util/errors.js';
 import { quote } from '../util/shell-quote.js';
 import { INSTALL_LOCK_WAIT_SECONDS, lockInstallCommand } from './install-lock.js';
 import { assertNodeStable, checkNodeStability } from './probe.js';
+import type { RemoteContext } from './remote-context.js';
 import type { RemotePaths } from './remote-paths.js';
 import type { RemoteArch, RemoteOs, RemoteTransport } from '../transport/types.js';
 
 /**
  * 默认安装的 Node 版本。
  *
- * P0 在 aarch64 上实测 0/60 失败，是目前已验证稳定的版本。
- * 用户可用 `--node-version` 覆盖。
+ * 跟随 Node 24 LTS（Krypton）最新版。P0 实测 v24.11.1 在 aarch64 上 0/60
+ * 失败，v24 系已验证稳定。用户可用 `--node-version` 覆盖。
  */
-export const DEFAULT_NODE_VERSION = 'v24.11.1';
+export const DEFAULT_NODE_VERSION = 'v24.21.0';
 
 /** 下载 tarball 的超时（毫秒）。P0 实测 29M 用了 2.9s，给足余量应对慢链路 */
 const DOWNLOAD_TIMEOUT_MS = 600_000;
@@ -65,16 +67,14 @@ export interface NodeInstallResult {
  * 未装则下载安装。两种路径都会做稳定性自检——复用的也要检，
  * 因为同一个二进制在不同时刻的表现可能不同（实测崩溃是随机的）。
  *
- * @param transport - 已连接的传输
- * @param paths - 远端路径集合
+ * @param ctx - 远端执行上下文
  * @param options - 安装选项
  * @returns 安装结果
  * @throws RemoteError('NODE_UNSTABLE') 稳定性自检不合格
  * @throws RemoteError('EXEC_FAILED') 下载或解包失败
  */
 export async function ensureNode(
-  transport: RemoteTransport,
-  paths: RemotePaths,
+  ctx: RemoteContext,
   options: {
     /** 目标版本，含 v 前缀 */
     version: string;
@@ -89,6 +89,7 @@ export async function ensureNode(
   },
 ): Promise<NodeInstallResult> {
   const { version, mirrorBaseUrl, signal } = options;
+  const { transport, paths } = ctx;
   const nodeBin = paths.nodeBin(version);
   const binDir = paths.nodeBinDir(version);
 
@@ -114,7 +115,7 @@ export async function ensureNode(
       );
     }
     options.onProgress?.(`下载 Node ${version}`);
-    await downloadAndExtract(transport, paths, version, mirrorBaseUrl, signal);
+    await downloadAndExtract(ctx, version, mirrorBaseUrl, signal);
 
     // 装完立即验证版本，避免镜像给错文件时把问题留到后面
     const verify = await transport.exec(`${quote(nodeBin)} -v`, {
@@ -143,20 +144,19 @@ export async function ensureNode(
 /**
  * 下载并解包 Node 发行版。
  *
- * @param transport - 已连接的传输
- * @param paths - 远端路径集合
+ * @param ctx - 远端执行上下文
  * @param version - 目标版本
  * @param mirrorBaseUrl - 镜像 baseUrl
  * @param signal - 取消信号
  * @throws RemoteError('PLATFORM_UNSUPPORTED') 平台无对应发行版
  */
 async function downloadAndExtract(
-  transport: RemoteTransport,
-  paths: RemotePaths,
+  ctx: RemoteContext,
   version: string,
   mirrorBaseUrl: string,
   signal?: AbortSignal,
 ): Promise<void> {
+  const { transport, paths } = ctx;
   const platform = transport.platform;
   const osSegment = OS_SEGMENT[platform.os];
   const archSegment = ARCH_SEGMENT[platform.arch];

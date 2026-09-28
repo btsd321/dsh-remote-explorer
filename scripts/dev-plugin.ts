@@ -20,12 +20,12 @@
  *   pnpm exec tsx scripts/dev-plugin.ts --smoke    # 构建 → 安装/同步 → 启动 → 探针 → 杀掉（CI 用）
  *   pnpm exec tsx scripts/dev-plugin.ts --sync     # 只把 lib/ 覆盖进沙箱 profile（不启动）
  *   --fresh 清空沙箱重装；--port 默认 50599；--profile 默认 web；
- *   --dsh-version 默认 0.1.7-rc.1；--dsh-bin <路径> 跳过 npx 用本地 dsh；
+ *   --dsh-version 默认 0.1.7-rc.2；--dsh-bin <路径> 跳过 npx 用本地 dsh；
  *   --install-spec <pnpm spec> 换安装源（发布演练：npm pack 的 tgz 绝对路径）
  */
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -44,7 +44,7 @@ const SANDBOX_HOME = join(REPO_ROOT, '.dev-harness', 'home');
 const DEFAULT_PORT = 50_599;
 
 /** 默认 dsh 版本（与本仓库远端引导用的 rc 线一致） */
-const DEFAULT_DSH_VERSION = '0.1.7-rc.1';
+const DEFAULT_DSH_VERSION = '0.1.7-rc.2';
 
 /** 安装步骤超时（首次 npx 要下载整个 dsh 发行包，留足余量） */
 const INSTALL_TIMEOUT_MS = 600_000;
@@ -199,12 +199,87 @@ function copyIfNotSameFile(from: string, to: string): void {
 }
 
 /**
+ * 批准 profile 里 pnpm 留下的待决策构建脚本（占位值 → false）。
+ *
+ * pnpm 11 对「带安装脚本的依赖未决策」报 ERR_PNPM_IGNORED_BUILDS（退出码 1），
+ * 失败后 dsh 把待决策包写进 pnpm-workspace.yaml 的 allowBuilds，值是提示文字
+ * 「set this to true or false」。逐行把占位值改成 false——不引入 YAML 依赖，
+ * 只认这一种精确形态；改不到就返回空列表（外层不再重试）。
+ *
+ * 决策依据：本插件**产物**不依赖任何原生构建——宿主半 bundle 了 ssh2 且以
+ * `.node: empty` loader 放弃原生件（纯 JS 回落是既定设计），esbuild 与
+ * cpu-features 只在 CLI 形态的 tsx 直跑路径上有意义，profile 安装用不到。
+ *
+ * @param options - 沙箱选项
+ * @returns 被批准（false）的包名列表
+ */
+function approvePendingBuilds(options: DevOptions): string[] {
+  const policyPath = join(SANDBOX_HOME, 'profiles', options.profile, 'pnpm-workspace.yaml');
+  let text: string;
+  try {
+    text = readFileSync(policyPath, 'utf8');
+  } catch {
+    return [];
+  }
+  const approved: string[] = [];
+  const lines = text.split('\n').map((line) => {
+    const match = /^(\s*)(.+?): set this to true or false\s*$/.exec(line);
+    if (match === null) return line;
+    approved.push(match[2]?.replaceAll('\'', '').replaceAll('"', '') ?? '');
+    return `${match[1]}${match[2]}: false`;
+  });
+  if (approved.length === 0) return [];
+  writeFileSync(policyPath, lines.join('\n'));
+  return approved;
+}
+
+/**
+ * 撤销 pnpm 失败路径留下的「半提交」安装（依赖已写入 manifest、未激活）。
+ *
+ * dsh CLI 的 add 失败路径不回滚 profile 的 package.json——pnpm 在退出 1 前
+ * 已把依赖写进 manifest，而把包激活进 `dsh.profile.bundles` 的 reconcile
+ * 只在成功路径运行。直接重试时 dsh 按「before 已有该依赖」判旧、跳过激活，
+ * 插件永远进不了组合（实测：重试退出 0 但宿主半路由 404、浏览器半引导图
+ * 缺行）。Web UI 的 installBundle 有 spec 名兜底，CLI 转发路径没有——这里
+ * 撤掉依赖项，让重试成为一次「全新安装」走完整激活。
+ *
+ * @param options - 沙箱选项
+ * @param pkgName - 本包名
+ * @returns 是否撤销了依赖项（false = 本就没有或 manifest 不可读）
+ */
+function rollbackHalfCommittedInstall(options: DevOptions, pkgName: string): boolean {
+  const manifestPath = join(SANDBOX_HOME, 'profiles', options.profile, 'package.json');
+  let text: string;
+  try {
+    text = readFileSync(manifestPath, 'utf8');
+  } catch {
+    return false;
+  }
+  let manifest: Record<string, unknown>;
+  try {
+    manifest = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return false;
+  }
+  const deps = manifest['dependencies'];
+  if (typeof deps !== 'object' || deps === null
+    || !(pkgName in (deps as Record<string, unknown>))) {
+    return false;
+  }
+  const next = { ...manifest, dependencies: { ...(deps as Record<string, unknown>) } };
+  delete (next.dependencies as Record<string, unknown>)[pkgName];
+  writeFileSync(manifestPath, `${JSON.stringify(next, undefined, 2)}\n`);
+  return true;
+}
+
+/**
  * 安装插件进沙箱 profile（dsh plugin add 本地路径）。
  *
  * @param options - 沙箱选项
+ * @param pkgName - 本包名（半提交回滚用）
  * @throws Error 安装失败（含 pnpm 缺失提示）
  */
-async function installPlugin(options: DevOptions): Promise<void> {
+async function installPlugin(options: DevOptions, pkgName: string): Promise<void> {
   // 显式 file: 前缀强制「打包拷贝」语义（尊重 files 字段，产物进 profile 的
   // node_modules）——裸目录路径会被 pnpm 解析成 link:（junction/symlink），
   // Node ESM 按 realpath 解析会让 peer 逃逸沙箱、与真实安装的解析路径不一致。
@@ -214,7 +289,7 @@ async function installPlugin(options: DevOptions): Promise<void> {
     'plugin', '--profile', options.profile, 'add', installSpec,
   ]);
   println(dim(`执行：${spec.command === process.execPath ? 'node npx-cli' : spec.command} ${spec.args.slice(-4).join(' ')}`));
-  const exitCode = await new Promise<number>((resolveExit) => {
+  const runAdd = (): Promise<number> => new Promise<number>((resolveExit) => {
     const child = spawn(spec.command, spec.args, {
       cwd: REPO_ROOT,
       env: { ...process.env, DSH_HOME: SANDBOX_HOME },
@@ -235,6 +310,19 @@ async function installPlugin(options: DevOptions): Promise<void> {
       resolveExit(1);
     });
   });
+  let exitCode = await runAdd();
+  if (exitCode !== 0) {
+    // pnpm 11 构建审批门重试：见 approvePendingBuilds 的决策依据。
+    // dsh CLI 对非 git 源只报 diagnostics 不给指引，这里替开发者走完
+    // 官方 Web UI 的 approve-and-retry 同款流程；半提交回滚见
+    // rollbackHalfCommittedInstall 的注释——不回滚则重试退出 0 也不激活
+    const approved = approvePendingBuilds(options);
+    if (approved.length > 0) {
+      rollbackHalfCommittedInstall(options, pkgName);
+      println(yellow(`pnpm 构建审批门（${approved.join('、')}）：按无需构建批准，回滚半提交安装后重试`));
+      exitCode = await runAdd();
+    }
+  }
   if (exitCode === 124) {
     throw new Error(`安装超时（${INSTALL_TIMEOUT_MS / 1000}s）——首次 npx 下载 dsh 发行包较慢，可重试或用 --dsh-bin 指定本地 dsh`);
   }
@@ -343,31 +431,10 @@ async function bootWeb(options: DevOptions): Promise<BootResult> {
 async function runProbes(options: DevOptions, webUrl: string, pkgName: string): Promise<void> {
   const base = `http://127.0.0.1:${options.port}`;
 
-  // 1. ping 路由：401 = 已注册且受鉴权保护（期望）；404 = 插件没挂上；
-  //    200 = 路由绕过了鉴权通道（安全回归，必须失败）
-  let pingStatus = 0;
-  for (let attempt = 0; attempt < PROBE_RETRIES; attempt += 1) {
-    try {
-      const response = await fetch(`${base}${ROUTE_PREFIX}/ping`);
-      pingStatus = response.status;
-      if (pingStatus !== 404) break;
-    } catch {
-      // webserver 还没就绪，重试
-    }
-    await new Promise<void>((r) => { setTimeout(r, PROBE_INTERVAL_MS); });
-  }
-  if (pingStatus === 401 || pingStatus === 403) {
-    println(green(`✓ ping 路由 ${pingStatus}（已注册且受鉴权保护）`));
-  } else if (pingStatus === 404) {
-    throw new Error('ping 路由 404——插件没挂上：检查 profile 的 dsh.profile.bundles 是否含本包、'
-      + 'cordis.patch.yml 是否被 reconcile 合并、宿主半 bundle 是否加载失败（看上方日志）');
-  } else {
-    throw new Error(`ping 路由返回 ${pingStatus}——期望 401/403（未带凭据）；200 意味着路由绕过了 /api 鉴权通道`);
-  }
-
-  // 2. 首页：带令牌首访是 3xx + set-cookie（令牌换 Cookie 后重定向到干净 /，
-  //    见 dsh connection 的 authorizeIndex；实测状态码是 303）——node fetch
-  //    默认跟随重定向且不保存 cookie，必须手动接管：先拿 cookie，再带 cookie 请求 /
+  // 0. 令牌换 Cookie：带令牌首访是 3xx + set-cookie（令牌换 Cookie 后重定向到
+  //    干净 /，见 dsh connection 的 authorizeIndex；实测状态码是 303）——node
+  //    fetch 默认跟随重定向且不保存 cookie，必须手动接管：先拿 cookie，后续
+  //    探针全部带它
   const exchange = await fetch(webUrl, { redirect: 'manual' });
   const setCookie = exchange.headers.getSetCookie()[0];
   const isRedirect = exchange.status >= 300 && exchange.status < 400;
@@ -377,6 +444,50 @@ async function runProbes(options: DevOptions, webUrl: string, pkgName: string): 
       + '——令牌 URL 无效或 connection 服务异常');
   }
   const cookiePair = setCookie.split(';')[0] ?? '';
+
+  // 1. ping 路由双探针。实测教训：无凭据请求对**未注册**的 /api 路径同样被
+  //    鉴权门拦成 401——无凭据 401 只证明鉴权门在工作，不是注册证据；带
+  //    Cookie 的 200 才是路由真实注册的证明
+  //    a. 无凭据：期望 401/403（鉴权门生效）；200 = 路由绕过鉴权（安全回归）
+  let anonStatus = 0;
+  for (let attempt = 0; attempt < PROBE_RETRIES; attempt += 1) {
+    try {
+      anonStatus = (await fetch(`${base}${ROUTE_PREFIX}/ping`)).status;
+      break;
+    } catch {
+      // webserver 还没就绪，重试
+    }
+    await new Promise<void>((r) => { setTimeout(r, PROBE_INTERVAL_MS); });
+  }
+  if (anonStatus === 200) {
+    throw new Error('ping 路由（无凭据）返回 200——路由绕过了 /api 鉴权通道（安全回归）');
+  }
+  if (anonStatus !== 401 && anonStatus !== 403) {
+    throw new Error(`ping 路由（无凭据）返回 ${anonStatus}——期望 401/403（webserver 或鉴权门异常）`);
+  }
+  println(green(`✓ ping 无凭据 ${anonStatus}（/api 鉴权门生效）`));
+
+  //    b. 带 Cookie：期望 200（路由注册且会话被认可）。路由注册可能略晚于
+  //       webserver 监听，404 时重试；穷尽仍是 404 = 插件没挂上
+  let authedStatus = 0;
+  for (let attempt = 0; attempt < PROBE_RETRIES; attempt += 1) {
+    try {
+      authedStatus = (await fetch(`${base}${ROUTE_PREFIX}/ping`, { headers: { cookie: cookiePair } })).status;
+      if (authedStatus !== 404) break;
+    } catch {
+      // 瞬时网络错误，按未就绪重试
+    }
+    await new Promise<void>((r) => { setTimeout(r, PROBE_INTERVAL_MS); });
+  }
+  if (authedStatus !== 200) {
+    throw new Error(`ping 路由（带 Cookie）返回 ${authedStatus}——期望 200。404 = 插件没挂上：`
+      + '检查 profile 的 dsh.profile.bundles 是否含本包（add 失败后重试会跳过激活，'
+      + '见 installPlugin 的半提交回滚）、宿主半 bundle 是否加载失败（看上方日志）；'
+      + '401/403 = 会话 Cookie 未被认可');
+  }
+  println(green('✓ ping 带 Cookie 200（路由已注册且受鉴权保护）'));
+
+  // 2. 首页（带 Cookie）：引导图必须含本包
   const indexResponse = await fetch(`${base}/`, { headers: { cookie: cookiePair } });
   if (!indexResponse.ok) {
     throw new Error(`首页（带 Cookie）返回 ${indexResponse.status}——会话 Cookie 未被认可`);
@@ -387,23 +498,27 @@ async function runProbes(options: DevOptions, webUrl: string, pkgName: string): 
   }
   println(green('✓ 首页 200，引导图含本包'));
 
-  // 3. client bundle：组合脚本 200 且含本包的 __ModuleLoader__ 注册壳
-  //    HTML 属性里的 & 被转义成 &amp;，取出的 URL 必须还原，否则 rev 参数名
-  //    会变成 "amp;rev"，服务器按无效组合返回 404（实测踩过）
-  const pluginsMatch = /\/plugins\/\?\?[^"'\s]+/.exec(indexHtml);
-  if (pluginsMatch !== null) {
-    const bundleUrl = pluginsMatch[0].replaceAll('&amp;', '&');
-    const bundleResponse = await fetch(`${base}${bundleUrl}`);
+  // 3. client bundle：组合脚本 200 且含本包的 __ModuleLoader__ 注册壳。
+  //    首页有多个组合批次（大应用批 + 含本包的小批），取**含本包**的那条
+  //    URL 验证。HTML 属性里的 & 被转义成 &amp;，取出的 URL 必须还原，否则
+  //    rev 参数名会变成 "amp;rev"，服务器按无效组合返回 404（实测踩过）；
+  //    URL 是文档相对形式（无前导斜杠，引导图/preload 里都是 `plugins/??…`，
+  //    浏览器按文档基准解析）——正则同时容忍两种形态，拼绝对地址时统一补 /
+  const bundleUrls = [...indexHtml.matchAll(/\/?plugins\/\?\?[^"'\s]+/g)]
+    .map(match => match[0].replaceAll('&amp;', '&'));
+  const ownBundleUrl = bundleUrls.find(url => url.includes(`${pkgName}/client.js`));
+  if (ownBundleUrl !== undefined) {
+    const bundleResponse = await fetch(`${base}/${ownBundleUrl.replace(/^\//, '')}`);
     const bundleText = await bundleResponse.text();
     if (!bundleResponse.ok) {
-      throw new Error(`client bundle 返回 ${bundleResponse.status}（${bundleUrl}）`);
+      throw new Error(`client bundle 返回 ${bundleResponse.status}（${ownBundleUrl}）`);
     }
     if (!bundleText.includes(pkgName)) {
       throw new Error('client bundle 里没有本包内容——exports["./client"] 指向的文件缺失或为空');
     }
     println(green('✓ client bundle 200，含本包注册壳'));
   } else {
-    println(yellow('! 首页里没找到 /plugins/?? 组合脚本 URL，跳过 bundle 探针'));
+    println(yellow('! 首页里没找到含本包的 /plugins/?? 组合脚本 URL，跳过 bundle 探针'));
   }
 }
 
@@ -472,13 +587,13 @@ async function main(): Promise<number> {
     if (installed && !options.fresh) {
       // 已装过：pnpm file: 安装是拷贝语义，日常迭代用同步代替重装（快一个数量级）
       if (!syncLibToSandbox(options, pkg.name)) {
-        await installPlugin(options);
+        await installPlugin(options, pkg.name);
       } else {
         println(green('✓ 沙箱已装过本包，同步 lib/ 代替重装（--fresh 可强制重装）'));
       }
     } else {
       println(bold('安装插件进沙箱 profile'));
-      await installPlugin(options);
+      await installPlugin(options, pkg.name);
       println(green('✓ 安装完成'));
     }
   } catch (error) {

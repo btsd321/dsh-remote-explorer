@@ -54,12 +54,12 @@ dsh plugin --profile web add github:btsd321/dsh-remote-explorer
 pnpm run build:plugin && dsh plugin --profile web add /path/to/repo
 ```
 
-> **pnpm 11+ 用户注意：** 本包已将预构建的插件产物（`lib/`）纳入版本控制，且不含 `prepare` 脚本，git-hosted 安装开箱即用，无需配置 `allowBuilds`。从本地 checkout 安装时，请先跑 `pnpm run build:plugin`。
+> **pnpm 11.7+ 用户注意（构建脚本审批门）：** pnpm 11.7 把「带安装脚本的依赖未决策」当致命错误，而本包依赖树里有三个（`cpu-features`、经 tsx 带入的 `esbuild`、`ssh2`）——首次 `dsh plugin add` 会报 `ERR_PNPM_IGNORED_BUILDS` 失败，与安装源无关。插件运行期**不需要**它们的构建产物：产物预构建（`lib/` 已入库），ssh2 回落纯 JS。**推荐做法：** 在 dsh 网页版的插件管理页安装——页面自带「批准并重试」流程。**CLI 做法：** 首次失败后，把 `~/.dsh/profiles/web/pnpm-workspace.yaml` 里三个待决策的 `allowBuilds` 项改成 `false`，再把 `~/.dsh/profiles/web/package.json` 的 `dependencies` 里半提交的 `dsh-remote-explorer` 条目删掉（失败后它会残留在那里，直接重试会退出 0 但插件不激活——dsh CLI 在 0.1.7-rc.1/rc.2 都如此），然后重跑 add 命令。
 
 装完重启 `dsh web`。插件提供三个入口：
 
 - **左导航「远程 SSH 会话」全局面板**：选主机、连接（桌面端单按钮弹整窗浮动桌面 webview——打开即隐藏主桌面、远程 web 界面铺满整窗、返回/关闭/停止走远端侧栏状态 pill；浏览器端当前标签切入 / 新标签双入口）、断开、远端插件管理、实时进度日志；远端窗口侧栏有状态 pill，可返回管理页或关闭/停止连接
-- **slash 命令** `/remote-ssh`：`hosts | connect <别名> [远端目录] | status | disconnect <别名|会话id> [--keep-remote]`
+- **slash 命令** `/remote-explorer`：`hosts | connect <别名> [远端目录] | status | disconnect <别名|会话id> [--keep-remote]`
 - **agent 工具** `remote_hosts_list / remote_connect / remote_status / remote_kill`（受 dsh 的工具审批门槛约束）
 
 插件与 CLI 共享同一套会话编排与远端落盘（`~/.dsh-remote-explorer/btsd321/`），会话表互通：`dsh-remote-explorer status` 能看到插件维持的会话，插件面板也能看到 CLI 维持的会话（标记「外部」只读）。两点差异：**会话生命周期挂在宿主 dsh 进程上**——dsh 退出默认连远端一起停（profile patch 里 `keepRemoteOnDispose: true` 可保留）；LLM key 取自启动 dsh 的进程环境。详见[使用指南](docs/usage-cn.md)。
@@ -119,6 +119,16 @@ pnpm exec tsx src/cli/bin.ts list --ssh-config /path/to/config
 - 代理令牌与反向端口随会话固定，落盘远端 `.runtime/`（令牌 600 权限），重连与复用读回同一组值。
 - 同一会话的多个本机 CLI 共享凭据路径（反向端口先到先得，后来的视图自动让位）。
 - 已知残余风险：远端同权限用户可借你的通道消耗额度（拿不到 key 本身）。多用户远端主机上请知悉：代理以每会话令牌、限速与路径白名单提高借用门槛，但无法完全阻断同权限用户。
+
+### 远端访问 GitHub 的代理（DSH_REMOTE_PROXY）
+
+远端 dsh 由本工具拉起，启动环境默认不带任何代理变量——无公网的远端主机上装 GitHub 插件（dsh 内部走 HTTPS 的 `git ls-remote`）会裸连超时，即使 SSH（22 端口）能通。在本机设置 `DSH_REMOTE_PROXY` 即可修复：启动器会把 `http_proxy`/`https_proxy`/`ALL_PROXY`（大小写共六个键）注入远端 dsh 进程环境，值指向 SSH 反向隧道在远端暴露的代理端口（如 `http://127.0.0.1:18890`）：
+
+```bash
+DSH_REMOTE_PROXY=http://127.0.0.1:18890 DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect myhost
+```
+
+dsh 自身会把代理变量透传给它拉起的 `git`/`pnpm` 子进程，装插件与拉依赖都会走同一代理。不设 `DSH_REMOTE_PROXY` 则什么都不注入，有公网的机器零影响。插件形态还支持按主机配置自定义环境变量（面板的齿轮按钮，存 `~/.dsh/remote-host-env.json`），优先级高于该兜底变量。
 
 ## 远端落盘隔离
 
@@ -184,6 +194,7 @@ pnpm exec tsx src/cli/bin.ts list --ssh-config /path/to/config
 | [src/transport/types.ts](src/transport/types.ts) | 传输抽象接口（按多传输设计，日后可加 Docker / WSL） |
 | [src/transport/ssh-transport.ts](src/transport/ssh-transport.ts) | ssh2 实现：跳板机链、命令执行、SFTP、正反向转发、密码认证（被拒重试，最多 3 次） |
 | [src/transport/channel-pool.ts](src/transport/channel-pool.ts) | SSH 通道配额，避免超 `MaxSessions` |
+| [src/transport/platform.ts](src/transport/platform.ts) | 平台探测与命令构建共享：架构映射、uname 解析、PATH 拼接 |
 | [src/provision/probe.ts](src/provision/probe.ts) | 远端探测 + **Node 稳定性自检** |
 | [src/provision/mirror-selector.ts](src/provision/mirror-selector.ts) | 在远端实测镜像延迟并自适应选取 |
 | [src/provision/remote-paths.ts](src/provision/remote-paths.ts) | 远端路径规则的唯一真源 |
@@ -191,6 +202,7 @@ pnpm exec tsx src/cli/bin.ts list --ssh-config /path/to/config
 | [src/provision/dsh-installer.ts](src/provision/dsh-installer.ts) | 装 dsh，版本显式指定不依赖 dist-tag |
 | [src/provision/profile-writer.ts](src/provision/profile-writer.ts) | 每会话独立 `DSH_HOME` 与 profile、patch 生成 |
 | [src/provision/provisioner.ts](src/provision/provisioner.ts) | 引导流程编排，各步均幂等 |
+| [src/provision/remote-context.ts](src/provision/remote-context.ts) | 远端执行上下文封装：绑定传输实例与路径信息 |
 | [src/util/session-id.ts](src/util/session-id.ts) | 由主机别名 + 远端目录算确定性会话 id |
 | [src/tunnel/port-allocator.ts](src/tunnel/port-allocator.ts) | 远端端口分配与监听确认 |
 | [src/tunnel/forward-local.ts](src/tunnel/forward-local.ts) | 正向转发，**监听器跨重连存活** |
@@ -199,11 +211,13 @@ pnpm exec tsx src/cli/bin.ts list --ssh-config /path/to/config
 | [src/session/heartbeat.ts](src/session/heartbeat.ts) | 心跳探活：进程 + 端口 + HTTP 应用级，一条命令 |
 | [src/session/reconnect.ts](src/session/reconnect.ts) | 有限次指数退避 |
 | [src/session/session-registry.ts](src/session/session-registry.ts) | 本机会话表，锁文件 + 原子替换 |
-| [src/session/session-manager.ts](src/session/session-manager.ts) | 会话编排：打开、凭据接线、重连、关闭 |
+| [src/session/session-manager.ts](src/session/session-manager.ts) | 会话编排：五阶段打开流程、心跳、重连、关闭 |
 | [src/credential/tunnel-proxy.ts](src/credential/tunnel-proxy.ts) | 反向隧道 LLM 代理（多供应商路由），注入真实 key |
 | [src/credential/provider-routes.ts](src/credential/provider-routes.ts) | 从本机配置（settings.yaml / profile patch）提取供应商路由，产出远端镜像 |
 | [src/credential/local-credentials.ts](src/credential/local-credentials.ts) | 读取本机 `.credentials.yaml` 的 refs 段，作为环境变量的凭据回退源 |
 | [src/credential/token.ts](src/credential/token.ts) | 代理令牌：生成与常数时间比较 |
+| [src/credential/proxy-secret.ts](src/credential/proxy-secret.ts) | 凭据材料读写：会话级令牌与反向端口的远端落盘 |
+| [src/plugin/remote-plugin-store.ts](src/plugin/remote-plugin-store.ts) | 远端插件包管理：list / install / remove / toggle |
 | [src/cli/](src/cli/) | 命令分派、参数解析、终端输出、命令级认证装配 |
 
 ## 开发
@@ -238,7 +252,7 @@ pnpm exec tsx scripts/package.ts --os linux --arch arm64
 | `--os <os>` | 目标平台：`win32` / `linux` / `darwin`（默认当前平台） |
 | `--arch <arch>` | 目标架构：`x64` / `arm64`（默认当前架构） |
 | `--all` | 打全部五平台矩阵，忽略 `--os` / `--arch` |
-| `--node-version <版本>` | 打入的 Node 版本（默认 `v24.11.1`） |
+| `--node-version <版本>` | 打入的 Node 版本（默认 `v24.21.0`） |
 | `--mirror <镜像>` | Node 下载源：`npmmirror`（默认，国内可达）/ `official` / 自定义 URL 前缀 |
 | `--out-dir <目录>` | 产物目录（默认 `dist`） |
 | `--minify` | 压缩产物体积（默认关闭，保留可读堆栈） |

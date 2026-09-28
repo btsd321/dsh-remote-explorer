@@ -2,16 +2,25 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 必读文档
+
+AI agent 或人类开发者在动手修改任何代码或文档之前，**必须先阅读**以下两份规范：
+
+- [docs/git-workflow.md](docs/git-workflow.md) — Git 分支管理与提交规范（分支创建、合并方向、commit message 格式、agent 检查清单）
+- [docs/type_script_style.md](docs/type_script_style.md) — TypeScript 编程规范（注释、命名、模块结构、类型约定）
+
+未读这两份文档就动手改代码视为违规。
+
 ## 语言要求
 
-本仓库的所有交流、代码注释、提交信息、文档一律使用**中文**。代码规范见 [docs/type_script_style.md](docs/type_script_style.md)，写任何代码前先读它。
+本仓库的所有交流、代码注释、提交信息、文档一律使用**中文**。
 
 ## 这是什么
 
 `dsh-remote-explorer` 把 dsh 装到远程主机上运行，本机只留浏览器，LLM 凭据不离开本机。0.6.0 起**单包双形态**：
 
 - **独立 CLI**（主形态）：`bin/dsh-remote-explorer.mjs` → tsx 直跑 `src/cli/`
-- **dsh 插件**：`dsh plugin --profile web add dsh-remote-explorer` 装进本机 dsh，提供「远程会话」全局面板（左导航按钮 + 中央面板）+ `/remote-ssh` 命令 + `remote_*` agent 工具；宿主半在 `src/plugin/`、浏览器半在 `src/plugin-client/`，经 `scripts/build-plugin.ts` 打包为 `lib/` 发布
+- **dsh 插件**：`dsh plugin --profile web add dsh-remote-explorer` 装进本机 dsh，提供「远程会话」全局面板（左导航按钮 + 中央面板）+ `/remote-explorer` 命令 + `remote_*` agent 工具；宿主半在 `src/plugin/`、浏览器半在 `src/plugin-client/`，经 `scripts/build-plugin.ts` 打包为 `lib/` 发布
 
 两形态共享同一套 session/ 编排——插件不是精简版。参照 VS Code Remote-SSH / Zed / JetBrains Gateway 的做法——代码与会话都在远端，本机只做呈现。
 
@@ -31,6 +40,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # 类型检查
 pnpm run typecheck
 
+# 单元测试（纯函数模块，无需 SSH 主机）
+pnpm exec tsx --test tests/unit/*.test.ts
+
 # 列出 ~/.ssh/config 中的主机（纯本地，不连接）
 pnpm exec tsx src/cli/bin.ts list
 
@@ -41,7 +53,7 @@ pnpm exec tsx src/cli/bin.ts doctor myhost --refresh-mirrors
 # 引导远端环境（幂等；改动 provision/ 后用它验证）
 pnpm exec tsx src/cli/bin.ts provision myhost --cwd //home/youruser
 # 验证全新安装路径（复用路径会跳过下载与 npm install，测不到真正易错的代码）
-pnpm exec tsx src/cli/bin.ts provision myhost --node-version v24.20.0
+pnpm exec tsx src/cli/bin.ts provision myhost --node-version v24.21.0
 
 # 完整会话（常驻进程；改动 session/、tunnel/ 或 credential/ 后用它验证）
 # Ctrl-C 默认连远端 dsh 一起停；--keep-remote 保留远端进程。行为验证脚本：
@@ -90,16 +102,16 @@ pnpm run setup:hooks
 
 ```
 入口层      cli/            命令分派、参数解析、终端输出（CLI 形态）
-            plugin/         dsh 插件宿主半：supervisor 簿记、命令/工具/路由注册
-            plugin-client/  dsh 插件浏览器半：远程会话全局面板（React，slots 注入 main/sidebar.panellist）
-编排层      session/      会话生命周期、心跳、重连、多会话簿记
-能力层      provision/    装 Node 与 dsh、镜像测速、生成会话 profile
+            plugin/         dsh 插件宿主半：supervisor 簿记、remote-plugin-store 远端插件包管理、host-env-store per-host 环境变量持久化、命令/工具/路由注册
+            plugin-client/  dsh 插件浏览器半：远程会话全局面板（React）、useSessionPolling 轮询 Hook、共享常量与样式
+编排层      session/      会话生命周期、心跳、重连、多会话簿记、proxy-env 代理与用户环境变量收集注入
+能力层      provision/    装 Node 与 dsh、镜像测速、生成会话 profile、RemoteContext 远端执行上下文
             tunnel/       端口分配、正向转发
-            credential/   LLM 凭据代理（反向隧道，key 不出本机）
+            credential/   LLM 凭据代理（反向隧道，key 不出本机）、proxy-secret 凭据材料读写
             handoff/      远端窗口交接组件（宿主半跑在远端 dsh、浏览器半是状态 pill + 管理菜单）
-传输层      transport/    ssh2 连接、命令执行、池化 SFTP、开通道、反向转发、通道配额
+传输层      transport/    ssh2 连接、命令执行、池化 SFTP、开通道、反向转发、通道配额、platform 平台探测与命令构建
 基础层      hosts/        ssh config 解析（主机配置唯一来源）
-            util/         shell 转义、错误类型、会话 id、远端路径校验
+            util/         shell 转义、错误类型、会话 id、远端路径校验、字节格式化、状态显示常量
 ```
 
 原计划的第二个交付物 `dsh-remote-guard`（远端插件）**最终不需要**：认证 dsh 已内置（P0 发现），`baseURL` 由 profile patch 解决（P4），免认证探活由心跳的 HTTP 层解决（P5，带会话令牌 curl 根路径，任何 HTTP 状态码即证明 webserver 在服务）。
@@ -113,6 +125,7 @@ pnpm run setup:hooks
 - **停进程**：不能用 `pkill -f`，用 pid 文件或端口定位
 - **socket error**：必须在 destroy 之前挂 error 监听器，否则进程崩溃
 - **凭据**：远端 key 变量是代理令牌不是真实 key；令牌只在启动日志首行
+- **环境变量注入**：注入远端 dsh 的用户 env 键名必须过 `assertSafeEnvKeys`（键名不经 quote 直接拼进启动命令，非法键 = 命令注入）；`DSH_HOME`/`DSH_AGENTS_HOME`/`PATH` 是保留键禁配；合并顺序凭据占位最后（防被挤掉）；复用会话不补注入，要生效用 forceRestart
 - **插件形态**：宿主产物必须 ESM；命令名匹配 `/^[a-z][a-z0-9_-]*$/`；defineTool 的 object 节点必须写 `additionalProperties`；路由只走已鉴权通道
 - **WSL**：detach 用 PowerShell `Start-Process -WindowStyle Hidden`，不能用 `setsid nohup &`；localhost forwarding 默认开启，openChannel 用 127.0.0.1 即可
 

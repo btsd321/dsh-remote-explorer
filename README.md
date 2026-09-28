@@ -54,12 +54,12 @@ dsh plugin --profile web add github:btsd321/dsh-remote-explorer
 pnpm run build:plugin && dsh plugin --profile web add /path/to/repo
 ```
 
-> **Note for pnpm 11+ users:** This package ships pre-built plugin artifacts (`lib/`) in the repository and has no `prepare` script, so git-hosted installation works out of the box without configuring `allowBuilds`. If you install from a local checkout, remember to run `pnpm run build:plugin` before adding.
+> **Note for pnpm 11.7+ users (build-script approval gate):** pnpm 11.7 treats *undecided* dependency build scripts as a hard failure, and this package's dependency tree carries three (`cpu-features`, `esbuild` via tsx, `ssh2`) — the first `dsh plugin add` fails with `ERR_PNPM_IGNORED_BUILDS` regardless of the install source. None of them are needed at plugin runtime: the artifacts are pre-built (`lib/`, committed) and ssh2 falls back to pure JS. **Recommended:** install through the dsh web GUI's plugin manager page — it offers a built-in approve-and-retry flow. **CLI alternative:** after the failed add, set the three pending `allowBuilds` entries to `false` in `~/.dsh/profiles/web/pnpm-workspace.yaml`, remove the half-committed `dsh-remote-explorer` entry from `dependencies` in `~/.dsh/profiles/web/package.json` (the failed add leaves it there, and a plain retry exits 0 without activating the plugin — a dsh CLI quirk present in 0.1.7-rc.1/rc.2), then re-run the add command.
 
 Restart `dsh web` after installing. The plugin provides three surfaces:
 
 - **"Remote SSH Sessions" global panel in the left navigation**: pick a host, connect in two window modes (enter current tab / open new tab), disconnect, manage remote plugins, live progress log; the remote window carries a status pill for returning to the manager or closing/stopping the connection
-- **Slash command** `/remote-ssh`: `hosts | connect <alias> [remote-dir] | status | disconnect <alias|session-id> [--keep-remote]`
+- **Slash command** `/remote-explorer`: `hosts | connect <alias> [remote-dir] | status | disconnect <alias|session-id> [--keep-remote]`
 - **Agent tools** `remote_hosts_list / remote_connect / remote_status / remote_kill` (behind dsh's regular tool-approval gate)
 
 The plugin shares the CLI's session orchestration and remote layout (`~/.dsh-remote-explorer/btsd321/`), and the session table is shared in both directions: `dsh-remote-explorer status` shows plugin-kept sessions, and the panel shows CLI-kept ones (read-only, marked "external"). Two differences: **session lifetime rides the host dsh process** — quitting dsh stops the remote dsh too by default (`keepRemoteOnDispose: true` in the profile patch keeps it); LLM keys are read from the environment of the process that launched dsh. See the [usage guide](docs/usage-en.md).
@@ -119,6 +119,16 @@ Remote dsh ──(placeholder token)──▶ Remote 127.0.0.1:<reverse-port>/r/
 - The proxy token and reverse port are fixed per session, persisted to remote `.runtime/` (token at permission 600), and read back on reconnect and reuse.
 - Multiple local CLIs sharing the same session share the credential path (reverse port is first-come-first-served; later views automatically yield).
 - Known residual risk: a same-privilege user on the remote could consume your quota via your tunnel (they cannot extract the key itself). Be aware on multi-user remote hosts: the proxy raises the bar with per-session tokens, rate limiting, and a path allowlist, but cannot fully block same-privilege users.
+
+### Remote proxy for GitHub access (DSH_REMOTE_PROXY)
+
+The remote dsh is launched by this tool, so its environment carries no proxy variables by default — on a remote host without direct internet, installing a GitHub plugin (which uses HTTPS `git ls-remote`) times out even though SSH (port 22) works. Setting `DSH_REMOTE_PROXY` on the local machine fixes that: the launcher injects `http_proxy` / `https_proxy` / `ALL_PROXY` (both letter cases) into the remote dsh process, pointing at the proxy port your SSH reverse tunnel exposes on the remote (e.g. `http://127.0.0.1:18890`):
+
+```bash
+DSH_REMOTE_PROXY=http://127.0.0.1:18890 DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect myhost
+```
+
+dsh itself passes proxy variables through to the `git`/`pnpm` child processes it spawns, so plugin installs and dependency fetches go through the same proxy. Leaving `DSH_REMOTE_PROXY` unset injects nothing — machines with direct internet are unaffected. In plugin form, per-host custom variables (the gear button on the panel, persisted in `~/.dsh/remote-host-env.json`) take precedence over this fallback.
 
 ## Remote disk isolation
 
@@ -184,6 +194,7 @@ Foundation   hosts/   util/
 | [src/transport/types.ts](src/transport/types.ts) | Transport abstraction (designed for multiple transports; Docker/WSL possible later) |
 | [src/transport/ssh-transport.ts](src/transport/ssh-transport.ts) | ssh2 implementation: jump host chains, command execution, SFTP, forward/reverse forwarding, password auth (retries on rejection, up to 3) |
 | [src/transport/channel-pool.ts](src/transport/channel-pool.ts) | SSH channel quota, avoids exceeding MaxSessions |
+| [src/transport/platform.ts](src/transport/platform.ts) | Shared platform detection and command building: arch mapping, uname parsing, PATH assembly |
 | [src/provision/probe.ts](src/provision/probe.ts) | Remote probe + **Node stability self-check** |
 | [src/provision/mirror-selector.ts](src/provision/mirror-selector.ts) | Live mirror latency measurement and adaptive selection |
 | [src/provision/remote-paths.ts](src/provision/remote-paths.ts) | Single source of truth for remote path rules |
@@ -191,6 +202,7 @@ Foundation   hosts/   util/
 | [src/provision/dsh-installer.ts](src/provision/dsh-installer.ts) | Install dsh, explicit version (no dist-tag reliance) |
 | [src/provision/profile-writer.ts](src/provision/profile-writer.ts) | Per-session independent `DSH_HOME` and profile/patch generation |
 | [src/provision/provisioner.ts](src/provision/provisioner.ts) | Provisioning orchestration, each step idempotent |
+| [src/provision/remote-context.ts](src/provision/remote-context.ts) | Remote execution context: binds transport instance and path info |
 | [src/util/session-id.ts](src/util/session-id.ts) | Deterministic session id from host alias + remote directory |
 | [src/tunnel/port-allocator.ts](src/tunnel/port-allocator.ts) | Remote port allocation and listen confirmation |
 | [src/tunnel/forward-local.ts](src/tunnel/forward-local.ts) | Forward tunneling, **listener survives reconnection** |
@@ -199,11 +211,13 @@ Foundation   hosts/   util/
 | [src/session/heartbeat.ts](src/session/heartbeat.ts) | Heartbeat: process + port + HTTP application-level, single command |
 | [src/session/reconnect.ts](src/session/reconnect.ts) | Bounded exponential backoff |
 | [src/session/session-registry.ts](src/session/session-registry.ts) | Local session table, lock file + atomic replacement |
-| [src/session/session-manager.ts](src/session/session-manager.ts) | Session orchestration: open, credential wiring, reconnect, close |
+| [src/session/session-manager.ts](src/session/session-manager.ts) | Session orchestration: 5-phase open, heartbeat, reconnect, close |
 | [src/credential/tunnel-proxy.ts](src/credential/tunnel-proxy.ts) | Reverse tunnel LLM proxy (multi-provider routing), injects real keys |
 | [src/credential/provider-routes.ts](src/credential/provider-routes.ts) | Extract provider routes from local config (settings.yaml / profile patch), produce remote mirror |
 | [src/credential/local-credentials.ts](src/credential/local-credentials.ts) | Read local `.credentials.yaml` refs as env-var credential fallback |
 | [src/credential/token.ts](src/credential/token.ts) | Proxy token: generation and constant-time comparison |
+| [src/credential/proxy-secret.ts](src/credential/proxy-secret.ts) | Credential material I/O: session-scoped token and reverse port persisted on remote |
+| [src/plugin/remote-plugin-store.ts](src/plugin/remote-plugin-store.ts) | Remote plugin package management: list / install / remove / toggle |
 | [src/cli/](src/cli/) | Command dispatch, argument parsing, terminal output, per-command auth wiring |
 
 ## Development
@@ -238,7 +252,7 @@ pnpm exec tsx scripts/package.ts --os linux --arch arm64
 | `--os <os>` | Target OS: `win32` / `linux` / `darwin` (default: current platform) |
 | `--arch <arch>` | Target architecture: `x64` / `arm64` (default: current architecture) |
 | `--all` | Build the full five-platform matrix; ignores `--os` / `--arch` |
-| `--node-version <ver>` | Node version to bundle (default: `v24.11.1`) |
+| `--node-version <ver>` | Node version to bundle (default: `v24.21.0`) |
 | `--mirror <mirror>` | Node download source: `npmmirror` (default) / `official` / custom URL prefix |
 | `--out-dir <dir>` | Output directory (default: `dist`) |
 | `--minify` | Minify the bundle (off by default, keeps readable stack traces) |

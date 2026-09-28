@@ -14,50 +14,27 @@
 
 import * as React from 'react';
 import type { ReactNode } from 'react';
-import type { LogEntry } from '../plugin/supervisor.js';
 import type { RemoteExplorerLocaleKey } from './locales.js';
 import {
-  ApiError, fetchSessionLog, fetchSessions, fetchWslDistros, postConnect, postDisconnect,
-  type PanelSession, type WslDistroSummary,
+  fetchWslDistros, messageOf, postConnect, postDisconnect,
+  type WslDistroSummary,
 } from './api.js';
-import { isDesktopShell } from './desktop-bridge.js';
 import { openRemoteWindow, OVERLAY_INTENT_ORIGIN } from './remote-window.js';
 import { renderSessionRow } from './ssh-panel.js';
 import { createLogger } from '../util/logger.js';
+import { inputStyle, buttonStyle } from './styles.js';
+import { DESKTOP, HANDOFF_COUNTDOWN_SECONDS } from './constants.js';
+import { useSessionPolling } from './use-session-polling.js';
 
 const logger = createLogger('wsl-panel');
 
-/** 会话列表轮询间隔（毫秒） */
-const SESSIONS_POLL_MS = 2_000;
-
-/** 选中会话的日志增量轮询间隔（毫秒） */
-const LOG_POLL_MS = 1_500;
-
-/** 当前标签形态就绪后的自动导航倒计时（秒，可取消） */
-const HANDOFF_COUNTDOWN_SECONDS = 3;
-
 /** localStorage 里「上次远端目录」的键前缀（按发行版记忆） */
 const LAST_CWD_KEY_PREFIX = 'dsh-remote-explorer:wsl:lastCwd:';
-
-/** 是否桌面壳（preload 注入先于一切脚本，页面生命周期内不变，模块级算一次） */
-const DESKTOP = isDesktopShell();
 
 /** 面板 props：locale 面由 slots 框架注入 */
 export interface WslSessionPanelProps {
   /** 命名空间绑定的翻译函数 */
   t: (key: RemoteExplorerLocaleKey) => string;
-}
-
-/**
- * 把未知异常归一成展示文本。
- *
- * @param error - 捕获值
- * @returns 中文消息
- */
-function messageOf(error: unknown): string {
-  if (error instanceof ApiError) return error.message;
-  if (error instanceof Error) return error.message;
-  return String(error);
 }
 
 /**
@@ -82,17 +59,33 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
 
   // ---- 数据状态 ----
   const [distros, setDistros] = React.useState<WslDistroSummary[]>([]);
-  const [sessions, setSessions] = React.useState<PanelSession[]>([]);
-  const [loadError, setLoadError] = React.useState('');
-  const [selectedId, setSelectedId] = React.useState<string | null>(null);
-  const [log, setLog] = React.useState<LogEntry[]>([]);
   const [stopRemote, setStopRemote] = React.useState(true);
-  const lastSeq = React.useRef(0);
   const logBoxRef = React.useRef<HTMLDivElement | null>(null);
 
-  // ---- 窗口形态交接 ----
-  const pendingNav = React.useRef<{ sessionId: string; mode: 'current' | 'new' | 'window' } | null>(null);
-  const [countdown, setCountdown] = React.useState<{ url: string; seconds: number } | null>(null);
+  // ---- 会话轮询（提取到共享 Hook，消除与 ssh-panel 的重复） ----
+  const {
+    sessions, loadError, setLoadError, selectedId, setSelectedId, log,
+    pendingNav, countdown, setCountdown,
+  } = useSessionPolling({
+    onSessionReady: (ready) => {
+      // Hook 保证调用时 ready.url 已定义；此处再守一次满足类型检查
+      if (ready.url === undefined) return;
+      // 会话就绪：一次性日志 + 触发窗口交接
+      logger.info('会话就绪，触发窗口交接', { mode: pendingNav.current?.mode, url: ready.url, sessionId: ready.sessionId });
+      if (pendingNav.current?.mode === 'window') {
+        openRemoteWindow({
+          sessionId: ready.sessionId,
+          url: ready.url,
+          hostAlias: ready.hostAlias,
+        });
+      } else if (pendingNav.current?.mode === 'current') {
+        setCountdown({ url: ready.url, seconds: HANDOFF_COUNTDOWN_SECONDS });
+      }
+    },
+    onSessionError: (sessionId) => {
+      logger.info('会话连接失败', { sessionId });
+    },
+  });
 
   // 发行版列表：挂载时拉一次；「刷新」按钮带 refresh=1
   const loadDistros = React.useCallback(async (refresh: boolean): Promise<void> => {
@@ -101,85 +94,8 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
     } catch (error) {
       setLoadError(messageOf(error));
     }
-  }, []);
+  }, [setLoadError]);
   React.useEffect(() => { void loadDistros(false); }, [loadDistros]);
-
-  // 会话列表轮询（挂载期 2s 一次）
-  React.useEffect(() => {
-    let stopped = false;
-    const tick = async (): Promise<void> => {
-      try {
-        const next = await fetchSessions();
-        if (stopped) return;
-        setSessions(next);
-        setLoadError('');
-        // 交接：会话就绪后按形态分流
-        const pending = pendingNav.current;
-        if (pending !== null) {
-          const ready = next.find(item => item.sessionId === pending.sessionId
-            && !item.connecting && item.url !== undefined);
-          if (ready?.url !== undefined) {
-            // 会话就绪：一次性日志 + 触发窗口交接
-            logger.info('会话就绪，触发窗口交接', { mode: pending.mode, url: ready.url, sessionId: ready.sessionId });
-            pendingNav.current = null;
-            if (pending.mode === 'window') {
-              openRemoteWindow({
-                sessionId: ready.sessionId,
-                url: ready.url,
-                hostAlias: ready.hostAlias,
-              });
-            } else if (pending.mode === 'current') {
-              setCountdown({ url: ready.url, seconds: HANDOFF_COUNTDOWN_SECONDS });
-            }
-          } else if (next.some(item => item.sessionId === pending.sessionId
-            && item.connectError !== undefined)) {
-            logger.info('会话连接失败', { sessionId: pending.sessionId });
-            pendingNav.current = null;
-          }
-          // 连接中状态不输出日志（每 2s 轮询，避免刷屏）
-        }
-      } catch (error) {
-        if (!stopped) setLoadError(messageOf(error));
-      }
-    };
-    void tick();
-    const timer = setInterval(() => { void tick(); }, SESSIONS_POLL_MS);
-    return () => { stopped = true; clearInterval(timer); };
-  }, []);
-
-  // 倒计时滴答
-  React.useEffect(() => {
-    if (countdown === null) return;
-    if (countdown.seconds <= 0) {
-      window.location.href = countdown.url;
-      return;
-    }
-    const timer = setTimeout(() => {
-      setCountdown(previous => (previous === null ? null : { ...previous, seconds: previous.seconds - 1 }));
-    }, 1_000);
-    return () => { clearTimeout(timer); };
-  }, [countdown]);
-
-  // 选中会话的日志增量轮询
-  React.useEffect(() => {
-    if (selectedId === null) { setLog([]); lastSeq.current = 0; return; }
-    let stopped = false;
-    lastSeq.current = 0;
-    setLog([]);
-    const tick = async (): Promise<void> => {
-      try {
-        const result = await fetchSessionLog(selectedId, lastSeq.current);
-        if (stopped) return;
-        if (result.log.length > 0) {
-          lastSeq.current = result.log[result.log.length - 1]?.seq ?? lastSeq.current;
-          setLog(previous => [...previous, ...result.log]);
-        }
-      } catch { /* 会话可能刚被移除；下一轮列表刷新会纠正选中态 */ }
-    };
-    void tick();
-    const timer = setInterval(() => { void tick(); }, LOG_POLL_MS);
-    return () => { stopped = true; clearInterval(timer); };
-  }, [selectedId]);
 
   // 日志自动滚底
   React.useEffect(() => {
@@ -240,23 +156,6 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
     } catch (error) {
       setLoadError(messageOf(error));
     }
-  };
-
-  const inputStyle: React.CSSProperties = {
-    background: 'transparent',
-    color: 'inherit',
-    border: '1px solid rgba(127,127,127,0.4)',
-    borderRadius: 6,
-    padding: '4px 8px',
-    minWidth: 0,
-  };
-  const buttonStyle: React.CSSProperties = {
-    background: 'transparent',
-    color: 'inherit',
-    border: '1px solid rgba(127,127,127,0.5)',
-    borderRadius: 6,
-    padding: '4px 12px',
-    cursor: 'pointer',
   };
 
   /** 格式化发行版状态文案 */
@@ -339,7 +238,7 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
             </label>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               <span style={{ fontSize: 12, opacity: 0.75 }}>{t('nodeVersion')}</span>
-              <input value={nodeVersion} placeholder="v24.20.0" style={inputStyle}
+              <input value={nodeVersion} placeholder="v24.21.0" style={inputStyle}
                 onChange={event => setNodeVersion(event.target.value)} />
             </label>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
