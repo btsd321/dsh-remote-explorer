@@ -22,6 +22,7 @@
 - [常见工作流](#常见工作流)
 - [退出码](#退出码)
 - [Git Bash 路径注意事项](#git-bash-路径注意事项)
+- [WSL — 连接本地 Linux 发行版](#wsl--连接本地-linux-发行版)
 - [以 dsh 插件形式使用](#以-dsh-插件形式使用)
 
 ---
@@ -153,7 +154,7 @@ pnpm exec tsx src/cli/bin.ts provision <别名> --cwd //home/user
 |---|---|
 | `--cwd <路径>` | 远端工作目录（参与会话 id 计算） |
 | `--node-version <版本>` | 目标 Node 版本（默认 v24 系） |
-| `--dsh-version <版本>` | 目标 dsh 版本或 dist-tag |
+| `--dsh-version <版本>` | 目标 dsh 版本或 dist-tag（默认解析最新已发布版本，失败回退兜底） |
 | `--refresh-mirrors` | 强制重测镜像延迟 |
 | `--ssh-config <路径>` | 使用指定的 ssh config 文件 |
 | `--private-key <路径>` | 私钥路径，优先于 config 的 IdentityFile（见[认证与主机指定](#认证与主机指定)） |
@@ -185,7 +186,7 @@ DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect <别名> --cwd //ho
 | `--force-restart` | 即便远端已有可用会话也重新启动 |
 | `--keep-remote` | Ctrl-C 断开时保留远端 dsh（默认连它一起停止） |
 | `--node-version <版本>` | 目标 Node 版本（默认 v24 系） |
-| `--dsh-version <版本>` | 目标 dsh 版本或 dist-tag |
+| `--dsh-version <版本>` | 目标 dsh 版本或 dist-tag（默认解析最新已发布版本，失败回退兜底） |
 | `--refresh-mirrors` | 强制重测镜像延迟 |
 | `--ssh-config <路径>` | 使用指定的 ssh config 文件 |
 | `--private-key <路径>` | 私钥路径，优先于 config 的 IdentityFile（见[认证与主机指定](#认证与主机指定)） |
@@ -440,6 +441,38 @@ CLI 内部会将 `//home/user` 归一化为 `/home/user`，保证两种写法的
 
 ---
 
+## WSL — 连接本地 Linux 发行版
+
+Windows 上可以把 WSL2 发行版当作远端目标：dsh 装进发行版内运行，无需 SSH 配置与认证。CLI 用 `--wsl <发行版名>` 指定发行版（`list --wsl` 列出本机发行版；`--wsl-user <用户>` 指定发行版内用户，缺省用发行版默认用户）；插件形态点左导航的「WSL 会话」卡片进入专用面板。`--wsl` 与 `--private-key`/`--password` 互斥。
+
+```bash
+# 列出本机 WSL 发行版
+pnpm exec tsx src/cli/bin.ts list --wsl
+
+# 连接 Ubuntu 发行版（Git Bash 下 --cwd 仍需双斜杠，见上一节 MSYS 说明）
+DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect --wsl Ubuntu --cwd //home/youruser
+```
+
+其余命令（`doctor` / `provision` / `status` / `kill` / `clean`）同样接受 `--wsl`，会话以 `wsl:<发行版名>` 为别名参与会话 id 计算与 `kill`/`clean` 定位。
+
+### 网络模式与反向通道
+
+远端 dsh 回连本机的**反向通道**（远端窗口交接的状态 pill 管理回调与 LLM 凭据代理共用同一条链路）在 WSL2 的两种网络模式下走不同路径：
+
+- **NAT（WSL2 默认）**：WSL 有独立网络命名空间，自己的 `127.0.0.1` 连不到 Windows 侧监听。本工具在 Windows 侧同端口绑定 `127.0.0.1` 与默认路由网关 IP（WSL 内 `ip route show default` 的 `via` 地址，即 Windows 宿主在 vEthernet 适配器上的地址），远端回调地址用网关 IP。
+- **mirrored**：Windows 与 WSL 共享网络命名空间，WSL 内 `127.0.0.1` 直达 Windows 侧监听，只绑回环即可，回调地址就是 `127.0.0.1`。
+
+两种模式都**无需手工配置**：连接时自动探测网络模式（优先在 WSL 内执行 `wslinfo --networking-mode`，老发行版没有该命令时用回环连通性自检兜底）；NAT 的网关 IP 随 WSL 重启变化，每次连接/重连都重新探测并重写远端 `.runtime/reverse-host` 材料（回调地址参数化，文件缺失时消费方回落 `127.0.0.1`）。反向通道挂接后还会从 WSL 内对反向端点做一次 HTTP 链路自检——不通则打明确告警（连接日志 warn、面板日志可见），不会静默降级。
+
+mirrored 属可选进阶配置：需要 Windows 11 22H2+，并在 `%UserProfile%\.wslconfig` 里启用（改后 `wsl --shutdown` 重启 WSL 生效）：
+
+```ini
+[wsl2]
+networkingMode=mirrored
+```
+
+---
+
 ## 以 dsh 插件形式使用
 
 0.6.0 起本工具同时是合法的 dsh 插件包：装进本机 dsh 的 profile 后，远程会话管理出现在左导航全局面板、slash 命令与 agent 工具三个入口里。**插件与 CLI 共享同一套会话编排、远端引导与会话表**——不是精简版，而是同一引擎换了驾驶舱。
@@ -520,7 +553,7 @@ pnpm exec tsx scripts/dev-plugin.ts --sync   # 只同步产物进沙箱
     keepRemoteOnDispose: false # 宿主退出时是否保留远端 dsh
     localPort: 0              # 本机端口（0 = 自动分配）
     nodeVersion: ""           # 空 = provisioner 默认
-    dshVersion: ""            # 空 = provisioner 默认
+    dshVersion: ""            # 空 = 默认（解析最新已发布版本）
     forceRestart: false
     refreshMirrors: false
     panel: true               # false = 不注册面板路由，只留命令与工具
@@ -547,6 +580,11 @@ pnpm exec tsx scripts/dev-plugin.ts --sync   # 只同步产物进沙箱
 - **pnpm 未找到（exit 127）**：`npm i -g pnpm`
 - **peer 依赖警告**：`autoInstallPeers: false` 下属预期，运行时经 profile 安装回退链接共享宿主实例，不影响使用
 - **连接一直卡在引导**：面板日志区看阶段输出；远端首次引导要下载 Node 与 dsh（数分钟），`doctor` 可先诊断
-- **远端窗口没有状态 pill**：确认会话在 0.6.x 后连接过（老会话重连时补装组件，存活复用的远端进程要下次重启才出现）；带 Cookie 访问远端 `/api/dsh-remote-handoff/meta` 应得 200，503 = 会话运行时材料缺失
+- **远端窗口没有状态 pill**：确认会话在 0.6.x 后连接过（老会话重连时补装组件，存活复用的远端进程要下次重启才出现）。按链路顺序排查：
+  1. 本地连接日志（CLI 终端 / 面板进度日志）找「反向监听已绑定 127.0.0.1:<端口>」与「WSL 反向链路自检」两行——自检不通会有 warn 及排查方向（WSL 会话专属步骤）；
+  2. 远端 dsh 日志（会话 `.runtime/dsh.log`，即 `~/.dsh-remote-explorer/btsd321/sessions/<会话 id>/.runtime/dsh.log`）找宿主半激活行 `[INFO] [dsh-remote-handoff] 宿主半已激活…`——没有这行说明 handoff 组件没装上或没加载；
+  3. 远端页面浏览器 console（F12）看 meta 拉取失败 warn：`HTTP 503 handoff_unavailable` = 会话运行时材料缺失，`HTTP 502 manager_unreachable` = 本机反向通道不可达（本地管理进程已退出或反向链路未接通）；
+  4. WSL NAT 模式下自检不通时：在 WSL 内执行 `wslinfo --networking-mode` 确认模式、`ip route show default` 核对 `via` 网关地址；企业 GPO 防火墙策略可能拦截 WSL 子网入站（Hyper-V 防火墙默认放行 WSL 子网，组策略可收紧），需管理员放行。
+  最后可带 Cookie 访问远端 `/api/dsh-remote-handoff/meta` 验证：应得 200。
 - **远端插件安装失败**：面板日志看 pnpm 报错；registry 由引导测速缓存决定；同一远端账号并发引导/安装时后者等 flock，超时 15 分钟报「另一引导正在进行」
 - **远端装 GitHub 插件报「连接 GitHub 超时」**：dsh 装 `github:` 插件走 HTTPS（`git ls-remote`），SSH(22) 通不代表 HTTPS(443) 通。给启动器配代理：CLI 设 `DSH_REMOTE_PROXY`（见[常见工作流](#常见工作流)），插件面板用主机输入框旁或会话行的 ⚙ 齿轮按主机配置（代理快捷项可一键填入）。配置在**下一次连接**生效——已运行的会话需断开（勾选「同时停止远端 dsh」）后重连才会注入

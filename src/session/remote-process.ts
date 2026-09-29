@@ -85,6 +85,14 @@ export async function startRemoteDsh(
     /** patch 文件绝对路径（可选） */
     patchFile?: string;
     /**
+     * WSL 用户名（transportType='wsl' 时以该用户启动远端 dsh）。
+     *
+     * 不传时 wsl.exe 用发行版默认用户——而 probe/安装经 WslTransport 一律按
+     * wslUser 执行，两者家目录不一致时 `.runtime` 材料（600 权限）属主错位，
+     * 远端进程读不回自己的凭据材料（实测踩过）。有值时必须透传。
+     */
+    wslUser?: string;
+    /**
      * 注入 dsh 进程的额外环境变量。
      *
      * 凭据闭环用它传占位 `DEEPSEEK_API_KEY`（值是代理令牌，不是真实 key）——
@@ -164,9 +172,26 @@ export async function startRemoteDsh(
     // 组合，能正确抑制控制台窗口。PowerShell 启动 wsl.exe 后立即退出，
     // wsl.exe 作为独立进程运行（不需要 unref）。
     const distroName = transport.hostAlias.slice(4); // 去掉 'wsl:' 前缀
-    const wslArgStr = `-d ${distroName} -e sh ${runnerFile}`;
-    const psCommand = `Start-Process -FilePath '${getWslExePath()}' -ArgumentList '${wslArgStr}' -WindowStyle Hidden`;
-    log.info('WSL 通过 PowerShell 无窗口启动 dsh', { distroName, runnerFile });
+    // wslUser 必须显式传给启动进程：缺省时 wsl.exe 用发行版默认用户，与
+    // probe/安装执行用户不一致会导致会话材料属主错位（见 options.wslUser 注释）。
+    // 用户值在编排层已过字符集校验，此处再经 psQuote 转义 PowerShell 单引号
+    const wslArgs = [
+      '-d', distroName,
+      ...(options.wslUser !== undefined ? ['-u', options.wslUser] : []),
+      '-e', 'sh', runnerFile,
+    ];
+    const wslArgStr = wslArgs.join(' ');
+    const psCommand = [
+      'Start-Process',
+      '-FilePath', psSingleQuoted(getWslExePath()),
+      '-ArgumentList', psSingleQuoted(wslArgStr),
+      '-WindowStyle', 'Hidden',
+    ].join(' ');
+    log.info('WSL 通过 PowerShell 无窗口启动 dsh', {
+      distroName,
+      runnerFile,
+      ...(options.wslUser !== undefined ? { wslUser: options.wslUser } : {}),
+    });
 
     await new Promise<void>((resolve, reject) => {
       execFile('powershell.exe', [
@@ -465,4 +490,19 @@ async function delay(ms: number, signal?: AbortSignal): Promise<void> {
 function tail(text: string, lines = 12): string {
   const all = text.trimEnd().split('\n');
   return all.slice(-lines).join('\n') || '(日志为空)';
+}
+
+/**
+ * PowerShell 单引号字符串字面量。
+ *
+ * PS 的单引号字符串里 `'` 必须加倍（`''`）才是字面量——直接拼接会把
+ * 字符串截断，命令注入即由此而入。wslUser 在编排层已过字符集校验
+ * （不含引号），这里再转义一次是纵深防御：即便上游校验被绕过，
+ * 拼出来的也只是一段字面量文本。
+ *
+ * @param value - 原始值
+ * @returns 带引号的 PS 字面量
+ */
+function psSingleQuoted(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
 }

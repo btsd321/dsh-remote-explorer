@@ -60,6 +60,15 @@ export interface MirrorSelection {
 }
 
 /**
+ * Node 官方发行站 baseUrl（候选列表里的「官方」项，也是下载候选链的垫底项）。
+ *
+ * 导出供 node-installer 构造回退链：镜像可能缺失具体版本的发行文件（实测
+ * 清华 nodejs-release 缺 v24.21.0 整个目录，测速却照样能选中它——测速探的是
+ * 镜像基址的 index.json，不校验版本文件），官方源必须作为最后的兜底。
+ */
+export const OFFICIAL_NODE_BASE_URL = 'https://nodejs.org/dist';
+
+/**
  * Node 发行版候选镜像。
  *
  * 探测路径统一用 `index.json`——它是 Node 发行站的标准索引文件，
@@ -69,7 +78,7 @@ const NODE_MIRRORS: readonly MirrorCandidate[] = [
   { name: '中科大', baseUrl: 'https://mirrors.ustc.edu.cn/node' },
   { name: '阿里', baseUrl: 'https://npmmirror.com/mirrors/node' },
   { name: '清华', baseUrl: 'https://mirrors.tuna.tsinghua.edu.cn/nodejs-release' },
-  { name: '官方', baseUrl: 'https://nodejs.org/dist' },
+  { name: '官方', baseUrl: OFFICIAL_NODE_BASE_URL },
 ];
 
 /**

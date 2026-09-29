@@ -234,11 +234,16 @@ export interface RemoteTransport {
    *
    * 远端监听地址固定 `127.0.0.1`——绝不能让反向端口对外可见。
    *
+   * **可选能力**：目前仅 SSH 实现承载（依赖 sshd 的 tcpip-forward 通道）。
+   * WSL 路径的反向监听发生在 Windows 本机侧（不需要远端 sshd），由编排层
+   * 直接持有 tunnel 层的 ReverseListener（分配即绑定，支持 NAT 多地址），
+   * 不经传输接口——`WslTransport` 不实现本方法。
+   *
    * @param remotePort - 远端监听端口
    * @param onConnection - 每个入站连接的处理器
    * @returns 转发句柄
    */
-  forwardIn(
+  forwardIn?(
     remotePort: number,
     onConnection: (connection: ReverseConnection) => void,
   ): Promise<ReverseHandle>;

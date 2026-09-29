@@ -6,8 +6,8 @@
  *
  * ```
  * open()  连接 → 读凭据材料 ┬ 已有 → 复用令牌与反向端口
- *                          └ 没有 → 生成令牌、分配反向端口
- *         → 引导（patch 让 baseURL 指向反向端口）
+ *                          └ 没有 → 生成令牌、绑定反向端口
+ *         → 引导（patch 让 baseURL 指向反向端点）
  *         → 探既有远端进程 ┬ 命中 → 复用（跳过启动）
  *                          └ 未命中 → 启动 dsh（环境注入占位凭据）
  *         → 起本机 LLM 代理 → 挂反向转发 → 建正向隧道 → 登记 → 心跳
@@ -24,30 +24,43 @@
  * - 多个本机视图共享同一会话时，反向端口只能被一个传输持有（sshd 拒绝重复
  *   绑定）。后启动的视图挂不上反向转发时降级为警告——凭据路径由先来的视图维持。
  *
+ * WSL 路径的反向端点编排（网络模式探测、ReverseListener「分配即绑定」、
+ * 重连期端点重探与材料重写、反向链路自检）是与「会话生命周期」无关的独立
+ * 变化轴，收口在同层模块 wsl-reverse.ts——本文件只在各阶段方法里分流调用，
+ * SSH 路径行为不变。
+ *
  * **远端 dsh 默认不随 CLI 退出而停止。** 它是 detach 的，下次连接可直接复用。
  * 要真正停掉需 `close({ stopRemote: true })` 或 `dsh-remote-explorer kill`。
+ *
+ * 模块导览（open 流水线按阶段拆分到子目录；本文件只做编排与生命周期，
+ * open() 是流水线编排控制器，语句序与错误处理即契约）：
+ *
+ * - options.ts                    选项契约与 TransportType（本文件 re-export）
+ * - transport/factory.ts          传输实例化与 SSH/WSL 认证准备
+ * - open-pipeline/prepare.ts      阶段一：准备传输并连接（含各阶段上下文类型）
+ * - open-pipeline/probe.ts        阶段二：探测环境/凭据材料/既有进程；
+ *                                 阶段四：启动或复用远端进程
+ * - open-pipeline/provision.ts    阶段三：引导与凭据配置
+ * - open-pipeline/tunnels.ts      阶段五：隧道（含 launch 与反向转发挂接）
+ *
+ * 各阶段函数与传输工厂原为本文件私有静态方法/模块私有函数，拆分后为同层
+ * 导出；函数体与契约注释随函数迁移，行为零变化。
  *
  * 分层：本文件属编排层，可用能力层与传输层。
  */
 
-import { assertConnectable, resolveHostWithAuth, type AuthOverrides } from '../hosts/ssh-config-parser.js';
-import { SshTransport, isAuthFailure } from '../transport/ssh-transport.js';
-import { WslTransport } from '../transport/wsl-transport.js';
 import { writeRemoteTextFile } from '../transport/write-text.js';
-import { provision, type ProvisionResult } from '../provision/provisioner.js';
-import { installHandoffBundle } from '../provision/handoff-installer.js';
-import {
-  attachSessionProfile, syncHostProfileManifest, transportIo,
-} from '../provision/plugin-store.js';
-import { probeRemote } from '../provision/probe.js';
-import { createRemotePaths, type RemotePaths } from '../provision/remote-paths.js';
-import type { RemoteContext } from '../provision/remote-context.js';
+import { isAuthFailure } from '../transport/ssh-transport.js';
+import type { ReverseHandle, RemoteTransport } from '../transport/types.js';
+import type { ProvisionResult } from '../provision/provisioner.js';
+import type { RemotePaths } from '../provision/remote-paths.js';
 import { allocateRemotePorts } from '../tunnel/port-allocator.js';
-import { LocalForward } from '../tunnel/forward-local.js';
+import type { ReverseListener } from '../tunnel/reverse-listener.js';
+import type { LocalForward } from '../tunnel/forward-local.js';
 import { computeSessionId } from '../util/session-id.js';
-import { ownerFingerprint } from '../util/owner-fingerprint.js';
-import { RemoteError, toErrorMessage } from '../util/errors.js';
-import { probeExistingSession, startRemoteDsh, stopRemoteDsh, type RemoteProcessInfo } from './remote-process.js';
+import { toErrorMessage } from '../util/errors.js';
+import type { PasswordProvider } from '../util/password-prompt.js';
+import { probeExistingSession, stopRemoteDsh, type RemoteProcessInfo } from './remote-process.js';
 import { Heartbeat, type HeartbeatResult } from './heartbeat.js';
 import { backoffDelay, wait, DEFAULT_RECONNECT_CONFIG, type ReconnectConfig } from './reconnect.js';
 import {
@@ -55,206 +68,22 @@ import {
   type LifecycleConfig, type SessionEvent, type SessionState,
 } from './lifecycle-state.js';
 import { removeSession, upsertSession } from './session-registry.js';
-import { assertSafeEnvKeys, collectProxyEnv } from './proxy-env.js';
-import { generateProxyToken } from '../credential/token.js';
-import { TunnelProxyCredential } from '../credential/tunnel-proxy.js';
-import { readProxySecret, writeProxySecret, type ProxySecret } from '../credential/proxy-secret.js';
-import { PasswordProvider, type PasswordPromptFn } from '../util/password-prompt.js';
-import {
-  deepseekRoute, extractProviderRoutes, mirrorSettingsForTunnel,
-  readLocalSettings, renderProviderTunnelPatch,
-} from '../credential/provider-routes.js';
-import { readLocalCredentials } from '../credential/local-credentials.js';
-import type { ManageHandlers } from '../handoff/protocol.js';
-import type { ReverseHandle, RemoteTransport } from '../transport/types.js';
+import { createTransport, resolveSshHost, type SshPrepareContext } from './transport/factory.js';
+import { prepareTransport } from './open-pipeline/prepare.js';
+import { probeAndReadCredentials, probeOrStartRemote } from './open-pipeline/probe.js';
+import { provisionAndConfigure } from './open-pipeline/provision.js';
+import { attachReverseForward, launch, setupTunnels } from './open-pipeline/tunnels.js';
+import { checkWslReverseLink, refreshWslReverseOnReconnect } from './wsl-reverse.js';
+import type { ProxySecret } from '../credential/proxy-secret.js';
+import type { TunnelProxyCredential } from '../credential/tunnel-proxy.js';
+import type { CloseSessionOptions, OpenSessionOptions } from './options.js';
 import { createLogger } from '../util/logger.js';
 
+// 选项契约已拆至同层 options.ts（类型宿主不再是本文件，无循环依赖风险）；
+// re-export 维持 cli/plugin 等既有 import 路径零改动
+export type { TransportType, OpenSessionOptions, CloseSessionOptions } from './options.js';
+
 const log = createLogger('session-manager');
-
-/** 传输类型标识 */
-export type TransportType = 'ssh' | 'wsl';
-
-/** 会话打开选项 */
-export interface OpenSessionOptions {
-  /** 主机别名 */
-  hostAlias: string;
-  /** 远端工作目录；参与会话 id 计算 */
-  remoteCwd: string;
-  /** 传输类型；默认 'ssh'（向后兼容） */
-  transportType?: TransportType;
-  /** WSL 发行版名称（transportType='wsl' 时必需） */
-  distroName?: string;
-  /** WSL 用户名（transportType='wsl' 时可选） */
-  wslUser?: string;
-  /** 目标 Node 版本 */
-  nodeVersion?: string;
-  /** 目标 dsh 版本或 dist-tag */
-  dshVersion?: string;
-  /** 本机期望端口；0 表示由 OS 分配 */
-  localPort?: number;
-  /** 强制重新启动远端 dsh，即便既有会话可用 */
-  forceRestart?: boolean;
-  /** 强制重测镜像 */
-  refreshMirrors?: boolean;
-  /** 重连配置 */
-  reconnect?: Partial<ReconnectConfig>;
-  /** 生命周期参数 */
-  lifecycle?: Partial<LifecycleConfig>;
-  /** 阶段进度回调 */
-  onStageStart?: (stage: string) => void;
-  /** 阶段完成回调 */
-  onStageDone?: (detail?: string) => void;
-  /** 阶段跳过回调 */
-  onStageSkip?: (reason: string) => void;
-  /** 状态变化回调 */
-  onStateChange?: (state: SessionState, description: string) => void;
-  /**
-   * 私钥文件路径覆盖（--private-key）：优先于 config 的 IdentityFile，
-   * 只作用于目标主机；跨重连持续生效
-   */
-  privateKey?: string;
-  /**
-   * 固定密码（--password）：显式走密码认证，优先于 config 的 IdentityFile。
-   * 只存本进程内存，不落盘、不进日志
-   */
-  password?: string;
-  /**
-   * 自定义密码提示回调（dsh 插件形态用：密码来自面板表单而非终端）。
-   * 优先级 password > promptPassword > 内置终端提示；CLI 不传，行为不变
-   */
-  promptPassword?: PasswordPromptFn;
-  /**
-   * 注入远端 dsh 进程的额外环境变量（插件形态的 per-host 齿轮配置）。
-   *
-   * 调用方（插件 supervisor）传入的用户自定义环境变量，键已在读取侧过滤、
-   * 进本层后再过一次 assertSafeEnvKeys 校验（键名会直接拼进远端启动命令，
-   * 非法键名 = 命令注入）。合并优先级：本层还会把 collectProxyEnv()（本机
-   * DSH_REMOTE_PROXY 兜底，最低优先）与 credential.remoteEnv()（凭据占位
-   * 键如 DEEPSEEK_API_KEY，最高优先）并进同一份注入环境——后者不被它覆盖，
-   * 防止用户 env 意外挤掉占位令牌导致远端 dsh 报 MISSING_CREDENTIAL
-   */
-  extraEnv?: Record<string, string>;
-  /**
-   * 转发失败告警回调（插件形态接进会话日志缓冲）。
-   * 不传时 LocalForward 直写 stderr（CLI 形态既有行为）
-   */
-  onForwardError?: (message: string) => void;
-  /**
-   * 远端 handoff 组件的管理回调（插件形态由监督器提供闭包）。
-   * 经反向代理的 `/manage/*` 路由族暴露给远端窗口；CLI 不传，行为不变
-   */
-  manageHandlers?: ManageHandlers;
-}
-
-/** 会话关闭选项 */
-export interface CloseSessionOptions {
-  /** 是否同时停止远端 dsh 进程；默认 false（保留以便下次复用） */
-  stopRemote?: boolean;
-}
-
-/**
- * 从会话选项计算认证覆盖。
- *
- * --private-key 与 --password 同给时密钥优先（密码不再生效）——与
- * resolveHostWithAuth 的内部优先级保持一致，open 与重连共用同一份规则。
- *
- * @param options - 会话选项
- * @returns 认证覆盖
- */
-function authOverridesOf(options: OpenSessionOptions): AuthOverrides {
-  return {
-    ...(options.privateKey ? { privateKey: options.privateKey } : {}),
-    ...(options.password !== undefined && options.privateKey === undefined
-      ? { password: options.password }
-      : {}),
-  };
-}
-
-/** SSH 传输准备上下文（仅 SSH 路径需要） */
-interface SshPrepareContext {
-  /** SSH 主机解析结果（含跳板机链、认证配置） */
-  resolved: ReturnType<typeof resolveHostWithAuth>;
-  /** 密码获取回调 */
-  getPassword: (hostKey: string, label: string, attempt: number) => Promise<string | undefined>;
-}
-
-/**
- * 解析 SSH 主机配置并校验可连接性。
- *
- * 只做主机解析，不涉及密码提供器的生命周期管理（密码提供器由调用方持有，
- * 需要在会话关闭时清理引用）。
- *
- * @param options - 会话打开选项
- * @returns SSH 主机解析结果
- */
-function resolveSshHost(options: OpenSessionOptions): ReturnType<typeof resolveHostWithAuth> {
-  const auth = authOverridesOf(options);
-  const resolved = resolveHostWithAuth(options.hostAlias, auth);
-  assertConnectable(resolved, options.hostAlias, {
-    passwordAuth: auth.password !== undefined,
-  });
-  return resolved;
-}
-
-/**
- * 根据会话选项创建对应的传输实例。
- *
- * 每种传输类型的准备逻辑由各自的 prepare* 函数完成，本函数只做分发。
- * 新增传输类型时：添加对应的 case 分支 + prepare 函数，不影响已有分支。
- *
- * @param options - 会话打开选项
- * @param sshCtx - SSH 准备上下文（仅 transportType='ssh' 时使用）
- * @returns 传输实例（尚未 connect）
- */
-function createTransport(
-  options: OpenSessionOptions,
-  sshCtx: SshPrepareContext,
-): RemoteTransport {
-  const type: TransportType = options.transportType ?? 'ssh';
-  switch (type) {
-    case 'wsl': {
-      if (!options.distroName) {
-        throw new RemoteError(
-          'CONNECT_FAILED',
-          'transportType=wsl 时必须指定 distroName（WSL 发行版名称）',
-          { hostAlias: options.hostAlias },
-        );
-      }
-      return new WslTransport({
-        distroName: options.distroName,
-        ...(options.wslUser ? { user: options.wslUser } : {}),
-      });
-    }
-    case 'ssh': {
-      return new SshTransport(options.hostAlias, sshCtx.resolved, {
-        getPassword: sshCtx.getPassword,
-      });
-    }
-    default: {
-      // 编译期穷尽检查：新增 TransportType 成员时此处报错提醒补充分支
-      const _exhaustive: never = type;
-      throw new RemoteError(
-        'CONNECT_FAILED',
-        `不支持的传输类型: ${_exhaustive as string}`,
-        { hostAlias: options.hostAlias },
-      );
-    }
-  }
-}
-
-/**
- * 获取传输类型的阶段描述文案。
- *
- * @param transportType - 传输类型
- * @returns 中文阶段描述
- */
-function transportStageLabel(transportType: TransportType | undefined): string {
-  switch (transportType ?? 'ssh') {
-    case 'wsl': return '连接 WSL 发行版';
-    case 'ssh': return '建立 SSH 连接';
-    default: return '建立连接';
-  }
-}
 
 /**
  * RemoteSession 构造所需的内部依赖集合。
@@ -271,12 +100,19 @@ interface SessionInternals {
   process: RemoteProcessInfo;
   /** 正向隧道 */
   forward: LocalForward;
-  /** 凭据材料；undefined 表示该会话不带凭据路径 */
+  /** 凭据材料；undefined 表示该会话不带凭据路径。重连时 reverseHost 可能更新（WSL NAT 网关变化） */
   secret: ProxySecret | undefined;
   /** 凭据代理实例；无凭据路径时 undefined */
   credential: TunnelProxyCredential | undefined;
-  /** 初始的反向转发句柄；挂在 transport 上，重连时重挂 */
+  /** 初始的反向转发句柄；挂在 transport 上（SSH 路径），重连时重挂 */
   reverseHandle: ReverseHandle | undefined;
+  /**
+   * WSL 反向监听（Windows 侧，分配即绑定）。
+   *
+   * 会话级资源：跨重连存活（不依赖传输实例），close 时释放；
+   * SSH 路径恒 undefined（反向转发走 transport.forwardIn）。
+   */
+  reverseListener: ReverseListener | undefined;
   /** 重连配置 */
   reconnectConfig: ReconnectConfig;
   /** 生命周期参数 */
@@ -306,9 +142,12 @@ export class RemoteSession {
   private provisioned: ProvisionResult;
   private process: RemoteProcessInfo;
   private readonly forward: LocalForward;
-  private readonly secret: ProxySecret | undefined;
+  /** 重连时 WSL 网关变化会更新 reverseHost，故非 readonly */
+  private secret: ProxySecret | undefined;
   private credential: TunnelProxyCredential | undefined;
   private reverseHandle: ReverseHandle | undefined;
+  /** WSL 反向监听；SSH 路径恒 undefined */
+  private reverseListener: ReverseListener | undefined;
   private readonly reconnectConfig: ReconnectConfig;
   private readonly lifecycleConfig: LifecycleConfig;
   private readonly passwords: PasswordProvider | undefined;
@@ -330,6 +169,7 @@ export class RemoteSession {
     this.secret = internals.secret;
     this.credential = internals.credential;
     this.reverseHandle = internals.reverseHandle;
+    this.reverseListener = internals.reverseListener;
     this.reconnectConfig = internals.reconnectConfig;
     this.lifecycleConfig = internals.lifecycleConfig;
     this.passwords = internals.passwords;
@@ -422,7 +262,8 @@ export class RemoteSession {
   /**
    * 打开一个会话。
    *
-   * 编排入口：按阶段顺序调用各私有方法，自身只做流程串联与资源兜底。
+   * 编排入口：按阶段顺序调用 open-pipeline 各导出函数，自身只做流程串联
+   * 与资源兜底。
    *
    * @param options - 打开选项
    * @returns 已就绪的会话
@@ -433,29 +274,31 @@ export class RemoteSession {
     const lifecycleConfig = { ...DEFAULT_LIFECYCLE_CONFIG, ...options.lifecycle };
 
     // 1. 准备传输并连接
-    const { transport, passwords } = await RemoteSession.prepareTransport(options);
+    const { transport, passwords } = await prepareTransport(options);
 
     let session: RemoteSession | undefined;
+    let reverseListener: ReverseListener | undefined;
     try {
       // 2. 探测远端环境、读取/生成凭据材料、探既有进程
-      const probeCtx = await RemoteSession.probeAndReadCredentials(
+      const probeCtx = await probeAndReadCredentials(
         transport, sessionId, options,
       );
+      reverseListener = probeCtx.reverseListener;
 
       // 3. 引导、配置凭据策略、同步 settings、落盘新材料
-      const provisionCtx = await RemoteSession.provisionAndConfigure(
+      const provisionCtx = await provisionAndConfigure(
         transport, sessionId, options, probeCtx,
       );
 
       // 4. 启动或复用远端进程
-      const processInfo = await RemoteSession.probeOrStartRemote(
+      const processInfo = await probeOrStartRemote(
         transport, sessionId, options, probeCtx.processInfo, probeCtx.webPort,
         provisionCtx.provisioned, provisionCtx.credential,
       );
 
       // 5. 建隧道（反向转发 + 正向隧道）
-      const tunnelCtx = await RemoteSession.setupTunnels(
-        transport, options, processInfo, provisionCtx.credential,
+      const tunnelCtx = await setupTunnels(
+        transport, options, processInfo, provisionCtx.credential, probeCtx.reverseListener,
       );
 
       // 6. 构造会话对象并注册
@@ -467,6 +310,7 @@ export class RemoteSession {
         secret: probeCtx.secret,
         credential: provisionCtx.credential,
         reverseHandle: tunnelCtx.reverseHandle,
+        reverseListener: probeCtx.reverseListener,
         reconnectConfig,
         lifecycleConfig,
         passwords,
@@ -477,333 +321,12 @@ export class RemoteSession {
       log.info(`会话完全就绪: sessionId=${sessionId}, url=${session.url}`);
       return session;
     } catch (error) {
-      // 打开失败要释放已建立的资源，否则 SSH 连接与代理会泄漏
+      // 打开失败要释放已建立的资源：SSH 连接、反向监听（分配即绑定——
+      // 绑定后不释放就泄漏端口，正是旧幽灵占用问题的镜像面）
       await transport.dispose();
+      await reverseListener?.close().catch(() => { /* 关闭失败不影响错误上抛 */ });
       throw error;
     }
-  }
-
-  /**
-   * 准备传输实例并建立连接。
-   *
-   * 按传输类型各自准备上下文（SSH 需主机解析+密码提供器，WSL 不需要），
-   * 创建传输实例并完成连接。
-   *
-   * @param options - 会话打开选项
-   * @returns 已连接的传输实例与密码提供器
-   */
-  private static async prepareTransport(
-    options: OpenSessionOptions,
-  ): Promise<{ transport: RemoteTransport; passwords: PasswordProvider | undefined }> {
-    // 按传输类型各自准备上下文：SSH 需要主机解析+密码提供器，WSL 不需要。
-    // 新增传输类型时在此添加对应 case，不影响已有分支
-    let sshCtx: SshPrepareContext;
-    let passwords: PasswordProvider | undefined;
-    switch (options.transportType ?? 'ssh') {
-      case 'ssh': {
-        const resolved = resolveSshHost(options);
-        const auth = authOverridesOf(options);
-        passwords = new PasswordProvider({
-          ...(auth.password !== undefined ? { fixed: auth.password } : {}),
-          ...(options.promptPassword ? { prompt: options.promptPassword } : {}),
-        });
-        sshCtx = {
-          resolved,
-          getPassword: (hostKey, label, attempt) => passwords!.get(hostKey, label, attempt),
-        };
-        break;
-      }
-      case 'wsl': {
-        // WSL 无需 SSH 主机解析与密码提供器；createTransport 内部校验 distroName
-        sshCtx = { resolved: undefined as never, getPassword: async () => undefined };
-        break;
-      }
-    }
-
-    options.onStageStart?.(transportStageLabel(options.transportType));
-    const transport = createTransport(options, sshCtx);
-    log.info(`transport 创建完成: type=${options.transportType ?? 'ssh'}, hostAlias=${transport.hostAlias}`);
-    await transport.connect();
-    log.info(`transport 连接成功: platform=${transport.platform.rawOs}/${transport.platform.rawArch}`);
-    options.onStageDone?.(`${transport.platform.rawOs} ${transport.platform.rawArch}`);
-
-    return { transport, passwords };
-  }
-
-  /**
-   * 探测远端环境、读取/生成凭据材料、探既有进程并分配端口。
-   *
-   * 家目录要先拿到：既有会话探测与凭据材料读取都需要路径。
-   * 凭据材料读取放在进程探测之前——无论进程是否存活，落盘材料都可能存在
-   * （进程刚死待重启时，材料仍然有效且应当继续用）。
-   *
-   * @param transport - 已连接的传输实例
-   * @param sessionId - 会话 id
-   * @param options - 会话打开选项
-   * @returns 探测上下文（路径、凭据材料、进程信息、web 端口、是否新建凭据）
-   */
-  private static async probeAndReadCredentials(
-    transport: RemoteTransport,
-    sessionId: string,
-    options: OpenSessionOptions,
-  ): Promise<{
-    paths: RemotePaths;
-    secret: ProxySecret | undefined;
-    processInfo: RemoteProcessInfo | undefined;
-    webPort: number | undefined;
-    secretIsNew: boolean;
-  }> {
-    // 家目录要先拿到：既有会话探测与凭据材料读取都需要路径
-    const probe = await probeRemote(transport);
-    log.info(`远端探测完成: homeDir=${probe.homeDir}`);
-    const paths = createRemotePaths(probe.homeDir);
-    const ctx: RemoteContext = { transport, paths };
-
-    // 1. 凭据材料：读回已有的，没有则生成新的
-    let secret = await readProxySecret(ctx, sessionId);
-
-    // 2. 探既有远端进程
-    if (options.forceRestart === true) {
-      await stopRemoteDsh(ctx, { sessionId });
-    }
-    let processInfo: RemoteProcessInfo | undefined;
-    if (options.forceRestart !== true) {
-      processInfo = await probeExistingSession(ctx, sessionId);
-    }
-
-    if (processInfo && !secret) {
-      // 会话是凭据功能上线前启动的：占位凭据没进它的环境，baseURL 也没指向代理。
-      // 只降级为警告——用户可能只想要隧道；要启用凭据路径用 --force-restart
-      options.onStageSkip?.('远端会话早于凭据功能启动；加 --force-restart 可启用密钥代理');
-    }
-
-    // 3. 需要启动时分配端口。web 端口一次性分配好；凭据材料缺失时
-    //    连反向端口一起分配，避免与 web 端口撞车
-    let webPort: number | undefined;
-    let secretIsNew = false;
-    if (!processInfo) {
-      const exclude = secret ? [secret.reversePort] : [];
-      const ports = await allocateRemotePorts(transport, secret ? 1 : 2, { exclude });
-      webPort = ports[0]!;
-      if (!secret) {
-        secret = { token: generateProxyToken(), reversePort: ports[1]! };
-        secretIsNew = true;
-      }
-    }
-
-    return { paths, secret, processInfo, webPort, secretIsNew };
-  }
-
-  /**
-   * 引导远端环境、构造凭据策略、同步配置并落盘新凭据材料。
-   *
-   * 包含：凭据策略实例化、provision（幂等）、handoff 组件安装、
-   * 会话接入 store、settings 双写、新凭据材料落盘。
-   *
-   * @param transport - 已连接的传输实例
-   * @param sessionId - 会话 id
-   * @param options - 会话打开选项
-   * @param probeCtx - 探测上下文
-   * @returns 引导结果与凭据策略实例
-   */
-  private static async provisionAndConfigure(
-    transport: RemoteTransport,
-    sessionId: string,
-    options: OpenSessionOptions,
-    probeCtx: {
-      paths: RemotePaths;
-      secret: ProxySecret | undefined;
-      secretIsNew: boolean;
-    },
-  ): Promise<{
-    provisioned: ProvisionResult;
-    credential: TunnelProxyCredential | undefined;
-  }> {
-    const { paths, secret, secretIsNew } = probeCtx;
-    const ctx: RemoteContext = { transport, paths };
-
-    // 4. 凭据策略实例。构造便宜（不起监听），放在引导之前——
-    //    环境注入、patch 条目与 settings 镜像都从它取，编排层不重复拼细节。
-    //    路由表 = DeepSeek 原生通道 + 本机 settings.yaml 里的 pi-ai 供应商
-    //    （用户的默认模型可能配置在后者）
-    //    本机凭据从 .credentials.yaml 读取，作为 process.env 的回退源——
-    //    对齐 dsh 自身的凭据解析优先级（文件存储 > 环境变量缺失时兜底）
-    const localSettings = readLocalSettings();
-    const providerRoutes = localSettings ? extractProviderRoutes(localSettings) : [];
-    const localCredentials = readLocalCredentials();
-    const credential = secret
-      ? new TunnelProxyCredential(
-        secret.token, secret.reversePort,
-        [deepseekRoute(), ...providerRoutes],
-        options.hostAlias,
-        localCredentials,
-        ...(options.manageHandlers ? [options.manageHandlers] : []),
-      )
-      : undefined;
-
-    // 5. 引导（幂等）。patch 让 DeepSeek 原生通道的 baseURL 指向反向端口——
-    //    secret 存在就写，复用与新建 alike：prepareSessionProfile 每次重写
-    //    patch，反向端口来自同一份落盘材料，值保持一致
-    const provisioned = await provision(transport, {
-      sessionId,
-      patches: credential?.remotePatches() ?? [],
-      ...(options.nodeVersion ? { nodeVersion: options.nodeVersion } : {}),
-      ...(options.dshVersion ? { dshVersion: options.dshVersion } : {}),
-      ...(options.refreshMirrors ? { refreshMirrors: true } : {}),
-      ...(options.onStageStart ? { onStageStart: options.onStageStart } : {}),
-      ...(options.onStageDone ? { onStageDone: options.onStageDone } : {}),
-      ...(options.onStageSkip ? { onStageSkip: options.onStageSkip } : {}),
-    });
-
-    // 5.5 handoff 组件（幂等，store 级）：合成 bundle 写进用户级 plugin store
-    //     并登记启用——该远程账号的所有会话共享这一份，新会话零额外安装。
-    //     老会话补装时若远端进程仍存活复用，菜单要等下次远端重启才出现。
-    //     安装失败不阻断会话（增强面非成立条件）
-    options.onStageStart?.('检查远端交接组件');
-    try {
-      const installed = await installHandoffBundle(ctx, provisioned.dsh.version);
-      options.onStageDone?.(installed ? '已安装交接组件（远端窗口获得管理菜单）' : '交接组件已就位');
-    } catch (error) {
-      options.onStageSkip?.(`交接组件安装失败（不影响会话）：${toErrorMessage(error)}`);
-    }
-
-    // 5.6 会话接入主机级 profile（必须在远端启动前）：session profile 整体
-    //     symlink 到 host profile + manifest 自愈。dsh 启动时 --profile web
-    //     在 $DSH_HOME/profiles/web/ 找到 symlink，指向主机级共享安装
-    await attachSessionProfile(ctx, sessionId);
-    await syncHostProfileManifest(transportIo(transport), paths);
-
-    // 6. settings 双写：本机 settings 整体复制到会话 DSH_HOME + pi-ai 供应商
-    //    路由写进 home patch 层（`$DSH_HOME/cordis.patch.yml`）。
-    //    - 镜像：dsh ≤0.1.6 运行时热读它；0.1.7 起只在每次进程启动时一次性
-    //      导入（导入后改名 `.imported`），承载其余 section 的传递
-    //    - home patch：0.1.6/0.1.7 都存在且受 hmr 热监听，供应商路由的
-    //      持续热生效靠它——不受 0.1.7 移除 settings.yaml 运行时读取的影响
-    //    两份都只做 baseURL 重定向（凭据引用不含密钥）；绝不镜像
-    //    .credentials.yaml（可能含真实密钥）。复用会话时同值重写无副作用
-    if (secret && localSettings) {
-      const mirrored = mirrorSettingsForTunnel(localSettings, secret.reversePort);
-      if (mirrored) {
-        // SFTP 主路径落盘（远端未开 sftp 子系统时自动回退 printf-over-exec）。
-        // 容忍模式与旧实现的 allowNonZeroExit 语义一致：镜像失败不阻断会话
-        await writeRemoteTextFile(transport, paths.sessionSettingsFile(sessionId), mirrored, {
-          tolerant: true,
-        });
-      }
-      const providerPatch = renderProviderTunnelPatch(localSettings, secret.reversePort);
-      if (providerPatch) {
-        // 同为容忍模式：home patch 失败时 0.1.6 仍有镜像兜底，0.1.7 首启
-        // 导入也还能承接（.imported 语义），会话不因此阻断
-        await writeRemoteTextFile(
-          transport, paths.sessionHomePatchFile(sessionId), providerPatch, { tolerant: true },
-        );
-      }
-    }
-
-    // 7. 新凭据材料落盘（600 权限）。之后无论哪个视图重连都读回同一组值
-    if (secret && secretIsNew) {
-      await writeProxySecret(ctx, sessionId, secret);
-    }
-
-    return { provisioned, credential };
-  }
-
-  /**
-   * 探测既有远端进程或启动新的，并落盘 owner 指纹。
-   *
-   * @param transport - 已连接的传输实例
-   * @param sessionId - 会话 id
-   * @param options - 会话打开选项
-   * @param existingProcess - 既有的远端进程信息；undefined 表示需要启动
-   * @param webPort - 预分配的 web 端口（仅在需要启动时使用）
-   * @param provisioned - 引导结果
-   * @param credential - 凭据策略；存在则占位凭据进环境
-   * @returns 远端进程信息
-   */
-  private static async probeOrStartRemote(
-    transport: RemoteTransport,
-    sessionId: string,
-    options: OpenSessionOptions,
-    existingProcess: RemoteProcessInfo | undefined,
-    webPort: number | undefined,
-    provisioned: ProvisionResult,
-    credential: TunnelProxyCredential | undefined,
-  ): Promise<RemoteProcessInfo> {
-    let processInfo = existingProcess;
-
-    // 8. 启动远端进程（占位凭据进环境——每条路由的 keyEnv 都是同一个令牌）
-    if (!processInfo) {
-      log.info('步骤8: 启动远端 dsh 进程');
-      processInfo = await RemoteSession.launch(
-        transport, provisioned, sessionId, options, webPort!, credential,
-      );
-      log.info('步骤8完成: 远端 dsh 已启动', { port: processInfo.port, pid: processInfo.pid });
-    } else {
-      log.info('步骤8: 复用既有远端进程', { port: processInfo.port, pid: processInfo.pid });
-    }
-
-    // 8.5 owner 指纹落盘：kill/clean 的跨用户 scope 化凭据（非秘密）。
-    //     容忍模式——写失败不阻断会话（最坏退化为「无 owner 的老目录」语义）
-    log.info('步骤8.5: owner 指纹落盘');
-    await writeRemoteTextFile(
-      transport,
-      provisioned.paths.sessionOwnerFile(sessionId),
-      `${ownerFingerprint()}\n`,
-      { tolerant: true },
-    );
-
-    return processInfo;
-  }
-
-  /**
-   * 建立隧道：启动凭据代理、挂反向转发、建正向隧道。
-   *
-   * @param transport - 已连接的传输实例
-   * @param options - 会话打开选项
-   * @param processInfo - 远端进程信息
-   * @param credential - 凭据代理实例；undefined 表示不带凭据路径
-   * @returns 正向隧道与反向转发句柄
-   */
-  private static async setupTunnels(
-    transport: RemoteTransport,
-    options: OpenSessionOptions,
-    processInfo: RemoteProcessInfo,
-    credential: TunnelProxyCredential | undefined,
-  ): Promise<{ forward: LocalForward; reverseHandle: ReverseHandle | undefined }> {
-    // 9. 起本机 LLM 代理并挂反向转发
-    let reverseHandle: ReverseHandle | undefined;
-    if (credential) {
-      log.info('步骤9: 启动密钥代理');
-      options.onStageStart?.('启动密钥代理');
-      await credential.start();
-      log.info('步骤9: 代理已启动，开始挂反向转发', { reversePort: credential.reversePort });
-      reverseHandle = await attachReverseForward(transport, credential, options);
-      log.info('步骤9完成: 反向转发已挂载');
-      const missing = credential.missingKeyEnvs;
-      if (missing.length === 0) {
-        options.onStageDone?.(
-          `反向端口 ${credential.reversePort} → 本机代理（${credential.routeCount} 条路由）`,
-        );
-      } else {
-        options.onStageDone?.(
-          `反向端口 ${credential.reversePort} → 本机代理（${credential.routeCount} 条路由；`
-          + `本机缺 key：${missing.join('、')}）`,
-        );
-      }
-    }
-
-    // 10. 建正向隧道。监听器跨重连存活，端口从此不再变化；
-    //     转发失败告警经钩子上抛（插件形态接日志缓冲；CLI 缺省直写 stderr）
-    log.info('步骤10: 建立正向隧道');
-    options.onStageStart?.('建立正向隧道');
-    const forward = new LocalForward(transport, '127.0.0.1', processInfo.port, {
-      ...(options.onForwardError ? { onForwardError: options.onForwardError } : {}),
-    });
-    const localPort = await forward.listen(options.localPort ?? 0);
-    log.info('步骤10完成: 正向隧道就绪', { localPort, remotePort: processInfo.port });
-    options.onStageDone?.(`127.0.0.1:${localPort} → 远端 ${processInfo.port}`);
-
-    return { forward, reverseHandle };
   }
 
   /**
@@ -818,6 +341,8 @@ export class RemoteSession {
     this.heartbeat?.stop();
     await this.forward.close();
     await this.detachReverseForward();
+    // WSL 反向监听随会话释放（幂等；SSH 的反向转发已在上一行经句柄撤销）
+    await this.reverseListener?.close().catch(() => { /* 关闭失败不影响其余清理 */ });
     await this.credential?.stop();
     // 会话结束即丢弃缓存密码的引用（字符串不可清零，只能靠 GC 回收）
     this.passwords?.clear();
@@ -834,90 +359,6 @@ export class RemoteSession {
 
     await this.transport.dispose();
     this.apply({ type: 'disconnect' });
-  }
-
-  /**
-   * 启动远端 dsh。
-   *
-   * 端口分配有固有竞态（探到空闲与实际绑定之间存在窗口），
-   * 所以失败后换端口重试一次。
-   *
-   * 环境注入三层合并（后者覆盖前者同名键）：
-   * `collectProxyEnv()`（本机 DSH_REMOTE_PROXY 兜底）< `options.extraEnv`
-   * （per-host 用户配置）< `credential.remoteEnv()`（凭据占位键最高优先，
-   * 防被用户 env 覆盖导致远端报 MISSING_CREDENTIAL）。
-   *
-   * @param transport - 传输实例
-   * @param provisioned - 引导结果
-   * @param sessionId - 会话 id
-   * @param options - 打开选项（进度回调与用户自定义 env）
-   * @param port - 预分配的 web 端口
-   * @param credential - 凭据策略；存在则占位凭据进环境
-   * @returns 远端进程信息
-   * @throws RemoteError('EXEC_FAILED') 用户 env 键名非法或启动失败
-   */
-  private static async launch(
-    transport: RemoteTransport,
-    provisioned: ProvisionResult,
-    sessionId: string,
-    options: Pick<OpenSessionOptions, 'onStageStart' | 'onStageDone' | 'extraEnv'>,
-    port: number,
-    credential: TunnelProxyCredential | undefined,
-  ): Promise<RemoteProcessInfo> {
-    // 合并前先校验用户 env 的键名：remote-process.ts 的 envAssignments 把
-    // 键名不经 quote 直接插值进 shell 命令，非法键名 = 命令注入；保留键
-    // （DSH_HOME/DSH_AGENTS_HOME/PATH）被用户值覆盖会破坏会话隔离契约
-    assertSafeEnvKeys(options.extraEnv ?? {}, `主机 ${transport.hostAlias}`);
-    const extraEnv: Record<string, string> = {
-      ...collectProxyEnv(),
-      ...(options.extraEnv ?? {}),
-      ...(credential ? credential.remoteEnv() : {}),
-    };
-    // 只打键名不打值：值可能含代理认证信息或敏感 token
-    const injectedEnvKeys = Object.keys(extraEnv);
-    if (injectedEnvKeys.length > 0) {
-      log.info('将注入远端 dsh 的环境变量', {
-        hostAlias: transport.hostAlias,
-        keys: injectedEnvKeys.join(','),
-      });
-    }
-
-    const tried: number[] = [port];
-    let lastError: unknown;
-
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      options.onStageStart?.(`启动远端 dsh（端口 ${port}）`);
-      try {
-        const info = await startRemoteDsh({ transport, paths: provisioned.paths }, {
-          sessionId,
-          dshBin: provisioned.dsh.dshBin,
-          dshHome: provisioned.profile.dshHome,
-          profileName: provisioned.profile.profileName,
-          nodeBinDir: provisioned.node.binDir,
-          port,
-          ...(provisioned.profile.patchFile ? { patchFile: provisioned.profile.patchFile } : {}),
-          ...(Object.keys(extraEnv).length > 0 ? { extraEnv } : {}),
-        });
-        options.onStageDone?.(`pid ${info.pid}`);
-        return info;
-      } catch (error) {
-        lastError = error;
-        // 端口冲突是预期内的竞态，换端口重试；其他错误重试也无意义，但
-        // 区分成本高于收益——第二次失败就会如实抛出
-        if (attempt === 0) {
-          const [next] = await allocateRemotePorts(transport, 1, { exclude: tried });
-          tried.push(next!);
-          port = next!;
-        }
-      }
-    }
-
-    throw new RemoteError(
-      'EXEC_FAILED',
-      `在主机 ${transport.hostAlias} 上启动远端 dsh 失败（已试端口 ${tried.join('、')}）：`
-        + toErrorMessage(lastError),
-      { cause: lastError, hostAlias: transport.hostAlias },
-    );
   }
 
   /** 登记到本机会话表 */
@@ -1043,6 +484,12 @@ export class RemoteSession {
     try {
       await next.connect();
 
+      // WSL：重探网络模式。NAT 网关 IP 随 WSL 重启变化，端点变化必须在
+      // 重启远端进程之前完成材料刷新（reverse-host 与 patch 里的 baseURL）
+      if (this.options.transportType === 'wsl' && this.secret) {
+        await this.refreshWslReverseOnReconnect(next);
+      }
+
       const existing = await probeExistingSession(
         { transport: next, paths: this.provisioned.paths },
         this.sessionId,
@@ -1054,19 +501,30 @@ export class RemoteSession {
         // 凭据材料保持不变（落盘的令牌与反向端口），占位凭据继续生效
         const exclude = this.credential ? [this.credential.reversePort] : [];
         const [port] = await allocateRemotePorts(next, 1, { exclude });
-        // 重连重启远端进程时同样注入用户 env（代理等，open() 的同一合并语义）；
-        // 不传 stage 回调——重连是后台行为，不向前端重复报阶段进度（既有语义）
-        this.process = await RemoteSession.launch(
+        // 重连重启远端进程时同样注入用户 env（代理等，open() 的同一合并语义）
+        // 与 WSL 用户名；不传 stage 回调——重连是后台行为，不向前端重复报
+        // 阶段进度（既有语义）
+        this.process = await launch(
           next, this.provisioned, this.sessionId,
-          { ...(this.options.extraEnv !== undefined ? { extraEnv: this.options.extraEnv } : {}) },
+          {
+            ...(this.options.extraEnv !== undefined ? { extraEnv: this.options.extraEnv } : {}),
+            ...(this.options.wslUser !== undefined ? { wslUser: this.options.wslUser } : {}),
+          },
           port!, this.credential,
         );
       }
 
-      // 重挂反向转发：旧句柄随旧传输失效，代理实例不动
+      // 重挂反向转发：旧句柄随旧传输失效，代理实例不动。
+      // WSL 的 ReverseListener 跨重连存活（不依赖传输实例），handler 指向
+      // 同一代理实例无需重挂——只做一次链路自检确认新链路可用
       await this.detachReverseForward();
       if (this.credential) {
-        this.reverseHandle = await attachReverseForward(next, this.credential, this.options);
+        if (this.reverseListener !== undefined) {
+          // 重连是后台行为：不报阶段进度，自检结果只进运行日志
+          await checkWslReverseLink(next, this.credential, {});
+        } else {
+          this.reverseHandle = await attachReverseForward(next, this.credential, this.options);
+        }
       }
     } catch (error) {
       await next.dispose();
@@ -1078,6 +536,35 @@ export class RemoteSession {
     this.transport = next;
     this.forward.swapTransport(next);
     await previous.dispose();
+  }
+
+  /**
+   * WSL 重连的反向端点刷新（薄委托）。
+   *
+   * 每次重连都重新探测网络模式（契约：NAT 网关 IP 随 WSL 重启变化）。
+   * host 变化时：调整监听的附加绑定（主绑定 127.0.0.1 与端口不动——远端
+   * 材料认的就是它们）、更新会话记录与凭据策略、重写远端材料
+   * （reverse-host、profile patch、settings 镜像、home patch）。材料重写
+   * 必须先于远端进程（重）启动，所以本方法只在 reconnectOnce 探测/启动
+   * 远端进程之前调用。
+   *
+   * 纯网络探测/材料重写逻辑在同层模块 wsl-reverse 的同名导出函数；本方法
+   * 把会话状态（secret/credential/provisioned/listener）以参数显式传入，
+   * 并把返回的更新后 secret 回写会话字段。
+   *
+   * @param next - 重连后的新传输实例（探测与材料写入都走它）
+   */
+  private async refreshWslReverseOnReconnect(next: RemoteTransport): Promise<void> {
+    const listener = this.reverseListener;
+    const secret = this.secret;
+    if (listener === undefined || secret === undefined) return;
+    this.secret = await refreshWslReverseOnReconnect(next, {
+      sessionId: this.sessionId,
+      provisioned: this.provisioned,
+      secret,
+      credential: this.credential,
+      listener,
+    });
   }
 
   /**
@@ -1101,38 +588,6 @@ export class RemoteSession {
     if (next === this.state) return;
     this.state = next;
     this.options.onStateChange?.(next, describeState(next));
-  }
-}
-
-/**
- * 把反向转发挂到指定传输上。
- *
- * 挂不上时返回 undefined 并以警告说明——同一会话的另一个本机视图
- * 先到先得持有反向端口（sshd 拒绝重复绑定），凭据路径由它维持；
- * 这里失败不代表会话不可用。
- *
- * @param transport - 传输实例
- * @param credential - 凭据代理
- * @param options - 打开选项（进度回调）
- * @returns 反向转发句柄；挂不上时 undefined
- */
-async function attachReverseForward(
-  transport: RemoteTransport,
-  credential: TunnelProxyCredential,
-  options: Pick<OpenSessionOptions, 'onStageSkip'>,
-): Promise<ReverseHandle | undefined> {
-  const port = credential.reversePort;
-  try {
-    return await transport.forwardIn(port, (connection) => {
-      credential.handleReverseConnection(connection.stream);
-    });
-  } catch {
-    // 多视图并发持有同一会话时的预期情形；也可能是 sshd 禁了 TcpForwarding
-    options.onStageSkip?.(
-      `反向端口 ${port} 挂接失败：可能已被同一会话的其他本机进程占用（密钥代理由它维持），`
-        + '或远端 sshd 禁用了端口转发（检查 AllowTcpForwarding）',
-    );
-    return undefined;
   }
 }
 

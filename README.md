@@ -10,7 +10,7 @@ Inspired by VS Code Remote-SSH, Zed, and JetBrains Gateway — **code and sessio
 
 - **Local (client)**: Windows / Linux / macOS. Node.js v20.19+ or v22+ and pnpm 11+ are only needed for the **source-run** mode (pnpm is the default dev package manager, pinned via `packageManager`); release packages bundle their own Node runtime.
 - **Remote host**: Linux or macOS (POSIX); aarch64 (arm64) and x86_64 both work. No Node preinstalled required — the tool installs and self-checks it.
-- **WSL (Windows Subsystem for Linux)**: On Windows, WSL2 distributions are supported as remote targets. dsh is auto-installed inside WSL, tunneled via localhost forwarding — no SSH setup needed. Click the "WSL Sessions" card in the panel to use; the entry is hidden on non-Windows platforms.
+- **WSL (Windows Subsystem for Linux)**: On Windows, WSL2 distributions are supported as remote targets. dsh is auto-installed inside WSL, tunneled via localhost forwarding — no SSH setup needed. Click the "WSL Sessions" card in the panel to use; the entry is hidden on non-Windows platforms. The reverse channel — shared by the remote-window handoff and the LLM credential proxy — supports both WSL2 networking modes (NAT binds the default-route gateway address alongside the loopback; mirrored rides the shared loopback), with automatic networking-mode detection and a reverse-link self-check after attach.
 - **SSH authentication**: private key (`IdentityFile`, recommended); with no key configured, an interactive terminal prompts for a password (no echo); `--password` also works (leaks via process list / shell history — the CLI warns).
 - Hosts come from `Host` entries in `~/.ssh/config`, or ad-hoc `user@host[:port]` (IPv6 must go through the config).
 
@@ -166,9 +166,9 @@ Local (Windows/Linux/macOS)                      Remote (Linux/macOS)
                 │ HTTP / WS + session token     │  ├ session / agent           │
 ┌───────────────▼────────────────┐  forward     │  ├ fs / subprocess           │
 │ dsh-remote-explorer CLI (long-running)  │══════════════▶│  ├ terminal / lsp            │
-│ ├ transport  ssh2 conn & fwd   │              │  └ sandbox                    │
-│ ├ provision  install Node & dsh│              │                              │
-│ ├ tunnel     port forwarding   │  reverse     │                              │
+│ ├ transport  ssh2/WSL transport │              │  └ sandbox                    │
+│ ├ provision  Node/dsh/pnpm setu │              │                              │
+│ ├ tunnel     fwd+rev listener   │  reverse     │                              │
 │ ├ session    heartbeat & recon │◀═════════════│  baseURL → 127.0.0.1:<rev>   │
 │ └ credential LLM proxy         │              │                              │
 │   ▲ DEEPSEEK_API_KEY only here │              └──────────────────────────────┘
@@ -180,9 +180,9 @@ Real LLM API (local direct egress)
 Dependencies are strictly one-directional, top to bottom; lower layers must not import upper layers:
 
 ```
-Entry        cli/
+Entry        cli/   plugin/   plugin-client/
 Orchestration session/
-Capability   provision/   tunnel/   credential/
+Capability   provision/   tunnel/   credential/   handoff/
 Transport    transport/
 Foundation   hosts/   util/
 ```
@@ -191,33 +191,41 @@ Foundation   hosts/   util/
 |---|---|
 | [src/util/](src/util/) | Shell escaping, error types, interactive password prompt (no echo) |
 | [src/hosts/ssh-config-parser.ts](src/hosts/ssh-config-parser.ts) | **Sole** source of host config: parses ssh config (plus ad-hoc `user@host[:port]`), recursively resolves ProxyJump, applies auth overrides |
-| [src/transport/types.ts](src/transport/types.ts) | Transport abstraction (designed for multiple transports; Docker/WSL possible later) |
+| [src/transport/types.ts](src/transport/types.ts) | Transport abstraction (SSH and WSL implementations) |
 | [src/transport/ssh-transport.ts](src/transport/ssh-transport.ts) | ssh2 implementation: jump host chains, command execution, SFTP, forward/reverse forwarding, password auth (retries on rejection, up to 3) |
+| [src/transport/wsl-transport.ts](src/transport/wsl-transport.ts) | WSL distro transport: command execution and detached launch via wsl.exe |
 | [src/transport/channel-pool.ts](src/transport/channel-pool.ts) | SSH channel quota, avoids exceeding MaxSessions |
 | [src/transport/platform.ts](src/transport/platform.ts) | Shared platform detection and command building: arch mapping, uname parsing, PATH assembly |
+| [src/transport/wsl-network.ts](src/transport/wsl-network.ts) | WSL networking-mode probe pure functions: NAT/mirrored detection, default-route gateway resolution, loopback/reverse probe command builders |
 | [src/provision/probe.ts](src/provision/probe.ts) | Remote probe + **Node stability self-check** |
 | [src/provision/mirror-selector.ts](src/provision/mirror-selector.ts) | Live mirror latency measurement and adaptive selection |
 | [src/provision/remote-paths.ts](src/provision/remote-paths.ts) | Single source of truth for remote path rules |
 | [src/provision/node-installer.ts](src/provision/node-installer.ts) | Install Node, version-isolated, self-checks after install |
-| [src/provision/dsh-installer.ts](src/provision/dsh-installer.ts) | Install dsh, explicit version (no dist-tag reliance) |
+| [src/provision/dsh-installer.ts](src/provision/dsh-installer.ts) | Install dsh: latest published version by default (dist-tag `latest` lags in practice), fallback floor on resolution failure |
+| [src/provision/pnpm-installer.ts](src/provision/pnpm-installer.ts) | Install pnpm (pinned 11.7.0, reuses majors 10/11/12); version probe reads the on-disk package.json |
+| [src/provision/pnpm-profile.ts](src/provision/pnpm-profile.ts) | Idempotent pnpm 11 prerequisites in the host profile's pnpm-workspace.yaml (allowBuilds / minimumReleaseAge) |
 | [src/provision/profile-writer.ts](src/provision/profile-writer.ts) | Per-session independent `DSH_HOME` and profile/patch generation |
 | [src/provision/provisioner.ts](src/provision/provisioner.ts) | Provisioning orchestration, each step idempotent |
 | [src/provision/remote-context.ts](src/provision/remote-context.ts) | Remote execution context: binds transport instance and path info |
 | [src/util/session-id.ts](src/util/session-id.ts) | Deterministic session id from host alias + remote directory |
 | [src/tunnel/port-allocator.ts](src/tunnel/port-allocator.ts) | Remote port allocation and listen confirmation |
 | [src/tunnel/forward-local.ts](src/tunnel/forward-local.ts) | Forward tunneling, **listener survives reconnection** |
+| [src/tunnel/reverse-listener.ts](src/tunnel/reverse-listener.ts) | Windows-side reverse listener: **bind-first allocation**, ghost-port candidate retry, OS-assigned port when the whole range is silently held |
 | [src/session/remote-process.ts](src/session/remote-process.ts) | Remote dsh detach launch, token capture, safe shutdown |
 | [src/session/lifecycle-state.ts](src/session/lifecycle-state.ts) | Session state machine, pure functions |
 | [src/session/heartbeat.ts](src/session/heartbeat.ts) | Heartbeat: process + port + HTTP application-level, single command |
 | [src/session/reconnect.ts](src/session/reconnect.ts) | Bounded exponential backoff |
 | [src/session/session-registry.ts](src/session/session-registry.ts) | Local session table, lock file + atomic replacement |
-| [src/session/session-manager.ts](src/session/session-manager.ts) | Session orchestration: 5-phase open, heartbeat, reconnect, close |
+| [src/session/session-manager.ts](src/session/session-manager.ts) | Session orchestration: lifecycle, heartbeat, reconnect, close; open flow split into open-pipeline |
+| [src/session/open-pipeline/](src/session/open-pipeline/) | Open flow in four stages: prepare / probe / provision / tunnels (with the transport factory) |
+| [src/session/wsl-reverse.ts](src/session/wsl-reverse.ts) | WSL reverse-channel orchestration: networking-mode detection, gateway refresh on reconnect, reverse-link self-check |
 | [src/credential/tunnel-proxy.ts](src/credential/tunnel-proxy.ts) | Reverse tunnel LLM proxy (multi-provider routing), injects real keys |
 | [src/credential/provider-routes.ts](src/credential/provider-routes.ts) | Extract provider routes from local config (settings.yaml / profile patch), produce remote mirror |
 | [src/credential/local-credentials.ts](src/credential/local-credentials.ts) | Read local `.credentials.yaml` refs as env-var credential fallback |
 | [src/credential/token.ts](src/credential/token.ts) | Proxy token: generation and constant-time comparison |
 | [src/credential/proxy-secret.ts](src/credential/proxy-secret.ts) | Credential material I/O: session-scoped token and reverse port persisted on remote |
 | [src/plugin/remote-plugin-store.ts](src/plugin/remote-plugin-store.ts) | Remote plugin package management: list / install / remove / toggle |
+| [src/handoff/](src/handoff/) | Remote-window handoff: host half (bundle inside remote dsh) + browser half (status pill and management menu) |
 | [src/cli/](src/cli/) | Command dispatch, argument parsing, terminal output, per-command auth wiring |
 
 ## Development

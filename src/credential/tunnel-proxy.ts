@@ -12,6 +12,9 @@
  *                                                      （按路由换成对应真实 key）
  * ```
  *
+ * WSL 变体：反向端点 host 参数化为 reverseHost（NAT 模式 = 默认路由网关 IP，
+ * mirrored = 127.0.0.1），监听由 tunnel 层的 ReverseListener 在 Windows 侧持有。
+ *
  * 三个实现要点：
  *
  * 1. **不能把 ssh2 通道直接喂给 http.Server。** `emit('connection', stream)`
@@ -71,6 +74,8 @@ export class TunnelProxyCredential implements CredentialStrategy {
   private readonly server: http.Server;
   /** 本机回环监听端口；`start()` 之后可用 */
   private localPort = 0;
+  /** 反向端点主机；WSL 重连网关变化时经 updateReverseHost 更新 */
+  private _reverseHost: string;
   /** 活跃的反向通道对接（close 时统一销毁） */
   private readonly pipes = new Set<{ channel: Duplex; socket: Socket }>();
   private started = false;
@@ -79,6 +84,8 @@ export class TunnelProxyCredential implements CredentialStrategy {
   /**
    * @param proxyToken - 代理令牌（远端占位凭据，所有供应商共用）
    * @param reversePort - 反向隧道在远端占用的端口
+   * @param reverseHost - 反向端点主机（远端 dsh 回连目标）：SSH 恒 127.0.0.1；
+   *                     WSL NAT 模式为默认路由网关 IP（随 WSL 重启可能变化）
    * @param routes - 供应商路由表（含 DeepSeek 原生通道与 pi-ai 供应商）
    * @param hostAlias - 主机别名（诊断与日志用）
    * @param localCredentials - 本机 `.credentials.yaml` 的 refs 映射（环境变量名 → 密钥值）；
@@ -89,14 +96,33 @@ export class TunnelProxyCredential implements CredentialStrategy {
   constructor(
     private readonly proxyToken: string,
     readonly reversePort: number,
+    reverseHost: string,
     private readonly routes: readonly ProxyRoute[],
     private readonly hostAlias: string,
     private readonly localCredentials: Map<string, string>,
     private readonly manage?: ManageHandlers,
   ) {
+    this._reverseHost = reverseHost;
     this.server = http.createServer((req, res) => { void this.handle(req, res); });
     // 客户端在请求中途断开属正常（会话取消），别让它掀翻进程
     this.server.on('clientError', (_error, socket) => { socket.destroy(); });
+  }
+
+  /** 反向端点主机（诊断与链路自检用；值即落盘 `.runtime/reverse-host` 的内容） */
+  get reverseHost(): string {
+    return this._reverseHost;
+  }
+
+  /**
+   * 更新反向端点主机（WSL 重连时 NAT 网关变化）。
+   *
+   * 只影响后续 `remotePatches()` 渲染的 baseURL——运行中的远端进程认的是
+   * 启动时导入的旧值，材料重写后需重启远端进程才会消费新端点。
+   *
+   * @param host - 新的反向端点主机
+   */
+  updateReverseHost(host: string): void {
+    this._reverseHost = host;
   }
 
   /** 路由总数（诊断展示用） */
@@ -144,7 +170,11 @@ export class TunnelProxyCredential implements CredentialStrategy {
   }
 
   /**
-   * 会话 patch：DeepSeek 原生通道的 baseURL 指向反向端口。
+   * 会话 patch：DeepSeek 原生通道的 baseURL 指向反向端点。
+   *
+   * host 部分 = reverseHost（SSH 恒 127.0.0.1；WSL NAT 为网关 IP）——
+   * NAT 模式下远端 dsh 连 127.0.0.1 是自己的 loopback，连不到 Windows 侧
+   * 监听，必须走网关地址。
    *
    * pi-ai 供应商不走 patch——它们的 baseURL 由远端镜像的 settings.yaml
    * 重定向（见 provider-routes 的 mirrorSettingsForTunnel）。
@@ -153,7 +183,7 @@ export class TunnelProxyCredential implements CredentialStrategy {
     return [
       {
         id: DEEPSEEK_PATCH_ID,
-        config: { baseURL: `http://127.0.0.1:${this.reversePort}${DEEPSEEK_PREFIX}` },
+        config: { baseURL: `http://${this._reverseHost}:${this.reversePort}${DEEPSEEK_PREFIX}` },
       },
     ];
   }
