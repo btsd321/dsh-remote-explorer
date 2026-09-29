@@ -21,11 +21,14 @@ import type { RemoteTransport } from '../transport/types.js';
  * 取 IANA 动态端口段内一段偏高的范围，避开常见服务与多数系统的
  * `ip_local_port_range`（Linux 默认 32768–60999）所偏好的区域，
  * 减少与临时端口撞车的概率。
+ *
+ * 导出供同层的 reverse-listener 复用（Windows 侧反向监听沿用同一候选
+ * 策略，保证两端分配行为一致）。
  */
-const PORT_RANGE_START = 47_000;
+export const PORT_RANGE_START = 47_000;
 
-/** 候选端口区间长度 */
-const PORT_RANGE_SIZE = 2_000;
+/** 候选端口区间长度（导出理由同 {@link PORT_RANGE_START}） */
+export const PORT_RANGE_SIZE = 2_000;
 
 /** 单次分配的最大尝试次数 */
 const MAX_ATTEMPTS = 20;
@@ -94,7 +97,7 @@ export async function allocateRemotePorts(
 
   const picked: number[] = [];
   for (let attempt = 0; attempt < MAX_ATTEMPTS && picked.length < count; attempt += 1) {
-    const candidate = randomPort();
+    const candidate = randomPortCandidate();
     if (occupied.has(candidate)) continue;
     occupied.add(candidate);
     picked.push(candidate);
@@ -136,8 +139,11 @@ export async function isRemotePortListening(
  * 随机而非顺序递增：多个 CLI 并发分配时，顺序扫描会让它们大概率选中同一个
  * 端口（都从区间头部开始），随机能把冲突概率摊薄。
  *
+ * 导出供同层的 ReverseListener 用作绑定候选（分配即绑定语义下的同一随机
+ * 策略）；候选合法性由监听器自行校验（本函数只产生数字）。
+ *
  * @returns 端口号
  */
-function randomPort(): number {
+export function randomPortCandidate(): number {
   return PORT_RANGE_START + Math.floor(Math.random() * PORT_RANGE_SIZE);
 }

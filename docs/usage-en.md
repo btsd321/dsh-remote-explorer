@@ -22,6 +22,7 @@ This document provides a detailed walkthrough of every `dsh-remote-explorer` com
 - [Common workflows](#common-workflows)
 - [Exit codes](#exit-codes)
 - [Git Bash path caveat](#git-bash-path-caveat)
+- [WSL — Connect a local Linux distribution](#wsl--connect-a-local-linux-distribution)
 - [Using it as a dsh plugin](#using-it-as-a-dsh-plugin)
 
 ---
@@ -153,7 +154,7 @@ pnpm exec tsx src/cli/bin.ts provision <alias> --cwd //home/user
 |---|---|
 | `--cwd <path>` | Remote working directory (participates in session id computation) |
 | `--node-version <ver>` | Target Node version (default: v24 series) |
-| `--dsh-version <ver>` | Target dsh version or dist-tag |
+| `--dsh-version <ver>` | Target dsh version or dist-tag (default: resolve the latest published version, with a fallback on failure) |
 | `--refresh-mirrors` | Force re-benchmark mirror latency |
 | `--ssh-config <path>` | Use a custom ssh config file |
 | `--private-key <path>` | Private key path, wins over the config's IdentityFile (see [Authentication](#authentication-and-host-targeting)) |
@@ -185,7 +186,7 @@ DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect <alias> --cwd //hom
 | `--force-restart` | Restart remote dsh even if an existing session is available |
 | `--keep-remote` | On Ctrl-C, keep remote dsh running for reuse (default: stop it) |
 | `--node-version <ver>` | Target Node version (default: v24 series) |
-| `--dsh-version <ver>` | Target dsh version or dist-tag |
+| `--dsh-version <ver>` | Target dsh version or dist-tag (default: resolve the latest published version, with a fallback on failure) |
 | `--refresh-mirrors` | Force re-benchmark mirror latency |
 | `--ssh-config <path>` | Use a custom ssh config file |
 | `--private-key <path>` | Private key path, wins over the config's IdentityFile (see [Authentication](#authentication-and-host-targeting)) |
@@ -441,6 +442,38 @@ The CLI normalizes `//home/user` to `/home/user` internally, so session ids are 
 
 ---
 
+## WSL — Connect a local Linux distribution
+
+On Windows, a WSL2 distribution can serve as the remote target: dsh is installed and runs inside the distribution — no SSH setup or authentication involved. The CLI takes `--wsl <distro>` (list local distros with `list --wsl`; `--wsl-user <user>` selects the user inside the distribution, defaulting to the distribution's default user); in plugin form, click the "WSL Sessions" card in the left navigation. `--wsl` is mutually exclusive with `--private-key`/`--password`.
+
+```bash
+# List local WSL distributions
+pnpm exec tsx src/cli/bin.ts list --wsl
+
+# Connect to the Ubuntu distribution (in Git Bash, --cwd still needs double slashes — see the MSYS note above)
+DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect --wsl Ubuntu --cwd //home/youruser
+```
+
+The other commands (`doctor` / `provision` / `status` / `kill` / `clean`) accept `--wsl` as well; the session is identified by the alias `wsl:<distro>`, which feeds the session id and `kill`/`clean` targeting.
+
+### Networking modes and the reverse channel
+
+The **reverse channel** through which the remote dsh calls back to this machine (shared by the remote-window handoff's status-pill management callbacks and the LLM credential proxy) takes a different path under the two WSL2 networking modes:
+
+- **NAT (the WSL2 default)**: WSL has its own network namespace; its `127.0.0.1` cannot reach listeners on the Windows side. The tool therefore binds `127.0.0.1` and the default-route gateway IP (the `via` address of `ip route show default` inside WSL — the Windows host's address on the vEthernet adapter) on the same port on the Windows side, and the remote callback address is the gateway IP.
+- **mirrored**: Windows and WSL share the network namespace, so `127.0.0.1` inside WSL reaches the Windows-side listener directly; only the loopback is bound, and the callback address is `127.0.0.1`.
+
+Neither mode needs manual configuration. The networking mode is detected automatically at connect time (`wslinfo --networking-mode` inside WSL first; on older distributions without wslinfo, a loopback connectivity self-check is the fallback). The NAT gateway IP changes across WSL restarts, so it is re-probed and the remote `.runtime/reverse-host` material rewritten on every connect/reconnect (the callback address is parameterized; consumers fall back to `127.0.0.1` when the file is missing). After the channel is attached, an HTTP link self-check runs from inside WSL — if it fails, an explicit warning is emitted (a warn in the connection log, visible in the panel log); nothing degrades silently.
+
+mirrored is an optional advanced setup: it requires Windows 11 22H2+ and enabling it in `%UserProfile%\.wslconfig` (run `wsl --shutdown` afterwards for it to take effect):
+
+```ini
+[wsl2]
+networkingMode=mirrored
+```
+
+---
+
 ## Using it as a dsh plugin
 
 Since 0.6.0 this tool is also a valid dsh plugin package: installed into a local dsh profile, remote-session management appears in three surfaces — a global panel in the left navigation, a slash command, and agent tools. **The plugin shares the CLI's session orchestration, remote provisioning, and session table** — it is not a lite version, just the same engine in a different cockpit.
@@ -521,7 +554,7 @@ Override by entry id in the profile's `cordis.patch.yml`:
     keepRemoteOnDispose: false # keep the remote dsh when the host exits
     localPort: 0              # local port (0 = auto-assign)
     nodeVersion: ""           # empty = provisioner default
-    dshVersion: ""            # empty = provisioner default
+    dshVersion: ""            # empty = default (resolves the latest published version)
     forceRestart: false
     refreshMirrors: false
     panel: true               # false = skip panel routes, keep command and tools
@@ -548,6 +581,11 @@ The session table (`~/.dsh/remote-sessions.json`) is shared both ways: the panel
 - **pnpm not found (exit 127)**: `npm i -g pnpm` (only needed for local `dsh plugin add/remove`; the remote store uses the pnpm provisioning installs on the remote)
 - **Peer dependency warnings**: expected under `autoInstallPeers: false`; at runtime peers resolve through the profile's installation fallback links to the host's copies — harmless
 - **Connect stuck in provisioning**: watch the panel log; a first provisioning downloads Node and dsh (minutes) — run `doctor` to pre-check the host
-- **No status pill in the remote window**: make sure the session connected on 0.6.x or later (older sessions get the component backfilled at reconnect; a reused live remote process shows it only after its next restart); with the session cookie, the remote `/api/dsh-remote-handoff/meta` should return 200, 503 = session runtime materials missing
+- **No status pill in the remote window**: make sure the session connected on 0.6.x or later (older sessions get the component backfilled at reconnect; a reused live remote process shows it only after its next restart). Work down the chain:
+  1. In the local connection log (CLI terminal / panel progress log), look for the「反向监听已绑定 127.0.0.1:<port>」and「WSL 反向链路自检」lines — a failing self-check emits a warn with troubleshooting hints (WSL sessions only);
+  2. In the remote dsh log (the session's `.runtime/dsh.log`, i.e. `~/.dsh-remote-explorer/btsd321/sessions/<session id>/.runtime/dsh.log`), look for the host-half activation line `[INFO] [dsh-remote-handoff] 宿主半已激活…` — its absence means the handoff bundle was not installed or loaded;
+  3. In the remote page's browser console (F12), look for the meta-fetch warn: `HTTP 503 handoff_unavailable` = session runtime materials missing, `HTTP 502 manager_unreachable` = local reverse channel unreachable (the local manager process exited, or the reverse link never came up);
+  4. With a WSL NAT session whose self-check fails: run `wslinfo --networking-mode` inside WSL to confirm the mode and `ip route show default` to check the `via` gateway address; enterprise GPO firewall policies may block inbound traffic from the WSL subnet (the Hyper-V firewall allows the WSL subnet by default, but group policy can tighten it) — an administrator needs to allow it.
+  As a final check, the remote `/api/dsh-remote-handoff/meta` with the session cookie should return 200.
 - **Remote plugin install fails**: read the pnpm error in the panel log; the registry comes from the provisioning benchmark cache; concurrent provisioning/install on the same remote account makes the later one wait on the flock, timing out after 15 minutes with "another bootstrap is in progress"
 - **Installing a GitHub plugin reports "GitHub connection timeout"**: dsh probes `github:` specs over HTTPS (`git ls-remote`) — SSH (port 22) working does not mean HTTPS (port 443) works. Give the launcher a proxy: in CLI, set `DSH_REMOTE_PROXY` (see [Common workflows](#common-workflows)); in the plugin panel, use the ⚙ gear button next to the host input or on a session row (the proxy preset fills it in one click). The config takes effect on the **next connect** — a running session must be disconnected (with "Also stop remote dsh" checked) and reconnected before the variables are injected

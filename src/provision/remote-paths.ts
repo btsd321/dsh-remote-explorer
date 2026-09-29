@@ -220,6 +220,16 @@ export interface RemotePaths {
   sessionReversePortFile(sessionId: string): string;
 
   /**
+   * 某会话的反向端点主机文件。
+   *
+   * 内容 = 单行主机地址（IPv4，带尾随换行）。WSL NAT 模式下是默认路由网关
+   * IP——它随 WSL 重启变化，所以每次连接/重连都重探测重写；SSH 会话不写此
+   * 文件，消费方在文件缺失或读取失败时回落 `127.0.0.1`。
+   * @param sessionId - 会话 id
+   */
+  sessionReverseHostFile(sessionId: string): string;
+
+  /**
    * 某会话的 owner 指纹文件（非秘密，644 即可）。
    *
    * 内容 = 发起本机指纹（hostname:os用户，可被 DSH_OWNER_TAG 覆盖）。
@@ -280,6 +290,7 @@ export function createRemotePaths(homeDir: string): RemotePaths {
     sessionHomePatchFile: (sessionId) => `${base}/sessions/${sessionId}/cordis.patch.yml`,
     sessionProxyTokenFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/proxy-token`,
     sessionReversePortFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/reverse-port`,
+    sessionReverseHostFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/reverse-host`,
     sessionOwnerFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/owner`,
 
     tmpDir: (pid, suffix) => `${base}/tmp/${suffix}-${LOCAL_HOST_TAG}-${pid}`,

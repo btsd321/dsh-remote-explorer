@@ -10,7 +10,7 @@
 
 - **本机（客户端）**：Windows / Linux / macOS。Node.js v20.19+ 或 v22+ 与 pnpm 11+ 仅**源码运行方式**需要（开发环境默认 pnpm，`packageManager` 已钉版本）；release 包自带 Node 运行时。
 - **远端主机**：Linux 或 macOS（POSIX）；aarch64（arm64）与 x86_64 均可。远端无需预装 Node——工具会自动安装并自检。
-- **WSL（Windows Subsystem for Linux）**：Windows 平台额外支持 WSL2 发行版作为远程目标。在 WSL 内自动安装 dsh，通过 localhost forwarding 建立隧道，无需 SSH 配置。点击面板中的「WSL 会话」卡片即可使用；非 Windows 平台自动隐藏此入口。
+- **WSL（Windows Subsystem for Linux）**：Windows 平台额外支持 WSL2 发行版作为远程目标。在 WSL 内自动安装 dsh，通过 localhost forwarding 建立隧道，无需 SSH 配置。点击面板中的「WSL 会话」卡片即可使用；非 Windows 平台自动隐藏此入口。反向通道（远端窗口 handoff 交接与 LLM 凭据代理共用）支持 WSL2 两种网络模式——NAT 模式在回环之外额外绑定默认路由网关地址，mirrored 模式走共享回环——含网络模式自动探测与挂接后的反向链路自检。
 - **SSH 认证**：私钥（`IdentityFile`，推荐）；无私钥时在交互式终端提示输入密码（不回显）；也可 `--password` 明文传入（有泄露风险，CLI 会警告）。
 - 主机来自 `~/.ssh/config` 的 `Host` 条目，或 `user@host[:port]` 直连（IPv6 需写进 config）。
 
@@ -166,9 +166,9 @@ dsh 自身会把代理变量透传给它拉起的 `git`/`pnpm` 子进程，装�
                 │ HTTP / WS + 会话令牌           │  ├ session / agent           │
 ┌───────────────▼────────────────┐  正向转发     │  ├ fs / subprocess           │
 │ dsh-remote-explorer CLI（常驻）          │══════════════▶│  ├ terminal / lsp            │
-│ ├ transport  ssh2 连接与转发     │              │  └ sandbox                   │
-│ ├ provision  装 Node 与 dsh      │              │                              │
-│ ├ tunnel     端口转发            │  反向转发     │                              │
+│ ├ transport  ssh2/WSL 双传输    │              │  └ sandbox                   │
+│ ├ provision  装 Node/dsh/pnpm   │              │                              │
+│ ├ tunnel     正反向转发+反向监听 │  反向转发     │                              │
 │ ├ session    心跳与重连          │◀═════════════│  baseURL → 127.0.0.1:<反向>  │
 │ └ credential LLM 代理            │              │                              │
 │   ▲ DEEPSEEK_API_KEY 只在这里    │              └──────────────────────────────┘
@@ -180,9 +180,9 @@ dsh 自身会把代理变量透传给它拉起的 `git`/`pnpm` 子进程，装�
 依赖方向严格单向向下，下层不得 import 上层：
 
 ```
-入口层      cli/
+入口层      cli/   plugin/   plugin-client/
 编排层      session/
-能力层      provision/   tunnel/   credential/
+能力层      provision/   tunnel/   credential/   handoff/
 传输层      transport/
 基础层      hosts/   util/
 ```
@@ -191,33 +191,41 @@ dsh 自身会把代理变量透传给它拉起的 `git`/`pnpm` 子进程，装�
 |---|---|
 | [src/util/](src/util/) | shell 转义、错误类型、交互式密码提示（不回显） |
 | [src/hosts/ssh-config-parser.ts](src/hosts/ssh-config-parser.ts) | 主机配置的**唯一**来源：解析 ssh config（含 `user@host[:port]` 直连），递归解析 ProxyJump，应用认证覆盖 |
-| [src/transport/types.ts](src/transport/types.ts) | 传输抽象接口（按多传输设计，日后可加 Docker / WSL） |
+| [src/transport/types.ts](src/transport/types.ts) | 传输抽象接口（SSH 与 WSL 双实现） |
 | [src/transport/ssh-transport.ts](src/transport/ssh-transport.ts) | ssh2 实现：跳板机链、命令执行、SFTP、正反向转发、密码认证（被拒重试，最多 3 次） |
+| [src/transport/wsl-transport.ts](src/transport/wsl-transport.ts) | WSL 发行版传输：经 wsl.exe 执行命令与 detach 启动 |
 | [src/transport/channel-pool.ts](src/transport/channel-pool.ts) | SSH 通道配额，避免超 `MaxSessions` |
 | [src/transport/platform.ts](src/transport/platform.ts) | 平台探测与命令构建共享：架构映射、uname 解析、PATH 拼接 |
+| [src/transport/wsl-network.ts](src/transport/wsl-network.ts) | WSL 网络模式探测纯函数：NAT/mirrored 判定、默认路由网关解析、回环与反向探测命令构建 |
 | [src/provision/probe.ts](src/provision/probe.ts) | 远端探测 + **Node 稳定性自检** |
 | [src/provision/mirror-selector.ts](src/provision/mirror-selector.ts) | 在远端实测镜像延迟并自适应选取 |
 | [src/provision/remote-paths.ts](src/provision/remote-paths.ts) | 远端路径规则的唯一真源 |
 | [src/provision/node-installer.ts](src/provision/node-installer.ts) | 装 Node，版本隔离，装完自检 |
-| [src/provision/dsh-installer.ts](src/provision/dsh-installer.ts) | 装 dsh，版本显式指定不依赖 dist-tag |
+| [src/provision/dsh-installer.ts](src/provision/dsh-installer.ts) | 装 dsh：默认解析已发布版本最大值（dist-tag 实测滞后），解析失败回退兜底地板 |
+| [src/provision/pnpm-installer.ts](src/provision/pnpm-installer.ts) | 装 pnpm（钉 11.7.0，主版本 10/11/12 兼容复用）；版本探针读落盘 package.json |
+| [src/provision/pnpm-profile.ts](src/provision/pnpm-profile.ts) | host profile 的 pnpm 11 前提幂等补齐（allowBuilds / minimumReleaseAge） |
 | [src/provision/profile-writer.ts](src/provision/profile-writer.ts) | 每会话独立 `DSH_HOME` 与 profile、patch 生成 |
 | [src/provision/provisioner.ts](src/provision/provisioner.ts) | 引导流程编排，各步均幂等 |
 | [src/provision/remote-context.ts](src/provision/remote-context.ts) | 远端执行上下文封装：绑定传输实例与路径信息 |
 | [src/util/session-id.ts](src/util/session-id.ts) | 由主机别名 + 远端目录算确定性会话 id |
 | [src/tunnel/port-allocator.ts](src/tunnel/port-allocator.ts) | 远端端口分配与监听确认 |
 | [src/tunnel/forward-local.ts](src/tunnel/forward-local.ts) | 正向转发，**监听器跨重连存活** |
+| [src/tunnel/reverse-listener.ts](src/tunnel/reverse-listener.ts) | Windows 侧反向监听：**分配即绑定**，幽灵端口换候选，区间被整段占用时回退 OS 分配端口 |
 | [src/session/remote-process.ts](src/session/remote-process.ts) | 远端 dsh 的 detach 启动、令牌捕获、安全停止 |
 | [src/session/lifecycle-state.ts](src/session/lifecycle-state.ts) | 会话状态机，纯函数 |
 | [src/session/heartbeat.ts](src/session/heartbeat.ts) | 心跳探活：进程 + 端口 + HTTP 应用级，一条命令 |
 | [src/session/reconnect.ts](src/session/reconnect.ts) | 有限次指数退避 |
 | [src/session/session-registry.ts](src/session/session-registry.ts) | 本机会话表，锁文件 + 原子替换 |
-| [src/session/session-manager.ts](src/session/session-manager.ts) | 会话编排：五阶段打开流程、心跳、重连、关闭 |
+| [src/session/session-manager.ts](src/session/session-manager.ts) | 会话编排：生命周期、心跳、重连、关闭；打开流程拆入 open-pipeline |
+| [src/session/open-pipeline/](src/session/open-pipeline/) | 打开流程四阶段：prepare / probe / provision / tunnels（含传输工厂） |
+| [src/session/wsl-reverse.ts](src/session/wsl-reverse.ts) | WSL 反向通道编排：网络模式探测、网关随重连刷新、反向链路自检 |
 | [src/credential/tunnel-proxy.ts](src/credential/tunnel-proxy.ts) | 反向隧道 LLM 代理（多供应商路由），注入真实 key |
 | [src/credential/provider-routes.ts](src/credential/provider-routes.ts) | 从本机配置（settings.yaml / profile patch）提取供应商路由，产出远端镜像 |
 | [src/credential/local-credentials.ts](src/credential/local-credentials.ts) | 读取本机 `.credentials.yaml` 的 refs 段，作为环境变量的凭据回退源 |
 | [src/credential/token.ts](src/credential/token.ts) | 代理令牌：生成与常数时间比较 |
 | [src/credential/proxy-secret.ts](src/credential/proxy-secret.ts) | 凭据材料读写：会话级令牌与反向端口的远端落盘 |
 | [src/plugin/remote-plugin-store.ts](src/plugin/remote-plugin-store.ts) | 远端插件包管理：list / install / remove / toggle |
+| [src/handoff/](src/handoff/) | 远端窗口交接组件：宿主半（远端 dsh 内 bundle）+ 浏览器半（状态 pill 与管理菜单） |
 | [src/cli/](src/cli/) | 命令分派、参数解析、终端输出、命令级认证装配 |
 
 ## 开发

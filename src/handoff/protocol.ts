@@ -12,6 +12,14 @@
  *                                                  （令牌鉴权）──进程内──▶ 监督器
  * ```
  *
+ * reverse-host 材料（`.runtime/reverse-host`，与 reverse-port/proxy-token 同
+ * 目录）：由**本机**在每次连接时重写——WSL NAT 网络模式下写 NAT 网关侧的
+ * 本机地址（如 172.30.96.1），mirrored/SSH 场景通常就是 127.0.0.1；文件可能
+ * 不存在（端点参数化实现之前的旧会话材料）。宿主半读它与 reverse-port 拼成
+ * 回调地址 host:port，**缺失/为空/读异常一律回落 127.0.0.1**——硬性向后
+ * 兼容承诺：旧远端材料与 SSH 会话没有该文件也必须照常工作。该缺省回落是
+ * 向后兼容扩展而非协议形状变化，HANDOFF_PROTOCOL_VERSION 不因此升级。
+ *
  * 本机管理页地址（managerUrl）由面板在发起连接时随请求带来——CLI 形态没有
  * 管理页，meta 里该字段缺省，远端菜单据此降级为只读。
  */
@@ -22,12 +30,19 @@ export const HANDOFF_PKG_NAME = 'dsh-remote-handoff';
 /** 远端组件宿主半在远端 dsh 注册的同源路由前缀（check-plugin 护栏盯守） */
 export const HANDOFF_ROUTE_PREFIX = '/api/dsh-remote-handoff';
 
-/** 本机反向代理为远端组件开出的管理路由前缀（与 LLM 路由同令牌闸门） */
+/**
+ * 本机反向代理为远端组件开出的管理路由前缀（与 LLM 路由同令牌闸门）。
+ * 宿主半按 `http://<reverse-host>:<reverse-port>/manage/<op>` 拼回调地址，
+ * 其中 reverse-host 读 `.runtime/reverse-host` 材料、缺省回落 127.0.0.1
+ * （契约细节见文件头）。
+ */
 export const MANAGE_PREFIX = '/manage';
 
 /**
  * 交接协议版本：远端菜单与本机构造器各持一份（构建期同源注入）。
  * 不一致时远端菜单降级只读——老会话的旧 bundle 不会误读新响应形状。
+ * reverse-host 材料及其 127.0.0.1 缺省回落是**向后兼容扩展**（原本就
+ * 回环对接的场景行为不变），不构成协议形状变化，版本保持 1 不升级。
  */
 export const HANDOFF_PROTOCOL_VERSION = 1;
 

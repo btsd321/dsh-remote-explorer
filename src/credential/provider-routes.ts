@@ -265,11 +265,14 @@ export function extractProviderRoutes(settingsText: string): ProxyRoute[] {
  *
  * @param settingsText - 本机 settings.yaml 文本
  * @param reversePort - 反向隧道端口
+ * @param reverseHost - 反向端点主机（WSL NAT 模式为网关 IP）；缺省 127.0.0.1
+ *                      （SSH 路径与既有调用行为不变）
  * @returns 远端 settings.yaml 文本；无法处理时 undefined
  */
 export function mirrorSettingsForTunnel(
   settingsText: string,
   reversePort: number,
+  reverseHost: string = '127.0.0.1',
 ): string | undefined {
   let document: unknown;
   try {
@@ -291,7 +294,7 @@ export function mirrorSettingsForTunnel(
         // 与 extractProviderRoutes 同一判据：两个条件齐才有资格重定向
         if (typeof apiKeyEnv !== 'string' || !ENV_NAME_PATTERN.test(apiKeyEnv)) continue;
         if (typeof baseURL !== 'string' || baseURL.length === 0) continue;
-        record['baseURL'] = `http://127.0.0.1:${reversePort}${PROVIDER_NS}/${name}`;
+        record['baseURL'] = `http://${reverseHost}:${reversePort}${PROVIDER_NS}/${name}`;
       }
     }
   }
@@ -313,11 +316,14 @@ export function mirrorSettingsForTunnel(
  *
  * @param settingsText - 本机 settings.yaml 文本
  * @param reversePort - 反向隧道端口
+ * @param reverseHost - 反向端点主机（WSL NAT 模式为网关 IP）；缺省 127.0.0.1
+ *                      （SSH 路径与既有调用行为不变）
  * @returns patch YAML 文本（单条 `- id: llm-pi-ai` + `config:`）；无法处理时 undefined
  */
 export function renderProviderTunnelPatch(
   settingsText: string,
   reversePort: number,
+  reverseHost: string = '127.0.0.1',
 ): string | undefined {
   let document: unknown;
   try {
@@ -341,7 +347,7 @@ export function renderProviderTunnelPatch(
       // 其余供应商字段原样保留（整块替换语义下丢了就是丢配置）
       if (typeof record['apiKeyEnv'] !== 'string' || !ENV_NAME_PATTERN.test(record['apiKeyEnv'])) continue;
       if (typeof record['baseURL'] !== 'string' || record['baseURL'] === '') continue;
-      record['baseURL'] = `http://127.0.0.1:${reversePort}${PROVIDER_NS}/${name}`;
+      record['baseURL'] = `http://${reverseHost}:${reversePort}${PROVIDER_NS}/${name}`;
     }
   }
 
