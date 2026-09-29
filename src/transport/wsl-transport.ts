@@ -8,8 +8,12 @@
  * 核心设计：
  * - 命令执行：`wsl.exe -d <distro> -u <user> -e bash -c <command>`
  * - 文件读写：UNC 路径为主路径（零开销、二进制安全），exec 为回退
- * - 端口转发：WSL2 与 Windows 共享 localhost（mirrored 模式）或通过 VM IP（NAT 模式），
- *   openChannel 创建 TCP socket 直连；forwardIn 在 Windows 侧开 TCP server
+ * - 端口转发：WSL2 与 Windows 共享 localhost（localhostForwarding 默认开启，
+ *   NAT/mirrored 均有效），openChannel 用 127.0.0.1 直连即可
+ * - 反向转发：**不经本传输**。反向监听发生在 Windows 本机侧（远端 dsh 回连
+ *   的目标是 Windows 而非 WSL），由编排层持有 tunnel 层的 ReverseListener
+ *   （分配即绑定 + NAT 网关多地址，见 src/tunnel/reverse-listener.ts）；
+ *   故本类不实现 RemoteTransport.forwardIn（可选能力）
  * - 通道配额：WSL 没有 SSH 通道限制，但仍保留 release 语义以保持接口一致
  *
  * 分层约束：本文件属传输层，不得 import 编排层或能力层的任何模块。
@@ -17,7 +21,7 @@
 
 import { execFile } from 'node:child_process';
 import { readFile, writeFile, copyFile, chmod } from 'node:fs/promises';
-import { createServer, Socket, type Server } from 'node:net';
+import { Socket } from 'node:net';
 import { Duplex } from 'node:stream';
 import { RemoteError, toErrorMessage } from '../util/errors.js';
 import { quote } from '../util/shell-quote.js';
@@ -36,8 +40,6 @@ import type {
   RemoteFileOptions,
   RemotePlatform,
   RemoteTransport,
-  ReverseConnection,
-  ReverseHandle,
 } from './types.js';
 
 /** WSL 传输构造选项 */
@@ -64,8 +66,6 @@ export class WslTransport implements RemoteTransport {
   private detectedPlatform: RemotePlatform | undefined;
   private disposed = false;
   private alive = true;
-  /** forwardIn 创建的 TCP server 列表；dispose 时逐一关闭 */
-  private readonly forwardServers: Server[] = [];
   /** openChannel 创建的活跃 socket 列表；dispose 时逐一销毁 */
   private readonly activeSockets = new Set<Socket>();
 
@@ -327,73 +327,15 @@ export class WslTransport implements RemoteTransport {
     };
   }
 
-  /**
-   * 反向转发：在 Windows 侧开 TCP server，WSL 内的连接通过 localhost 到达。
-   *
-   * WSL2 Mirrored 模式下 Windows 与 WSL 共享 localhost，远端进程可直接连接。
-   * NAT 模式下需要 portproxy 或类似机制——这里简化为仅在 mirrored 模式下工作，
-   * NAT 模式报错提示用户配置网络。
-   *
-   * @param remotePort - 远端监听端口（实际在 Windows 侧监听）
-   * @param onConnection - 每个入站连接的处理器
-   * @returns 转发句柄
-   */
-  async forwardIn(
-    remotePort: number,
-    onConnection: (connection: ReverseConnection) => void,
-  ): Promise<ReverseHandle> {
-    this.requireAlive();
-
-    const server = createServer((socket: Socket) => {
-      // error 监听器必须在任何 destroy 之前挂上
-      socket.on('error', () => { /* 客户端断开等无害错误，静默忽略 */ });
-      const stream = Duplex.from({ readable: socket, writable: socket });
-      onConnection({
-        remoteAddr: '127.0.0.1',
-        remotePort,
-        stream,
-      });
-    });
-
-    // 只绑 127.0.0.1——绝不能让反向端口对外可见
-    await new Promise<void>((resolve, reject) => {
-      server.on('error', (error: Error) => {
-        reject(new RemoteError(
-          'CONNECT_FAILED',
-          `WSL ${this.options.distroName} 反向监听 127.0.0.1:${remotePort} 失败: ${error.message}`,
-          { cause: error, hostAlias: this.hostAlias },
-        ));
-      });
-      server.listen(remotePort, '127.0.0.1', () => resolve());
-    });
-
-    this.forwardServers.push(server);
-
-    return {
-      remotePort,
-      close: async (): Promise<void> => {
-        await new Promise<void>((resolve) => {
-          server.close(() => resolve());
-        });
-        const index = this.forwardServers.indexOf(server);
-        if (index >= 0) this.forwardServers.splice(index, 1);
-      },
-    };
-  }
+  // 反向转发不经本传输（见文件头「反向转发」条目）：远端 dsh 回连的目标是
+  // Windows 侧监听而非 WSL，由编排层持有 tunnel 层的 ReverseListener。
+  // RemoteTransport.forwardIn 为可选能力，本类不实现。
 
   /** 释放连接与全部派生资源；幂等 */
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
     this.alive = false;
-
-    // 关闭所有反向转发 server
-    for (const server of this.forwardServers) {
-      await new Promise<void>((resolve) => {
-        server.close(() => resolve());
-      });
-    }
-    this.forwardServers.length = 0;
 
     // 销毁所有活跃 socket
     for (const socket of this.activeSockets) {

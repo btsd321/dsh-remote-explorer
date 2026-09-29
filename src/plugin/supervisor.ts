@@ -33,6 +33,20 @@ const MAX_LOG_ENTRIES = 1_000;
 /** 快照里附带的日志尾部条数（列表视图用，详情走增量接口） */
 const LOG_TAIL_SIZE = 20;
 
+/**
+ * 从会话表记录的 hostAlias 还原传输类型。
+ *
+ * 会话表（session-registry）的记录不带传输类型字段；WslTransport 构造时
+ * 把 hostAlias 定为 `wsl:<发行版名>`（remote-process 等模块也依赖同一
+ * 约定判别 WSL），其余形态（SSH 别名 / user@host[:port] 直连）视为 ssh。
+ *
+ * @param hostAlias - 会话表记录的主机别名
+ * @returns 传输类型
+ */
+export function transportTypeOfHostAlias(hostAlias: string): TransportType {
+  return hostAlias.startsWith('wsl:') ? 'wsl' : 'ssh';
+}
+
 /** 日志条目类别（只允许 info/warn/error + state 生命周期） */
 export type LogKind =
   /** 生命周期状态变化 */
@@ -341,8 +355,9 @@ export class SessionSupervisor {
         sessionId: record.sessionId,
         hostAlias: record.hostAlias,
         remoteCwd: record.remoteCwd,
-        // 外部视图来自会话表，目前只有 SSH 会话会登记（WSL 暂不走 registry）
-        transportType: 'ssh',
+        // 会话表记录不带传输类型字段；WSL 传输的 hostAlias 带 'wsl:' 前缀
+        // （WslTransport 构造约定），据此还原真实值
+        transportType: transportTypeOfHostAlias(record.hostAlias),
         state: { tag: 'connected', missedHeartbeats: 0, reconnectAttempts: 0 },
         connecting: false,
         localPort: record.localPort,

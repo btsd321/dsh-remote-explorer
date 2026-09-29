@@ -10,7 +10,10 @@
  * 远端 dsh 自身 Cookie 鉴权），宿主半再经反向隧道回调本机监督器。
  *
  * 两条降级路径：
- * - meta 读不到（宿主半材料缺失/路由不在）→ 整个 pill 不渲染，远端页面零感知
+ * - meta 读不到（宿主半材料缺失/路由不在/通道断开）→ 整个 pill 不渲染——
+ *   这是**刻意降级**不是 bug：远端页面不该被一枚状态 pill 的故障打扰；
+ *   首次失败会在浏览器 console 打一条 warn（路由 + HTTP 状态或错误码 +
+ *   中文提示），把排查方向指向本机反向通道/会话材料而非页面自身
  * - managerUrl 缺省（CLI 形态会话）或协议版本不匹配 → 菜单只读 + 说明文案
  *
  * 「关闭/停止并返回」是 navigate-then-act：断开会立刻杀死经隧道服务的本页面，
@@ -163,14 +166,50 @@ function HandoffPill(props: HandoffPillProps): ReactNode {
   const lastSeq = React.useRef(0);
   const logBoxRef = React.useRef<HTMLDivElement | null>(null);
   const buttonRef = React.useRef<HTMLButtonElement | null>(null);
+  // meta 失败是否已警告过：meta 本身只拉一次（非轮询），守卫主要防 React
+  // StrictMode 开发模式「挂载→卸载→重挂」导致同一次失败打两条 warn
+  const metaWarned = React.useRef(false);
 
-  // meta 只拉一次：不可达则整个组件静默退场（远端页面无感知）
+  // meta 只拉一次：失败则整个组件静默退场（远端页面无感知）——**刻意降级**
+  // 不是 bug，理由见文件头降级路径。失败在 console 打一条 warn 留下线索
+  // （仅首次失败打一次，不随轮询刷屏——meta 就不是轮询）；浏览器半没有
+  // 仓库的 createLogger（那是 CLI 终端设施，也 import 不进浏览器 bundle），
+  // console.warn 是页面侧唯一日志通道。
   React.useEffect(() => {
     let stopped = false;
-    void fetch(`${HANDOFF_ROUTE_PREFIX}/meta`)
-      .then(response => (response.ok ? response.json() as Promise<HandoffMeta> : Promise.reject(new Error())))
-      .then(value => { if (!stopped) setMeta(value); })
-      .catch(() => { if (!stopped) setMeta(null); });
+    const warnOnce = (detail: string): void => {
+      if (metaWarned.current) return;
+      metaWarned.current = true;
+      console.warn(
+        `[dsh-remote-handoff] ${HANDOFF_ROUTE_PREFIX}/meta 拉取失败（${detail}）：`
+        + '侧栏的状态 pill 将不渲染。这通常指向本机反向通道或会话运行时材料的问题'
+        + '（本地管理进程未在服务/反向隧道未接通），而非远端页面自身故障。',
+      );
+    };
+    void (async (): Promise<void> => {
+      try {
+        const response = await fetch(`${HANDOFF_ROUTE_PREFIX}/meta`);
+        if (stopped) return;
+        if (response.ok) {
+          setMeta(await response.json() as HandoffMeta);
+          return;
+        }
+        // 非 2xx：宿主半错误体通常带 code——503 handoff_unavailable＝远端材料
+        // 缺失、502 manager_unreachable＝本机代理不可达；取不到再退回纯状态码
+        let code: string | undefined;
+        try {
+          code = (await response.json() as { code?: string }).code;
+        } catch { /* 错误体不是 JSON：报纯状态码即可 */ }
+        warnOnce(`HTTP ${response.status}${code === undefined ? '' : ` ${code}`}`);
+        setMeta(null);
+      } catch (error) {
+        if (stopped) return;
+        // 网络层失败（路由不存在/连接断开）：无状态码可报，归一化错误名
+        const reason = error instanceof Error ? error.name : String(error);
+        warnOnce(`网络错误 ${reason}`);
+        setMeta(null);
+      }
+    })();
     return () => { stopped = true; };
   }, []);
 
