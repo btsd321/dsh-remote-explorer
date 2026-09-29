@@ -1,7 +1,8 @@
 /**
  * @file 远端 Node 运行时安装
  * @description 下载官方 Node 发行版 tarball 到远端并解包到版本隔离的目录，
- *              装完立即做稳定性自检。
+ *              装完立即做稳定性自检。下载走镜像候选链（{@link nodeMirrorChain}）：
+ *              单一镜像失败自动换下一源，全部镜像与官方源都失败才报错。
  *
  * 版本策略（决策 10）：默认锁定 v24 系。P0 实测 v22.23.2 在 aarch64 上起进程
  * 崩溃率 35%（V8 初始化 isolate 随机失败，报 OOM 但机器内存充足），
@@ -13,13 +14,17 @@
  * 升级时不覆盖旧版本，避免「运行中的进程占着文件」这类故障。
  */
 
-import { RemoteError } from '../util/errors.js';
+import { RemoteError, toErrorMessage } from '../util/errors.js';
+import { createLogger } from '../util/logger.js';
 import { quote } from '../util/shell-quote.js';
 import { INSTALL_LOCK_WAIT_SECONDS, lockInstallCommand } from './install-lock.js';
+import { getCandidates, OFFICIAL_NODE_BASE_URL, type MirrorCandidate } from './mirror-selector.js';
 import { assertNodeStable, checkNodeStability } from './probe.js';
 import type { RemoteContext } from './remote-context.js';
 import type { RemotePaths } from './remote-paths.js';
 import type { RemoteArch, RemoteOs, RemoteTransport } from '../transport/types.js';
+
+const log = createLogger('node-installer');
 
 /**
  * 默认安装的 Node 版本。
@@ -103,14 +108,12 @@ export async function ensureNode(
 
   if (!reused) {
     // 调用方在「探测显示已装」时会省掉镜像测速并传空 URL。若此时却判定需要安装，
-    // 说明探测与实际不一致（安装目录残留但二进制损坏），必须明确报错而不是
-    // 拿着空 URL 去拼出一个必然失败的下载地址
+    // 说明探测与实际不一致（安装目录残留但二进制损坏）——不再视为错误：下载
+    // 候选链（{@link nodeMirrorChain}）不依赖传入的首选镜像，直接自愈重装
     if (mirrorBaseUrl.length === 0) {
-      throw new RemoteError(
-        'EXEC_FAILED',
-        `主机 ${transport.hostAlias} 上的 Node ${version} 安装已损坏`
-          + `（${nodeBin} 无法执行或版本不符），但未提供下载镜像。`
-          + `请删除 ${paths.nodeDir(version)} 后重试`,
+      log.warn(
+        `探测判定 Node ${version} 已装但二进制不可用，安装目录疑似残留`
+          + `（${nodeBin} 无法执行或版本不符），将经默认镜像候选链重新下载`,
         { hostAlias: transport.hostAlias },
       );
     }
@@ -142,18 +145,61 @@ export async function ensureNode(
 }
 
 /**
+ * 构造 Node 下载的镜像候选链（纯函数）。
+ *
+ * 单一镜像失败不终止安装（用户明确的语义）：按「首选镜像 → 其余镜像 →
+ * 官方源垫底」的顺序逐一尝试，全部失败才报错。首选镜像（测速或缓存选中）
+ * 优先；官方源固定垫底——它最慢但最全（镜像同步缺口实测存在：清华
+ * nodejs-release 缺 v24.21.0 整个目录，测速却照样能选中它）。
+ *
+ * @param preferredBaseUrl - 首选镜像 baseUrl（可为空串；不在候选列表里时按
+ *                          未知候选置于链首）
+ * @returns 去重后的候选链，baseUrl 互不相同
+ */
+export function nodeMirrorChain(preferredBaseUrl: string): readonly MirrorCandidate[] {
+  const chain: MirrorCandidate[] = [];
+  const seen = new Set<string>();
+  const add = (candidate: MirrorCandidate): void => {
+    if (seen.has(candidate.baseUrl)) return;
+    seen.add(candidate.baseUrl);
+    chain.push(candidate);
+  };
+
+  // 1. 首选镜像置顶（测速胜出或缓存命中的那一个）
+  if (preferredBaseUrl.length > 0) {
+    const known = getCandidates('node').find(c => c.baseUrl === preferredBaseUrl);
+    add(known ?? { name: '首选', baseUrl: preferredBaseUrl });
+  }
+  // 2. 其余镜像按候选列表顺序
+  for (const candidate of getCandidates('node')) {
+    if (candidate.baseUrl === OFFICIAL_NODE_BASE_URL) continue;
+    add(candidate);
+  }
+  // 3. 官方源垫底（首选即官方时已在链首，此处去重跳过）
+  const official = getCandidates('node').find(c => c.baseUrl === OFFICIAL_NODE_BASE_URL);
+  if (official !== undefined) add(official);
+  return chain;
+}
+
+/**
  * 下载并解包 Node 发行版。
+ *
+ * 下载按 {@link nodeMirrorChain} 的候选链逐源尝试：单一镜像缺版本文件
+ * （404）、不可达或超时都会自动换下一源，仅当全部镜像与官方源都失败时
+ * 才汇总各次失败原因上抛。curl 加 `--connect-timeout`：不可达的源在
+ * 连接期 15 秒内失败，不吃满整个下载超时。
  *
  * @param ctx - 远端执行上下文
  * @param version - 目标版本
- * @param mirrorBaseUrl - 镜像 baseUrl
+ * @param preferredBaseUrl - 首选镜像 baseUrl（候选链首项；空串时用默认链）
  * @param signal - 取消信号
  * @throws RemoteError('PLATFORM_UNSUPPORTED') 平台无对应发行版
+ * @throws RemoteError('EXEC_FAILED') 候选链全部下载失败，或解包失败
  */
 async function downloadAndExtract(
   ctx: RemoteContext,
   version: string,
-  mirrorBaseUrl: string,
+  preferredBaseUrl: string,
   signal?: AbortSignal,
 ): Promise<void> {
   const { transport, paths } = ctx;
@@ -162,36 +208,61 @@ async function downloadAndExtract(
   const archSegment = ARCH_SEGMENT[platform.arch];
   const dirName = `node-${version}-${osSegment}-${archSegment}`;
   const tarball = `${dirName}.tar.xz`;
-  const url = `${mirrorBaseUrl}/${version}/${tarball}`;
 
   // 临时目录带本机 pid，避免多个 CLI 并发安装时互相覆盖（Zed 的做法）
   const tmpDir = paths.tmpDir(process.pid, 'node-install');
   const targetDir = paths.nodeDir(version);
 
-  // 下载。curl 用 -fL：跟随重定向（镜像常有 302），HTTP 错误码要失败而非写出错误页
-  const download = [
-    `mkdir -p ${quote(tmpDir)}`,
-    `cd ${quote(tmpDir)}`,
-    `curl -fsSL --max-time ${Math.floor(DOWNLOAD_TIMEOUT_MS / 1000)} -o ${quote(tarball)} ${quote(url)}`,
-  ].join('\n');
+  // 1. 候选链逐源下载。curl 用 -fL：跟随重定向（镜像常有 302），HTTP 错误码
+  //    要失败而非写出错误页；--connect-timeout 让不可达源快速失败
+  const attempts = nodeMirrorChain(preferredBaseUrl);
+  const failures: string[] = [];
+  let downloaded = false;
+  for (const candidate of attempts) {
+    const url = `${candidate.baseUrl}/${version}/${tarball}`;
+    const download = [
+      `mkdir -p ${quote(tmpDir)}`,
+      `cd ${quote(tmpDir)}`,
+      `curl -fsSL --connect-timeout 15 --max-time ${Math.floor(DOWNLOAD_TIMEOUT_MS / 1000)}`
+        + ` -o ${quote(tarball)} ${quote(url)}`,
+    ].join('\n');
+    try {
+      await transport.exec(download, {
+        timeoutMs: DOWNLOAD_TIMEOUT_MS,
+        ...(signal ? { signal } : {}),
+      });
+      downloaded = true;
+      if (failures.length > 0) {
+        log.info(
+          `Node ${version} 已从 ${candidate.name}（${candidate.baseUrl}）下载成功`
+            + `（前 ${failures.length} 个源失败后回退）`,
+          { hostAlias: transport.hostAlias },
+        );
+      }
+      break;
+    } catch (error) {
+      const reason = toErrorMessage(error);
+      failures.push(`${candidate.name}（${url}）：${reason}`);
+      // 单源失败不是终局：换下一候选（复盘日志按源留痕）
+      log.warn(`Node 下载失败：${url}（${reason}），换下一源`, {
+        hostAlias: transport.hostAlias,
+      });
+    }
+  }
 
-  try {
-    await transport.exec(download, {
-      timeoutMs: DOWNLOAD_TIMEOUT_MS,
-      ...(signal ? { signal } : {}),
-    });
-  } catch (error) {
+  if (!downloaded) {
     // 清理残留的临时目录，避免下次误判
     await cleanup(transport, tmpDir);
     throw new RemoteError(
       'EXEC_FAILED',
-      `从 ${url} 下载 Node 失败。若该镜像缺少此平台的发行版，`
-        + `请确认 ${platform.os}/${platform.arch} 有对应构建`,
-      { cause: error, hostAlias: transport.hostAlias },
+      `Node ${version} 下载失败：已尝试全部镜像与官方源，均不可用——\n`
+        + failures.map(f => `  ${f}`).join('\n')
+        + `\n若并非网络问题，请确认 ${platform.os}/${platform.arch} 有对应构建`,
+      { hostAlias: transport.hostAlias },
     );
   }
 
-  // 解包并原子地移到目标位置。
+  // 2. 解包并原子地移到目标位置。
   // 先解到临时目录再 mv，避免中途失败留下半个安装被后续误判为"已装"。
   // 整段套 flock：`rm -rf 目标 && mv` 是写版本目录的临界区，多人同远端
   // 账号并发引导时会互删（等锁超时计入 exec 超时）

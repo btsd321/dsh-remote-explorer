@@ -13,12 +13,18 @@
 import { assertDiskSpace, probeRemote, type ProbeResult } from './probe.js';
 import { selectMirror } from './mirror-selector.js';
 import { DEFAULT_NODE_VERSION, ensureNode, type NodeInstallResult } from './node-installer.js';
-import { ensureDsh, resolveDshVersion, type DshInstallResult } from './dsh-installer.js';
+import { ensureDsh, resolveDshVersion, resolveLatestDshVersion, type DshInstallResult } from './dsh-installer.js';
 import { ensurePnpm } from './pnpm-installer.js';
+import { ensurePnpmProfileSettings } from './pnpm-profile.js';
 import { prepareSessionProfile, type PatchEntry, type ProfileResult } from './profile-writer.js';
 import { createRemotePaths, type RemotePaths } from './remote-paths.js';
+import { createLogger } from '../util/logger.js';
+import { toErrorMessage } from '../util/errors.js';
 import type { RemoteContext } from './remote-context.js';
 import type { RemoteTransport } from '../transport/types.js';
+
+/** 模块日志器（默认版本解析的降级告警） */
+const log = createLogger('provisioner');
 
 /** 引导选项 */
 export interface ProvisionOptions {
@@ -31,6 +37,8 @@ export interface ProvisionOptions {
    *
    * 传具体版本号则直接用；传 `latest`/`alpha` 这类标签会先解析成具体版本
    * 再安装——安装命令里绝不出现标签（dist-tags 的 latest 可能比预期更旧）。
+   * 省略时默认解析 registry 已发布版本的最大值，解析失败回退
+   * {@link DEFAULT_DSH_VERSION} 兜底。
    */
   dshVersion?: string;
   /** 会话 profile 的 patch 覆盖条目 */
@@ -64,12 +72,15 @@ export interface ProvisionResult {
 }
 
 /**
- * 默认安装的 dsh 版本。
+ * dsh 默认版本解析失败时的离线兜底（回退地板）。
  *
- * 固定具体版本而非 `latest`：registry 上 `latest` 指向 0.1.5-rc.2，
- * 比 `rc` 的 0.1.7-rc.2 旧（P0 实测），依赖标签会拿到意外的版本。
+ * 语义已变：不再是日常默认，而是「解析不出最新已发布版本时也能把引导
+ * 跑完」的保底值。未显式指定版本时默认解析 registry 已发布版本的最大值
+ * （dist-tag `latest` 实测滞后，见 dsh-installer 文件头与 lessons 6c），
+ * 仅在解析失败（离线、registry 抖动）时落到这里。取值需随已发布最大值
+ * 的前进手动抬高，保证兜底不至于过旧。
  */
-export const DEFAULT_DSH_VERSION = '0.1.7-rc.2';
+export const DEFAULT_DSH_VERSION = '0.2.0-rc.2';
 
 /** 看起来像 dist-tag 而非版本号的判据：不以数字开头 */
 const TAG_PATTERN = /^[a-z]/i;
@@ -136,18 +147,44 @@ export async function provision(
   if (npmSelection.fromCache) options.onStageSkip?.(`命中缓存：${npmSelection.selected.name}`);
   else options.onStageDone?.(`选中 ${npmSelection.selected.name}`);
 
-  // 5. 解析 dsh 版本：传的是 dist-tag 就先问 registry 要具体版本
-  const requested = options.dshVersion ?? DEFAULT_DSH_VERSION;
-  let dshVersion = requested;
-  if (TAG_PATTERN.test(requested)) {
-    options.onStageStart?.(`解析 dsh ${requested} 标签`);
-    dshVersion = await resolveDshVersion(ctx, {
-      tag: requested,
-      registryUrl: npmSelection.selected.baseUrl,
-      nodeBinDir: node.binDir,
-      ...(signal ? { signal } : {}),
-    });
-    options.onStageDone?.(`${requested} → ${dshVersion}`);
+  // 5. 确定 dsh 版本：显式传值时 tag 先解析成具体版本（行为不变）；
+  //    缺省时解析 registry 已发布版本的最大值（dist-tag latest 实测
+  //    滞后，见 dsh-installer 文件头），解析失败不中断——回退兜底继续
+  let dshVersion: string;
+  if (options.dshVersion !== undefined) {
+    const requested = options.dshVersion;
+    dshVersion = requested;
+    if (TAG_PATTERN.test(requested)) {
+      options.onStageStart?.(`解析 dsh ${requested} 标签`);
+      dshVersion = await resolveDshVersion(ctx, {
+        tag: requested,
+        registryUrl: npmSelection.selected.baseUrl,
+        nodeBinDir: node.binDir,
+        ...(signal ? { signal } : {}),
+      });
+      options.onStageDone?.(`${requested} → ${dshVersion}`);
+    }
+  } else {
+    options.onStageStart?.('解析 dsh 最新版本');
+    try {
+      dshVersion = await resolveLatestDshVersion(ctx, {
+        registryUrl: npmSelection.selected.baseUrl,
+        nodeBinDir: node.binDir,
+        ...(signal ? { signal } : {}),
+      });
+      options.onStageDone?.(`最新已发布 ${dshVersion}`);
+    } catch (error) {
+      // 用户主动取消不是「解析失败」，照常上抛
+      if (signal?.aborted) throw error;
+      // 解析失败不中断引导：离线/registry 抖动时用兜底地板继续跑完，
+      // 远端 npm install 命中缓存的可能性得以保留
+      dshVersion = DEFAULT_DSH_VERSION;
+      log.warn(`远端默认 dsh 版本解析失败，回退兜底 ${DEFAULT_DSH_VERSION}`, {
+        hostAlias: transport.hostAlias,
+        error: toErrorMessage(error),
+      });
+      options.onStageDone?.(`解析失败，回退兜底 ${DEFAULT_DSH_VERSION}`);
+    }
   }
 
   // 6. 装 dsh
@@ -168,6 +205,10 @@ export async function provision(
     nodeBinDir: node.binDir,
     ...(signal ? { signal } : {}),
   });
+  // pnpm 11 启用前提：host profile 的 pnpm-workspace.yaml 幂等补齐
+  // （allowBuilds/minimumReleaseAge，缺段的插件安装必炸——见 pnpm-profile.ts；
+  //   写失败上抛，不给运行期埋雷）
+  await ensurePnpmProfileSettings(ctx, signal ? { signal } : {});
   options.onStageDone?.(pnpm.reused ? '复用已有安装' : '已安装');
 
   // 7. 准备会话 profile

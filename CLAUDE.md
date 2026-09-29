@@ -34,7 +34,7 @@ AI agent 或人类开发者在动手修改任何代码或文档之前，**必须
 
 ## 常用命令
 
-**本机开发默认 pnpm 11.7.0**（与 dsh 官方仓库对齐，`package.json` 的 `packageManager` 钉版本）：装依赖用 `pnpm install`，跑本地二进制用 `pnpm exec`。不要用 npm——dsh 各包的 peer 钉死具体版本，npm 在残留旧树上做增量解析必报 ERESOLVE。pnpm 11 的三个坑已处理进 [pnpm-workspace.yaml](pnpm-workspace.yaml)：包管理器设置迁到了这里（package.json 的 `pnpm` 字段已废弃）；构建脚本改用 `allowBuilds` 映射逐包放行（ssh2/cpu-features 的原生加密绑定、esbuild 平台二进制校验）；`minimumReleaseAge` 默认 24h 会拦截当天发布的 dsh RC，故显式置 0。放行构建脚本后机器上会出现 `sshcrypto.node`——两个打包脚本（build-plugin/package）的 esbuild 调用都加了 `.node: empty` loader（单文件 bundle 带不走原生件，empty 让 ssh2 的 try/catch 回落纯 JS；没这个 loader 时打包直接报「No loader is configured for .node files」）。**禁止声明生命周期脚本**：`prepare`/`postinstall` 等一概不要加——pnpm 11 对声明了安装类脚本的 git-hosted 包直接报 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`，拦截只看 `package.json` 字段、不看脚本内容（实测踩过：加回「只装 hook、非 git 环境静默跳过」的 prepare 也把网页安装打挂了）。clone 后手动跑一次 `pnpm run setup:hooks` 安装 pre-commit hook，之后 `src/`、`scripts/`、`tests/` 有改动时提交自动构建 `lib/`；`lib/` 已纳入版本控制，也可手动 `pnpm run build:plugin`。**远端分工不变**：dsh 本体 npm、插件 store pnpm 10 系——与官方 dsh 语义一致（官方对已发布包的消费入口是 `npx @deepseek-ai/dsh`，运行期插件/profile 管理才走 pnpm；远端 pin 10 系是因为 11 系对未决策的 allowBuilds 致命报错而远端无人交互），不要把远端 dsh 本体改成 pnpm 安装。
+**本机开发默认 pnpm 11.7.0**（与 dsh 官方仓库对齐，`package.json` 的 `packageManager` 钉版本）：装依赖用 `pnpm install`，跑本地二进制用 `pnpm exec`。不要用 npm——dsh 各包的 peer 钉死具体版本，npm 在残留旧树上做增量解析必报 ERESOLVE。pnpm 11 的三个坑已处理进 [pnpm-workspace.yaml](pnpm-workspace.yaml)：包管理器设置迁到了这里（package.json 的 `pnpm` 字段已废弃）；构建脚本改用 `allowBuilds` 映射逐包放行（ssh2/cpu-features 的原生加密绑定、esbuild 平台二进制校验）；`minimumReleaseAge` 默认 24h 会拦截当天发布的 dsh RC，故显式置 0。放行构建脚本后机器上会出现 `sshcrypto.node`——两个打包脚本（build-plugin/package）的 esbuild 调用都加了 `.node: empty` loader（单文件 bundle 带不走原生件，empty 让 ssh2 的 try/catch 回落纯 JS；没这个 loader 时打包直接报「No loader is configured for .node files」）。**禁止声明生命周期脚本**：`prepare`/`postinstall` 等一概不要加——pnpm 11 对声明了安装类脚本的 git-hosted 包直接报 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`，拦截只看 `package.json` 字段、不看脚本内容（实测踩过：加回「只装 hook、非 git 环境静默跳过」的 prepare 也把网页安装打挂了）。clone 后手动跑一次 `pnpm run setup:hooks` 安装 pre-commit hook，之后 `src/`、`scripts/`、`tests/` 有改动时提交自动构建 `lib/`；`lib/` 已纳入版本控制，也可手动 `pnpm run build:plugin`。**远端分工不变**：dsh 本体 npm、插件 store pnpm——与官方 dsh 语义一致（官方对已发布包的消费入口是 `npx @deepseek-ai/dsh`，运行期插件/profile 管理才走 pnpm），不要把远端 dsh 本体改成 pnpm 安装。远端 pnpm 默认装 11.7.0（对齐 dsh 官方仓库的 packageManager 钉版），兼容复用主版本 10/11/12 的既有安装（[src/provision/pnpm-installer.ts](src/provision/pnpm-installer.ts)）；版本探针不跑 `pnpm -v`——WSL interop 解析渗入 + CWD packageManager 自动切换会读到假版本（详见 docs/lessons.md 第 17 条），唯一可信源是管理目录落盘 package.json。11 系在远端的启用前提（`allowBuilds` 逐包放行 + `minimumReleaseAge: 0`，历史 pin 10 的原因）由引导在 host profile 的 pnpm-workspace.yaml 幂等补齐（[src/provision/pnpm-profile.ts](src/provision/pnpm-profile.ts)）。
 
 ```bash
 # 类型检查
@@ -104,14 +104,14 @@ pnpm run setup:hooks
 入口层      cli/            命令分派、参数解析、终端输出（CLI 形态）
             plugin/         dsh 插件宿主半：supervisor 簿记、remote-plugin-store 远端插件包管理、host-env-store per-host 环境变量持久化、命令/工具/路由注册
             plugin-client/  dsh 插件浏览器半：远程会话全局面板（React）、useSessionPolling 轮询 Hook、共享常量与样式
-编排层      session/      会话生命周期、心跳、重连、多会话簿记、proxy-env 代理与用户环境变量收集注入
-能力层      provision/    装 Node 与 dsh、镜像测速、生成会话 profile、RemoteContext 远端执行上下文
-            tunnel/       端口分配、正向转发
-            credential/   LLM 凭据代理（反向隧道，key 不出本机）、proxy-secret 凭据材料读写
+编排层      session/      会话生命周期、心跳、重连、多会话簿记；open-pipeline 打开流水线（传输工厂 + prepare/probe/provision/tunnels 四阶段）、wsl-reverse WSL 反向通道编排、proxy-env 代理与用户环境变量收集注入
+能力层      provision/    装 Node、dsh 与 pnpm（探针读落盘、镜像候选链、11 系前提补齐）、镜像测速、生成会话 profile、RemoteContext 远端执行上下文
+            tunnel/       端口分配、正向转发、reverse-listener Windows 侧反向监听（分配即绑定）
+            credential/   LLM 凭据代理（反向隧道，key 不出本机）、proxy-secret 凭据材料读写（含 reverse-host）
             handoff/      远端窗口交接组件（宿主半跑在远端 dsh、浏览器半是状态 pill + 管理菜单）
-传输层      transport/    ssh2 连接、命令执行、池化 SFTP、开通道、反向转发、通道配额、platform 平台探测与命令构建
+传输层      transport/    ssh2 连接、命令执行、池化 SFTP、开通道、反向转发、通道配额、platform 平台探测与命令构建、wsl-transport WSL 发行版传输、wsl-network WSL 网络模式探测纯函数
 基础层      hosts/        ssh config 解析（主机配置唯一来源）
-            util/         shell 转义、错误类型、会话 id、远端路径校验、字节格式化、状态显示常量
+            util/         shell 转义、错误类型、会话 id、远端路径校验、字节格式化、状态显示常量、ipv4 校验
 ```
 
 原计划的第二个交付物 `dsh-remote-guard`（远端插件）**最终不需要**：认证 dsh 已内置（P0 发现），`baseURL` 由 profile patch 解决（P4），免认证探活由心跳的 HTTP 层解决（P5，带会话令牌 curl 根路径，任何 HTTP 状态码即证明 webserver 在服务）。

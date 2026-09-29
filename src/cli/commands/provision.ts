@@ -13,7 +13,7 @@ import { SshTransport } from '../../transport/ssh-transport.js';
 import { WslTransport } from '../../transport/wsl-transport.js';
 import type { RemoteTransport } from '../../transport/types.js';
 import type { TransportType } from '../../session/session-manager.js';
-import { provision, DEFAULT_DSH_VERSION } from '../../provision/provisioner.js';
+import { provision } from '../../provision/provisioner.js';
 import { DEFAULT_NODE_VERSION } from '../../provision/node-installer.js';
 import { computeSessionId } from '../../util/session-id.js';
 import { prepareHostAuth } from '../host-auth.js';
@@ -124,8 +124,13 @@ export async function runProvision(options: ProvisionCommandOptions): Promise<nu
 /**
  * 供 help 文本引用的默认版本说明。
  *
- * @returns 默认 Node 与 dsh 版本
+ * dsh 不再 pin 具体版本：默认在引导期解析 registry 已发布版本的最大值
+ * （dist-tag `latest` 实测滞后），解析失败由 provisioner 回退兜底地板
+ * （内部维护，不在 help 里展示）。返回的 dsh 字段是给 help 文本的
+ * 显示标记，不是版本号。
+ *
+ * @returns 默认 Node 版本与 dsh 默认策略说明
  */
 export function defaultVersions(): { node: string; dsh: string } {
-  return { node: DEFAULT_NODE_VERSION, dsh: DEFAULT_DSH_VERSION };
+  return { node: DEFAULT_NODE_VERSION, dsh: '解析最新已发布版本' };
 }

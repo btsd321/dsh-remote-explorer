@@ -73,7 +73,7 @@ function printHelp(): void {
   println('  --force-restart           即便远端已有可用会话也重新启动');
   println('  --keep-remote             Ctrl-C 断开时保留远端 dsh（默认连它一起停止）');
   println(`  --node-version <版本>     Node 版本（默认 ${versions.node}）`);
-  println(`  --dsh-version <版本>      dsh 版本或 dist-tag（默认 ${versions.dsh}）`);
+  println(`  --dsh-version <版本>      dsh 版本或 dist-tag（默认${versions.dsh}）`);
   println('  --refresh-mirrors         强制重测镜像延迟，忽略缓存');
   println('  --wsl <发行版>            连接 WSL 发行版（与主机别名互斥）');
   println('  --wsl-user <用户>         WSL 用户名（仅 --wsl 时有效）');
@@ -90,7 +90,7 @@ function printHelp(): void {
   println('  --refresh-mirrors         强制重测镜像延迟，忽略缓存');
   println('  --cwd <远端路径>          （provision）远端工作目录');
   println(`  --node-version <版本>     （provision）Node 版本（默认 ${versions.node}）`);
-  println(`  --dsh-version <版本>      （provision）dsh 版本或 dist-tag（默认 ${versions.dsh}）`);
+  println(`  --dsh-version <版本>      （provision）dsh 版本或 dist-tag（默认${versions.dsh}）`);
   println();
   println(bold('通用参数'));
   println('  --ssh-config <路径>       改用指定的 ssh config 文件（默认 ~/.ssh/config）');
