@@ -206,32 +206,40 @@ export async function postDisconnect(target: string, stopRemote: boolean): Promi
 }
 
 /**
- * 拉全局高级选项配置（连接表单三弹窗的「上一次输入」，不按主机区分）。
+ * 拉高级选项配置（连接表单弹窗的「上一次输入」，**按传输形态分域**——SSH
+ * 域三项 env/proxy/jumpHosts，WSL 域只有 env；域内不按主机区分）。
  *
- * @returns 配置（env 键值对、可选 proxy、可选跳板机条目）；未配置过返回空 env
+ * @param transportType - 传输形态（域键）：'ssh' 读 SSH 域，'wsl' 读 WSL 域
+ * @returns 配置（env 键值对、可选 proxy、可选跳板机条目；wsl 域只有 env）；
+ *          未配置过返回空 env
  * @throws ApiError bad_usage / http_error
  */
-export async function fetchAdvanced(): Promise<AdvancedPayload> {
-  return request<AdvancedPayload>('/advanced');
+export async function fetchAdvanced(transportType: 'ssh' | 'wsl'): Promise<AdvancedPayload> {
+  return request<AdvancedPayload>(`/advanced?transportType=${transportType}`);
 }
 
 /**
- * 保存全局高级选项配置（存宿主侧 0600 文件，下一次连接时注入远端 dsh 进程）。
+ * 保存高级选项配置（存宿主侧 0600 文件，下一次连接时注入远端 dsh 进程）。
  *
- * POST 是**部分更新**语义：缺省字段保持存储原值（三个弹窗各管一个字段，
- * 互不清除对方）；显式空值 = 清除该字段（env 空对象 / proxy 空串 /
+ * POST 是**部分更新**语义（按域）：缺省字段保持该域存储原值（弹窗各管一个
+ * 字段，互不清除对方）；显式空值 = 清除该字段（env 空对象 / proxy 空串 /
  * jumpHosts 空数组）。jumpHosts 只传落盘子集（target + identityFile）——
  * **密码绝不发往此接口**（宿主侧对带 password 的条目直接 400），密码只随
- * /connect 请求内存传递。
+ * /connect 请求内存传递。transportType='wsl' 时 body 携带 proxy/jumpHosts
+ * 会被宿主侧 400（WSL 仅支持环境变量）——浏览器半的 wsl 弹窗本就不带。
  *
+ * @param transportType - 传输形态（域键）：'ssh' 写 SSH 域，'wsl' 写 WSL 域
  * @param payload - 待更新字段（只需携带本弹窗的编辑面）
  * @throws ApiError bad_usage（校验失败，中文消息透传到弹窗展示）
  */
-export async function postAdvanced(payload: AdvancedSaveBody): Promise<void> {
+export async function postAdvanced(
+  transportType: 'ssh' | 'wsl',
+  payload: AdvancedSaveBody,
+): Promise<void> {
   await request<{ ok: true }>('/advanced', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ transportType, ...payload }),
   });
 }
 

@@ -7,8 +7,9 @@
  *              连接结果，不感知轮询细节。
  *
  * 高级选项的持久化语义（用户拍板）：
- * - **全局只记上一次输入**（~/.dsh/remote-advanced.json，不按主机区分）：
- *   换主机连接沿用同一份 env/proxy/跳板 target+私钥
+ * - **按传输形态分域只记上一次输入**（~/.dsh/remote-advanced.json 的 ssh
+ *   域，域内不按主机区分）：换主机连接沿用同一份 env/proxy/跳板
+ *   target+私钥；WSL 域另存（本表单只读写 ssh 域）
  * - **连接密码绝不落盘**：表单密码与跳板机密码都只在内存（连接请求携带），
  *   连接尝试结束后立即清除引用（JS 字符串不可清零是已知限制，靠 GC）
  * - 跳板机按主机类型分流（详见 jump-host-dialog）：config 别名只读、
@@ -278,12 +279,13 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
           : null}
       </div>
 
-      {/* ---- 高级选项弹窗（三选一挂载；共享 DialogShell 浮层） ---- */}
+      {/* ---- 高级选项弹窗（三选一挂载；共享 DialogShell 浮层）。环境变量
+          弹窗读写 ssh 域——高级选项按传输形态分域存储 ---- */}
       {openDialog === 'jump'
         ? <JumpHostDialog hostValue={host} hosts={hosts} onClose={closeDialog}
           onSaved={entries => { setJumpEntries(entries); }} t={t} />
         : null}
-      {openDialog === 'env' ? <EnvDialog onClose={closeDialog} t={t} /> : null}
+      {openDialog === 'env' ? <EnvDialog transportType="ssh" onClose={closeDialog} t={t} /> : null}
       {openDialog === 'proxy' ? <ProxyDialog onClose={closeDialog} t={t} /> : null}
     </section>
   );
