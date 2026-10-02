@@ -30,6 +30,7 @@ import { createLogger } from '../util/logger.js';
 import { getWslExePath } from '../hosts/wsl-distro-parser.js';
 import { isRemotePortListening } from '../tunnel/port-allocator.js';
 import { buildStartCommand } from '../provision/profile-writer.js';
+import { cancellableWait } from './cancellable-wait.js';
 import type { RemoteContext } from '../provision/remote-context.js';
 import type { RemoteTransport } from '../transport/types.js';
 
@@ -237,7 +238,7 @@ export async function startRemoteDsh(
   let pollCount = 0;
   while (Date.now() < deadline) {
     signal?.throwIfAborted();
-    await delay(POLL_INTERVAL_MS, signal);
+    await cancellableWait(POLL_INTERVAL_MS, signal);
     pollCount += 1;
 
     const read = await transport.exec(`cat ${quote(logFile)} 2>/dev/null || true`, {
@@ -380,7 +381,7 @@ export async function stopRemoteDsh(
 
   const deadline = Date.now() + STOP_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    await delay(POLL_INTERVAL_MS, signal);
+    await cancellableWait(POLL_INTERVAL_MS, signal);
     if (!(await isProcessAlive(transport, pid, signal))) {
       await transport.exec(`rm -f ${quote(pidFile)}`, {
         allowNonZeroExit: true,
@@ -472,27 +473,6 @@ async function findPidByPort(
   });
   const pid = Number.parseInt(result.stdout.trim(), 10);
   return Number.isFinite(pid) && pid > 0 ? pid : undefined;
-}
-
-/**
- * 可取消的延时。
- *
- * @param ms - 毫秒
- * @param signal - 取消信号
- */
-async function delay(ms: number, signal?: AbortSignal): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    timer.unref();
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      reject(new RemoteError('ABORTED', '等待被取消'));
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
 }
 
 /**

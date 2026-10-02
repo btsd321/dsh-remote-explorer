@@ -16,7 +16,7 @@
  * 这与 dsh-ssh 的断线语义一致：客户端如实报告未确认结果，绝不重放。
  */
 
-import { RemoteError } from '../util/errors.js';
+import { cancellableWait } from './cancellable-wait.js';
 
 /** 重连配置 */
 export interface ReconnectConfig {
@@ -57,22 +57,14 @@ export function backoffDelay(attempt: number, config: ReconnectConfig): number {
 /**
  * 可取消的延时等待。
  *
+ * 薄封装：实现收口在 cancellable-wait（与 remote-process 的轮询等待共享），
+ * 此处只锚定重连语义的中止文案。保留导出是因为 session-manager 直接
+ * import 本函数，改调用方需动编排层入口，不在本次重构范围。
+ *
  * @param ms - 毫秒
  * @param signal - 取消信号
  * @throws RemoteError('ABORTED') 等待期间被取消
  */
 export async function wait(ms: number, signal?: AbortSignal): Promise<void> {
-  signal?.throwIfAborted();
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    timer.unref();
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      reject(new RemoteError('ABORTED', '重连等待被取消'));
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
+  await cancellableWait(ms, signal, { label: '重连等待' });
 }
