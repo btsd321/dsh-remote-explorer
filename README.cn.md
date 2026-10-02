@@ -233,7 +233,8 @@ dsh 自身会把代理变量透传给它拉起的 `git`/`pnpm` 子进程，装�
 | [src/session/lifecycle-state.ts](src/session/lifecycle-state.ts) | 会话状态机，纯函数 |
 | [src/session/heartbeat.ts](src/session/heartbeat.ts) | 心跳探活：进程 + 端口 + HTTP 应用级，一条命令 |
 | [src/session/reconnect.ts](src/session/reconnect.ts) | 有限次指数退避 |
-| [src/session/session-registry.ts](src/session/session-registry.ts) | 本机会话表，锁文件 + 原子替换 |
+| [src/session/cancellable-wait.ts](src/session/cancellable-wait.ts) | 可取消等待原语（定时器 unref + 中止拒绝），轮询与退避等待的单一实现 |
+| [src/session/session-registry.ts](src/session/session-registry.ts) | 本机会话表，锁文件 + 原子替换；读取带 mtime+size 双键缓存（每次 stat 复核，跨进程一致） |
 | [src/session/session-manager.ts](src/session/session-manager.ts) | 会话编排：生命周期、心跳、重连、关闭；打开流程拆入 open-pipeline |
 | [src/session/open-pipeline/](src/session/open-pipeline/) | 打开流程四阶段：prepare / probe / provision / tunnels（含传输工厂） |
 | [src/session/wsl-reverse.ts](src/session/wsl-reverse.ts) | WSL 反向通道编排：网络模式探测、网关随重连刷新、反向链路自检 |
@@ -242,7 +243,7 @@ dsh 自身会把代理变量透传给它拉起的 `git`/`pnpm` 子进程，装�
 | [src/credential/local-credentials.ts](src/credential/local-credentials.ts) | 读取本机 `.credentials.yaml` 的 refs 段，作为环境变量的凭据回退源 |
 | [src/credential/token.ts](src/credential/token.ts) | 代理令牌：生成与常数时间比较 |
 | [src/credential/proxy-secret.ts](src/credential/proxy-secret.ts) | 凭据材料读写：会话级令牌与反向端口的远端落盘 |
-| [src/handoff/](src/handoff/) | 远端窗口交接组件：宿主半（远端 dsh 内 bundle）+ 浏览器半（状态 pill 与管理菜单） |
+| [src/handoff/](src/handoff/) | 远端窗口交接组件：宿主半（远端 dsh 内 bundle）+ 浏览器半（状态 pill 与管理菜单）；protocol.ts 是跨层共享契约（协议常量被入口/编排/能力三层引用，自身零依赖） |
 | [src/cli/](src/cli/) | 命令分派、参数解析、终端输出、命令级认证装配 |
 
 ## 开发
@@ -250,6 +251,9 @@ dsh 自身会把代理变量透传给它拉起的 `git`/`pnpm` 子进程，装�
 ```bash
 # 类型检查
 pnpm run typecheck
+
+# 单元测试（纯函数模块，无需 SSH 主机）
+pnpm exec tsx --test tests/unit/*.test.ts
 ```
 
 > **⚠️ 贡献者注意：clone 后必须先装 git 钩子，不要装完依赖就直接提交。**

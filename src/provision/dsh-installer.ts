@@ -47,6 +47,14 @@ const log = createLogger('dsh-installer');
  */
 const INSTALL_TIMEOUT_MS = 900_000;
 
+/**
+ * 远端 npm 元数据查询（`npm view`）超时（毫秒）。
+ *
+ * 与 plugin/tools.ts 的 KILL_TIMEOUT_MS 同值但语义独立、各自演化：
+ * 那边是杀远端进程的宽限期，这边是慢链路下 registry 元数据查询的上限。
+ */
+const NPM_TIMEOUT_MS = 120_000;
+
 /** dsh 安装结果 */
 export interface DshInstallResult {
   /** 安装的版本 */
@@ -299,7 +307,7 @@ export async function resolveDshVersion(
     nodeBinDir,
     {
       allowNonZeroExit: true,
-      timeoutMs: 120_000,
+      timeoutMs: NPM_TIMEOUT_MS,
       env: npmEnv(paths),
       ...(signal ? { signal } : {}),
     },
@@ -351,7 +359,7 @@ export async function resolveLatestDshVersion(
     nodeBinDir,
     {
       allowNonZeroExit: true,
-      timeoutMs: 120_000,
+      timeoutMs: NPM_TIMEOUT_MS,
       env: npmEnv(paths),
       ...(signal ? { signal } : {}),
     },

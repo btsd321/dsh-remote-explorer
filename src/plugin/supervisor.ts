@@ -356,6 +356,30 @@ export class SessionSupervisor {
   }
 
   /**
+   * 按会话 id 从内存 Map 直查快照。
+   *
+   * 与 `list()` 的差别：不读会话表（session-registry 的 readFileSync +
+   * JSON.parse + 逐条 pid 探活），供「调用方已证明会话在本进程内存」的热路径
+   * 使用（如面板 /session 路由先 getLog 命中后再取快照）。
+   *
+   * 过滤判据与 `list()` 的本进程段一致：已断开的会话不呈现快照（日志仍可经
+   * getLog 拉取，消费方自行降级为「只有日志没有快照」）。
+   *
+   * @param sessionId - 会话 id（完整串，不做前缀匹配）
+   * @returns 快照；会话不在内存或已断开时 undefined
+   */
+  snapshotById(sessionId: string): SessionSnapshot | undefined {
+    const record = this.sessions.get(sessionId);
+    if (record === undefined) return undefined;
+    // 与 list() 的 own 过滤同一判据，避免两条路径对同一会话呈现不一致
+    if (!(record.connecting || record.session !== undefined
+      || record.state.tag !== 'disconnected')) {
+      return undefined;
+    }
+    return this.snapshotOf(record);
+  }
+
+  /**
    * 取某会话自 seq 之后的增量日志。
    *
    * @param sessionId - 会话 id

@@ -15,7 +15,7 @@ import { SshTransport } from '../../transport/ssh-transport.js';
 import { probeRemote } from '../../provision/probe.js';
 import { createRemotePaths } from '../../provision/remote-paths.js';
 import { stopRemoteDsh } from '../../session/remote-process.js';
-import { listSessions, removeSession } from '../../session/session-registry.js';
+import { listSessions, removeSession, type SessionRecord } from '../../session/session-registry.js';
 import { computeSessionId } from '../../util/session-id.js';
 import { ownerFingerprint } from '../../util/owner-fingerprint.js';
 import { quote } from '../../util/shell-quote.js';
@@ -100,10 +100,21 @@ export async function runKill(options: KillCommandOptions): Promise<number> {
     }
 
     let stopped = 0;
+    // 循环外读一次会话表建索引，循环内 O(1) 查询——原先每个 sessionId 都
+    // 全量 listSessions()（读盘 + 解析 + 逐条 pid 探活）。同一 sessionId 可能
+    // 有多条记录（(sessionId, localPid) 组合主键：同远端会话的多个本机视图），
+    // remotePort 是共享的远端 dsh 端口，一致时任取其一；listSessions 已按
+    // pid 存活过滤，到达此处的都是活跃视图，端口不一致时（远端重启后仅部分
+    // 视图重连）保留靠后一条——upsertSession 总把更新记录追加到表尾，后写
+    // 的更可能反映远端当前端口
+    const knownBySession = new Map<string, SessionRecord>();
+    for (const record of listSessions()) {
+      knownBySession.set(record.sessionId, record);
+    }
     for (const sessionId of sessionIds) {
       progress.start(`停止会话 ${sessionId}`);
       // 本机会话表里若有记录，用它的端口作为 pid 失效时的兜底定位手段
-      const known = listSessions().find(record => record.sessionId === sessionId);
+      const known = knownBySession.get(sessionId);
       const didStop = await stopRemoteDsh({ transport, paths }, {
         sessionId,
         ...(known ? { port: known.remotePort } : {}),

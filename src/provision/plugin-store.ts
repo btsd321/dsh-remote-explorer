@@ -139,12 +139,6 @@ export async function writePluginStoreManifest(
   await io.writeFile(paths.hostProfileManifest(platform), `${JSON.stringify(manifest, undefined, 2)}\n`);
 }
 
-/**
- * profile 模板（web）自带的 base bundles——不属于插件管理范围，
- * 合并进 manifest 时必须保留（丢了远端 dsh 起不来：无 webserver）。
- */
-export const TEMPLATE_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'];
-
 /** host profile node_modules 里由回退链接占据的名字（不是插件，扫描时排除） */
 const FALLBACK_LINK_NAMES = new Set(['@deepseek-ai', 'cpu-features', 'nan']);
 

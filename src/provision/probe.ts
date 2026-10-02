@@ -78,6 +78,12 @@ const DEFAULT_STABILITY_ATTEMPTS = 20;
  */
 const MAX_TOLERATED_FAILURES = 0;
 
+/** 自检超时下限（毫秒）：起进程与远端循环本身的固定开销 */
+const STABILITY_MIN_TIMEOUT_MS = 60_000;
+
+/** 自检每次尝试追加的超时（毫秒）：随尝试次数线性放大 */
+const STABILITY_PER_ATTEMPT_MS = 3_000;
+
 /** 引导所需的最小可用空间：Node 约 200M + dsh 约 500M，留一倍余量 */
 const REQUIRED_BYTES = 1_500_000_000;
 
@@ -207,7 +213,7 @@ export async function checkNodeStability(
   const result = await transport.exec(script, {
     allowNonZeroExit: true,
     // 自检要起 attempts 次进程，给足时间
-    timeoutMs: Math.max(60_000, attempts * 3_000),
+    timeoutMs: Math.max(STABILITY_MIN_TIMEOUT_MS, attempts * STABILITY_PER_ATTEMPT_MS),
     ...(signal ? { signal } : {}),
   });
 

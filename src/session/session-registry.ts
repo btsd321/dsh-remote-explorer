@@ -9,6 +9,9 @@
  * 2. **并发写竞争。** 两个 CLI 同时启动会同时写表。用锁文件 +
  *    「写临时文件再 rename」的原子替换：rename 在同一文件系统内是原子的，
  *    读者永远看到完整的旧版本或完整的新版本，不会读到半个文件。
+ * 3. **读取频率。** 插件 `/sessions` 路由每 2 秒轮询、CLI status 也读表，
+ *    readRegistry 以「stat 比对 mtimeMs + size」做读缓存，见 registryCache
+ *    声明处的失效协议。
  *
  * 不引入 dsh 自己的 `@deepseek-ai/dsh-atomic-write`：本仓库是独立 CLI，
  * 为一个几十行的功能引入跨仓依赖不值得。
@@ -57,6 +60,28 @@ const REGISTRY_PATH = join(homedir(), '.dsh', 'remote-sessions.json');
 
 /** 锁文件路径 */
 const LOCK_PATH = `${REGISTRY_PATH}.lock`;
+
+/**
+ * 注册表解析结果缓存（mtimeMs + size 双键失效）。
+ *
+ * 动机：插件形态的 `/sessions` 路由每 2 秒轮询一次 readRegistry，CLI 的
+ * status 也走它；每次 readFileSync + JSON.parse 持续浪费在 KB 级文件上。
+ *
+ * 失效协议：
+ * - **每次调用先 stat 一次**（一次 syscall，远比读全文+解析便宜），
+ *   mtimeMs 与 size 都和缓存一致才复用上次解析结果。其他 CLI 进程也会写
+ *   这个文件，跨进程一致性完全靠每次 re-check 保证——**不得**改成定时
+ *   TTL：TTL 窗口内会读到别的进程刚写完后的旧值
+ * - **本进程写路径主动失效**：writeRegistryAtomically rename 成功后清空
+ *   缓存。「写后立即读」读到新值不依赖 mtime 必然变化（极端场景下同一
+ *   毫秒内改写且字节数不变，双键也撞上），主动失效是无条件保证
+ * - stat 失败（含文件不存在的 ENOENT）或读取/解析失败时不动缓存，
+ *   走空表路径——与既有「缺失或损坏当空表」语义一致
+ * - stat 与 readFileSync 之间存在其他进程原子替换的理论窗口（stat 到旧
+ *   mtime、读到新内容、按旧键缓存）；下次调用 stat 到新 mtime 必然未命中
+ *   而重读，自愈。会话表是缓存性质的簿记（见文件头），该瞬时不一致可接受
+ */
+let registryCache: { mtimeMs: number; size: number; file: RegistryFile } | undefined;
 
 /** 获取锁的最长等待时间（毫秒） */
 const LOCK_TIMEOUT_MS = 5_000;
@@ -151,16 +176,29 @@ function mutate(update: (sessions: SessionRecord[]) => SessionRecord[]): void {
 }
 
 /**
- * 读取会话表文件。
+ * 读取会话表文件（带 mtime 缓存）。
+ *
+ * 每次调用 stat 一次：mtimeMs + size 与缓存一致则直接复用上次解析结果
+ * （失效协议见 registryCache 声明处注释），否则读全文解析并更新缓存。
  *
  * @returns 文件内容；不存在或损坏时返回空表
  */
 function readRegistry(): RegistryFile {
   try {
-    const text = readFileSync(REGISTRY_PATH, 'utf8');
-    const parsed = JSON.parse(text) as RegistryFile;
-    if (!Array.isArray(parsed.sessions)) return { version: 1, sessions: [] };
-    return { version: 1, sessions: parsed.sessions };
+    // 1. stat 一次，命中缓存则跳过读全文与 JSON.parse
+    const stats = statSync(REGISTRY_PATH);
+    if (registryCache !== undefined
+      && registryCache.mtimeMs === stats.mtimeMs
+      && registryCache.size === stats.size) {
+      return registryCache.file;
+    }
+    // 2. 未命中：读全文并解析，按当前 stat 键更新缓存
+    const parsed = JSON.parse(readFileSync(REGISTRY_PATH, 'utf8')) as RegistryFile;
+    const file: RegistryFile = Array.isArray(parsed?.sessions)
+      ? { version: 1, sessions: parsed.sessions }
+      : { version: 1, sessions: [] };
+    registryCache = { mtimeMs: stats.mtimeMs, size: stats.size, file };
+    return file;
   } catch { /* 文件缺失或损坏，当作空表——会话表是缓存性质，重建代价低 */ }
   return { version: 1, sessions: [] };
 }
@@ -180,6 +218,11 @@ function writeRegistryAtomically(file: RegistryFile): void {
   writeFileSync(tmpPath, `${JSON.stringify(file, undefined, 2)}\n`, 'utf8');
   try {
     renameSync(tmpPath, REGISTRY_PATH);
+    // 3. 写后主动失效缓存（本模块唯一的注册表写出口，upsertSession /
+    //    removeSession / pruneSessions 都经 mutate 走到这里）：
+    //    rename 后 mtime 理论上必然变化，但「写后立即读读到新值」不能
+    //    依赖这一点——同毫秒同字节数的极端改写双键也撞上，主动失效才无条件
+    registryCache = undefined;
   } catch (error) {
     // rename 失败要清掉临时文件，否则会在目录里累积
     try { rmSync(tmpPath, { force: true }); } catch { /* 清理失败无妨 */ }

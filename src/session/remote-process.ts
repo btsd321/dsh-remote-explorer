@@ -30,6 +30,7 @@ import { createLogger } from '../util/logger.js';
 import { getWslExePath } from '../hosts/wsl-distro-parser.js';
 import { isRemotePortListening } from '../tunnel/port-allocator.js';
 import { buildStartCommand } from '../provision/profile-writer.js';
+import { cancellableWait } from './cancellable-wait.js';
 import type { RemoteContext } from '../provision/remote-context.js';
 import type { RemoteTransport } from '../transport/types.js';
 
@@ -43,6 +44,14 @@ const POLL_INTERVAL_MS = 500;
 
 /** 停止进程后等待其退出的最长时间（毫秒） */
 const STOP_TIMEOUT_MS = 15_000;
+
+/**
+ * WSL 路径下 PowerShell Start-Process 启动 wsl.exe 的超时（毫秒）。
+ *
+ * 与 STOP_TIMEOUT_MS 同值但不同义——这边是本机 PowerShell 起进程的时限，
+ * 那边是远端 dsh 收到 TERM 后的停止宽限期，两者各自独立演化。
+ */
+const WSL_LAUNCH_TIMEOUT_MS = 15_000;
 
 /**
  * 从 dsh 启动输出里提取令牌的模式。
@@ -209,7 +218,7 @@ export async function startRemoteDsh(
     await new Promise<void>((resolve, reject) => {
       execFile('powershell.exe', [
         '-NoProfile', '-NonInteractive', '-Command', psCommand,
-      ], { timeout: 15_000, windowsHide: true }, (error, _stdout, stderr) => {
+      ], { timeout: WSL_LAUNCH_TIMEOUT_MS, windowsHide: true }, (error, _stdout, stderr) => {
         if (error) {
           reject(new RemoteError(
             'EXEC_FAILED',
@@ -237,7 +246,7 @@ export async function startRemoteDsh(
   let pollCount = 0;
   while (Date.now() < deadline) {
     signal?.throwIfAborted();
-    await delay(POLL_INTERVAL_MS, signal);
+    await cancellableWait(POLL_INTERVAL_MS, signal);
     pollCount += 1;
 
     const read = await transport.exec(`cat ${quote(logFile)} 2>/dev/null || true`, {
@@ -380,7 +389,7 @@ export async function stopRemoteDsh(
 
   const deadline = Date.now() + STOP_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    await delay(POLL_INTERVAL_MS, signal);
+    await cancellableWait(POLL_INTERVAL_MS, signal);
     if (!(await isProcessAlive(transport, pid, signal))) {
       await transport.exec(`rm -f ${quote(pidFile)}`, {
         allowNonZeroExit: true,
@@ -472,27 +481,6 @@ async function findPidByPort(
   });
   const pid = Number.parseInt(result.stdout.trim(), 10);
   return Number.isFinite(pid) && pid > 0 ? pid : undefined;
-}
-
-/**
- * 可取消的延时。
- *
- * @param ms - 毫秒
- * @param signal - 取消信号
- */
-async function delay(ms: number, signal?: AbortSignal): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    timer.unref();
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      reject(new RemoteError('ABORTED', '等待被取消'));
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
 }
 
 /**

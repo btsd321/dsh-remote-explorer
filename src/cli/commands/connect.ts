@@ -18,6 +18,14 @@ import {
   bold, cyan, dim, green, println, printTable, red, yellow, ProgressReporter,
 } from '../output.js';
 
+/**
+ * 会话状态轮询间隔（毫秒）。
+ *
+ * 终结态退出走轮询而非事件：状态变化回调的契约已被 session 占用，
+ * 入口层不为此改契约——轮询间隔 1 秒足够及时且开销可忽略。
+ */
+const STATE_WATCHDOG_INTERVAL_MS = 1_000;
+
 /** connect 命令选项 */
 export interface ConnectCommandOptions {
   /** 主机别名或 user@host[:port] 直连语法（WSL 模式时为 wsl:<发行版>） */
@@ -190,7 +198,7 @@ async function waitForInterrupt(
         println(dim('用 dsh-remote-explorer connect 重新连接，或 dsh-remote-explorer kill 停止远端'));
         finish();
       }
-    }, 1_000);
+    }, STATE_WATCHDOG_INTERVAL_MS);
     watchdog.unref();
   });
 
