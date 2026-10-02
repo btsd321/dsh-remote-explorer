@@ -12,7 +12,7 @@
 import { SshTransport } from '../../transport/ssh-transport.js';
 import { WslTransport } from '../../transport/wsl-transport.js';
 import type { RemoteTransport } from '../../transport/types.js';
-import type { TransportType } from '../../session/session-manager.js';
+import type { TransportType } from '../../session/options.js';
 import { provision } from '../../provision/provisioner.js';
 import { DEFAULT_NODE_VERSION } from '../../provision/node-installer.js';
 import { computeSessionId } from '../../util/session-id.js';
