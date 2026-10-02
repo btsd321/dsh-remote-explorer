@@ -3,8 +3,9 @@
  * @description VS Code 状态栏远端标识的等价物：侧栏底部 `sidebar.footer.action`
  *              槽里一枚状态 pill（主机别名 + 状态点，与「设置」按钮同排由壳排版
  *              ——fixed 自定位会压住设置齿轮，交给壳排版从结构上排除冲突），
- *              点开是管理菜单——连接状态、进度日志尾、三个动作：返回本地管理页 /
- *              关闭远程连接并返回 / 停止远端 dsh 并返回。
+ *              点开是管理菜单——连接状态、进度日志尾、三个动作：返回本地
+ *              管理页 / 关闭远程连接并返回 / 停止远端 dsh 并返回；右上角
+ *              ✕ 收起菜单（不做任何操作——只读降级态的唯一显式出口）。
  *
  * 数据全部同源 fetch 本 bundle 宿主半的路由（`/api/dsh-remote-handoff/*`，
  * 远端 dsh 自身 Cookie 鉴权），宿主半再经反向隧道回调本机监督器。
@@ -45,7 +46,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 /** 文案键集（zh/en 同键） */
 type HandoffLocaleKey =
   | 'pill' | 'menuTitle' | 'log' | 'logEmpty'
-  | 'managerOpen' | 'managerClose' | 'managerStop'
+  | 'managerOpen' | 'managerClose' | 'managerStop' | 'menuDismiss'
   | 'managerMissing' | 'versionMismatch' | 'managerUnreachable'
   | 'stateConnecting' | 'stateConnected' | 'stateHeartbeatMissed'
   | 'stateReconnecting' | 'stateReconnectFailed' | 'stateReconnectExhausted'
@@ -59,6 +60,7 @@ const zh: Record<HandoffLocaleKey, string> = {
   managerOpen: '返回本地管理页',
   managerClose: '关闭远程连接并返回',
   managerStop: '停止远端 dsh 并返回',
+  menuDismiss: '返回（收起菜单，不做任何操作）',
   managerMissing: '本机管理页地址未知（CLI 形态会话）——请用 CLI 的 status/kill 管理',
   versionMismatch: '本机与远端交接组件版本不一致，菜单降级为只读',
   managerUnreachable: '本机管理通道不可达（本地 dsh 可能已退出）',
@@ -80,6 +82,7 @@ const en: Record<HandoffLocaleKey, string> = {
   managerOpen: 'Back to local manager',
   managerClose: 'Close remote connection and return',
   managerStop: 'Stop remote dsh and return',
+  menuDismiss: 'Back (dismiss the menu, no action)',
   managerMissing: 'Local manager URL unknown (CLI session) — manage it via CLI status/kill',
   versionMismatch: 'Handoff protocol mismatch; menu is read-only',
   managerUnreachable: 'Local manager unreachable (local dsh may have exited)',
@@ -321,7 +324,26 @@ function HandoffPill(props: HandoffPillProps): ReactNode {
             zIndex: 1300, fontFamily: 'inherit',
           }}
           >
-            <strong style={{ fontSize: 13 }}>{t('menuTitle')}</strong>
+            {/* 标题行 + 右上角 ✕ 收起菜单（不做任何连接动作）：只读降级态
+                没有动作按钮，这枚是唯一显式出口——不能只靠再点一次 pill 收起；
+                title/aria 用「返回」语义与桌面浮层的 Esc 返回对齐 */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <strong style={{ fontSize: 13 }}>{t('menuTitle')}</strong>
+              <button
+                type="button"
+                aria-label={t('menuDismiss')}
+                title={t('menuDismiss')}
+                onClick={() => { setOpen(false); }}
+                style={{
+                  background: 'transparent', color: 'inherit',
+                  border: 'none', borderRadius: 4,
+                  padding: '2px 8px', cursor: 'pointer',
+                  fontSize: 13, lineHeight: 1.2, fontFamily: 'inherit',
+                }}
+              >
+                ✕
+              </button>
+            </div>
             {unreachable
               ? <span style={{ fontSize: 12, color: '#f59e0b' }}>{t('managerUnreachable')}</span>
               : null}
