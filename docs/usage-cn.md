@@ -32,7 +32,7 @@
 - **Node.js** v20.19+ 或 v22+（本机运行 tsx 用）。
 - 一台可 SSH 登录的远端主机：写进 `~/.ssh/config` 的 `Host` 条目，或用 `user@host[:port]` 直连（IPv6 需写进 config）。认证支持私钥（`IdentityFile`，可用 `--private-key` 覆盖）；未配置私钥且在交互式终端时，会提示输入密码（不回显，只存内存不落盘）；也可用 `--password <密码>` 明文传入——**有泄露风险**（命令行、进程列表与 shell 历史都能看到），CLI 会打印警告，建议仅作临时手段。
 - 远端主机必须是 **Linux 或 macOS**（POSIX）。本机客户端支持 Windows、Linux 和 macOS。
-- 使用哪个 LLM 供应商，就将其 **API key** 作为环境变量导出（如 `DEEPSEEK_API_KEY`），在运行 `dsh-remote-explorer connect` 的 shell 中设置。
+- 使用哪个 LLM 供应商，就将其 **API key** 作为环境变量导出（如 `DEEPSEEK_API_KEY`），在运行 `dsh-remote-explorer connect` 的 shell 中设置；也可以什么都不设，靠**本机 dsh 登录的 DeepSeek 账号**提供模型凭据（见 [connect 一节的「DeepSeek 账号登录」](#deepseek-账号登录非-api-key)）。
 
 ## 认证与主机指定
 
@@ -220,8 +220,18 @@ DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect <别名> --cwd //ho
 **环境变量：**
 
 - `DEEPSEEK_API_KEY` 等 LLM key：在启动 `connect` 的 shell 中导出（用哪个供应商导哪个，清单来自 `~/.dsh/settings.yaml`）。
-- `DSH_REMOTE_PROXY`：无公网主机的代理兜底。远端 dsh 装 GitHub 插件走 HTTPS（`git ls-remote https://github.com/...`），**SSH(22) 能通不代表 HTTPS(443) 能通**。设了它，启动器把 `http_proxy`/`https_proxy`/`ALL_PROXY`（大小写共六个键）注入远端 dsh 进程，值指向 SSH 反向隧道在远端回环暴露的代理端口（如 `http://127.0.0.1:18890`）；dsh 会把这些变量透传给它拉起的 `git`/`pnpm` 子进程。不设则不注入任何变量，直连主机零影响。
+- `DSH_REMOTE_PROXY`：无公网主机的代理兜底。远端 dsh 装 GitHub 插件走 HTTPS（`git ls-remote https://github.com/...`），**SSH(22) 能通不代表 HTTPS(443) 能通**。设了它，启动器把 `http_proxy`/`https_proxy`/`ALL_PROXY`（大小写共六键）与 `no_proxy`/`NO_PROXY`（回环排除清单，防止隧道代理请求被导向 HTTP 代理）共八个键注入远端 dsh 进程，代理值指向 SSH 反向隧道在远端回环暴露的代理端口（如 `http://127.0.0.1:18890`）；dsh 会把这些变量透传给它拉起的 `git`/`pnpm` 子进程。不设则不注入任何变量，直连主机零影响。
 - 注入发生在**启动远端进程时**：复用已运行的会话不会补注入，需 `--force-restart`。插件形态的 per-host 齿轮配置优先于本变量（见[以 dsh 插件形式使用](#以-dsh-插件形式使用)）。
+
+### DeepSeek 账号登录（非 API key）
+
+本机 dsh（桌面版或 CLI）登录了 DeepSeek 账号时，远端会话**无需任何额外配置**即可使用账号模型（模型选择器里的「DeepSeek Account」供应商）：
+
+- **凭据链路**：连接时读取本机 `$DSH_HOME/.credentials.yaml` 的 grant token（只在内存），向远端写一条**占位** grant record（token = 代理令牌，issuer = 隧道代理地址）让远端 dsh 认为已登录；远端的模型请求经反向隧道回到本机代理，替换为真实 token 转发 `api.deepseek.com`。真实 token 从不离开本机，远端磁盘上只有占位令牌。
+- **账号 patch**：会话 patch 同时重定向 `llm-deepseek-account` 的 `baseURL` 与 `deepseek-account` 平台插件的 `platformOrigin`/`inferenceOrigin` 进隧道——后者是账号模型能出现在远端模型选择器里的成立条件。
+- **远端 web 界面没有头像/登录按钮是正常现象**：dsh 的账号 UI（左下角头像 pill、登录对话框）只在官方桌面端渲染器注册（检测 `dshDesktop` 桥），web 前端一律不渲染。账号是否生效看模型选择器与实际对话，不要在远端界面找登录入口——远端登录会把真实 token 落到远端磁盘，违背本工具「凭据不出本机」的设计，隧道代理也会拦截登录流程的未认证请求。
+- **账号过期**：上游返回 401 时远端会退出登录态（任务提示「已因退出 DeepSeek 登录而停止」）。修复方式：**在本机 dsh 重新登录账号，再重连远端会话**——重连会自动重写占位凭据恢复登录态。
+- 未在本机登录账号时此通道静默关闭：不写占位凭据、不打账号 patch，API key 通道不受影响。
 
 **会话复用：** 用相同别名和 `--cwd` 再次 `connect`，会探到已运行的远端 dsh 并复用。新 CLI 获得自己的本机隧道端口。多个 CLI 可共享一个远端会话。
 

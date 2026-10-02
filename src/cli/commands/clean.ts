@@ -52,8 +52,6 @@ export interface CleanCommandOptions {
 interface CleanReport {
   /** 删除的会话目录 */
   sessions: string[];
-  /** 删除的 dsh 版本 */
-  dshVersions: string[];
   /** 删除的 Node 版本 */
   nodeVersions: string[];
   /** 释放的字节数 */
@@ -107,9 +105,6 @@ export async function runClean(options: CleanCommandOptions): Promise<number> {
     }
     if (report.sessions.length > 0) {
       println(dim(`陈旧会话目录：${report.sessions.join('、')}`));
-    }
-    if (report.dshVersions.length > 0) {
-      println(dim(`旧版 dsh：${report.dshVersions.join('、')}`));
     }
     if (report.nodeVersions.length > 0) {
       println(dim(`旧版 Node：${report.nodeVersions.join('、')}`));
@@ -191,7 +186,6 @@ async function collectAndClean(
   // 删陈旧会话目录
   const report: CleanReport = {
     sessions: staleSessions,
-    dshVersions: [],
     nodeVersions: [],
     freedBytes: 0,
     protectedVersions: [...new Set(protectedVersions)],
@@ -208,9 +202,8 @@ async function collectAndClean(
     await transport.exec(`rm -rf ${targets}`, { allowNonZeroExit: true });
   }
 
-  // 清旧版本：两类目录同规则——版本名按 sort -V 排序，保留最新 keep 个，
-  // 其余删除（被活会话引用的除外）
-  report.dshVersions = await pruneVersions(transport, `${base}/versions`, 'dsh-', keep, report.protectedVersions, (freed) => { report.freedBytes += freed; });
+  // 清旧版本：dsh 不再按版本分目录（装在 base/node_modules 下），只清 Node 旧版本。
+  // Node 版本名按 sort -V 排序，保留最新 keep 个，其余删除（被活会话引用的除外）
   report.nodeVersions = await pruneVersions(transport, `${base}/node`, '', keep, report.protectedVersions, (freed) => { report.freedBytes += freed; });
 
   // 清机器级 agent 能力目录（技能等）。

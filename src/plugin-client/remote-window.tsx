@@ -141,34 +141,57 @@ export function RemoteWindowOverlay(props: RemoteWindowOverlayProps): ReactNode 
     let offOpenRequested: (() => void) | undefined;
 
     // ---- body 级容器：最高 z-index 盖住主窗口一切网页内容 ----
-    // 顶部留出宿主 caption 行的带宽：Windows 上是原生窗口按钮（最小化/最大化/关闭，
-    // 由 Electron 画在网页之上）+ 侧栏开关 + 应用/编辑菜单 + 可拖拽区；macOS 上是红绿灯。
-    // 不留这条带的话，浮层从 y=0 铺满整窗，会压住远端页面右上角（Windows）/ 左上角
-    // （macOS）控件，也整条盖住宿主自己的 caption 行导致窗口无法拖动。
+    // 浮层从 top:0 铺满整窗，不再用 top 让位——改为在浮层内部顶部放一条不透明
+    // 遮蔽条盖住 caption 行。caption 行里有网页内渲染的控件（侧栏开关、品牌图标
+    // /New Session 按钮、可拖拽区），远程会话中它们操作的是宿主窗口界面、不该
+    // 可见可点；右上角的最小化/最大化/关闭按钮由 Electron 原生绘制、永远在网页
+    // 之上，会自然盖在遮蔽条上面，仍然可见可用。
     //
-    // 顶部让位值来自 overlayTopInset：优先吃 dsh 本体发布在根元素上的 CSS 变量
-    // --dsh-frame-chrome-top（语义即 chrome 顶部带宽，且全屏归零）→ 回退 --dsh-frame-top-clearance
-    // → 平台标记硬编码。写成 CSS var() 链而非读 JS 计算值：var() 会随全屏切换自动重算，
-    // JS 读到的是挂载瞬间的快照，用户切全屏就失效。
+    // 遮蔽条高度来自 overlayTopInset：优先吃 dsh 本体发布在根元素上的 CSS 变量
+    // --dsh-frame-chrome-top（语义即 chrome 顶部带宽，且全屏归零）→ 回退
+    // --dsh-frame-top-clearance → 平台标记硬编码。写成 CSS var() 链而非读 JS
+    // 计算值：var() 会随全屏切换自动重算，JS 读到的是挂载瞬间的快照，用户切
+    // 全屏就失效。
     //
-    // **必须用 top 让位，不能用 padding-top**：容器内 webview 与状态层都是
-    // position:absolute;inset:0，绝对定位子元素的包含块是容器的**内边距盒**，padding
-    // 移不动 inset:0 的子元素——加了 padding 顶带，子元素照样顶到 y=0，等于白写。
-    // 移 top 才能把包含盒（含绝对子元素）整体下移。
+    // webview 与状态层用 top 偏移到遮蔽条底部（不能用 padding-top：绝对定位
+    // 子元素的包含块是内边距盒，padding 移不动 inset:0 的子元素）。
     const topInset = overlayTopInset(adaptOverlayRoot(document.documentElement));
     const container = document.createElement('div');
-    container.style.cssText = `position:fixed;left:0;right:0;bottom:0;top:${topInset};z-index:2147483647;`
+    container.style.cssText = 'position:fixed;left:0;right:0;bottom:0;top:0;z-index:2147483647;'
       + 'background:var(--dsw-alias-bg-base,#101014);';
+    // caption 遮蔽条：不透明、全宽、盖住 caption 行中网页内渲染的控件。
+    // Electron 原生 caption 按钮画在网页之上，会自然盖在此条上面（仍可见可用）。
+    // 高度用 var() 链随全屏切换自动归零——全屏时无原生控件也无 caption 行。
+    //
+    // -webkit-app-region: drag 让遮蔽条成为窗口拖拽区——与原 caption 行行为一致：
+    // 原来被遮蔽的 caption 行本身就是可拖拽区（dsh .frame::before 带 app-region: drag，
+    // macOS topStrip 带 data-window-drag）。不加这条属性时，鼠标在遮蔽条上拖动会
+    // 命中被遮蔽的底层按钮（toggle/New Session），弹出禁止点击光标——不符合用户习惯。
+    // Electron 原生 caption 按钮画在更上层且自带 no-drag，不受此声明影响。
+    //
+    // 背景色按平台区分：
+    // - Windows：caption 行原背景是 --dsw-specific-sidebar-fill（见 dsh AppFrame.module.css
+    //   .frame::before），遮蔽条用同色与原 caption 行无缝衔接
+    // - macOS：frame 透明（靠窗口 vibrancy），sidebarCol 是半透明渐变——纯色无法匹配
+    //   vibrancy，用 --dsw-alias-bg-base 让远端界面从顶部起一体（视觉上 caption 行
+    //   变成了内容区底色，比色差更自然）
+    // 用 CSS var() 链回退：优先 sidebar-fill（Windows），缺失时回退 bg-base（macOS/网页）
+    const captionBar = document.createElement('div');
+    captionBar.style.cssText = `position:absolute;left:0;right:0;top:0;height:${topInset};`
+      + 'background:var(--dsw-specific-sidebar-fill,var(--dsw-alias-bg-base,#101014));'
+      + 'z-index:2;-webkit-app-region:drag;';
     // 状态层（加载/错误/断开中）：不透明、压在 webview 之上（z-index:1），
     // 居中文字；就绪后隐藏让位给 webview。webview 本身全程可见——Electron 的
     // guest view 在 display:none 下 attach 拿不到真实尺寸、之后显示也不重新
-    // 布局（实测只渲染顶部一条、下面全白），所以绝不能用隐藏 webview 来做加载态
+    // 布局（实测只渲染顶部一条、下面全白），所以绝不能用隐藏 webview 来做加载态。
+    // top 偏移到遮蔽条底部（caption 行下方），不覆盖 caption 遮蔽条。
     const status = document.createElement('div');
-    status.style.cssText = 'position:absolute;inset:0;z-index:1;display:flex;'
+    status.style.cssText = `position:absolute;left:0;right:0;bottom:0;top:${topInset};z-index:1;display:flex;`
       + 'align-items:center;justify-content:center;color:#e5e5e5;font-size:13px;'
       + 'font-family:inherit;text-align:center;padding:24px;white-space:pre-wrap;'
       + 'background:var(--dsw-alias-bg-base,#101014);';
     status.textContent = t('overlayLoading');
+    container.appendChild(captionBar);
     container.appendChild(status);
     document.body.appendChild(container);
 
@@ -235,8 +258,11 @@ export function RemoteWindowOverlay(props: RemoteWindowOverlayProps): ReactNode 
           element.setAttribute('src', `about:blank#${result.lease}`);
           element.setAttribute('partition', result.partition);
           // webview 全程可见（隐藏 attach 会丢尺寸，见状态层注释）；加载态由
-          // 不透明状态层盖住，就绪后隐藏状态层即可
-          element.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:none;';
+          // 不透明状态层盖住，就绪后隐藏状态层即可。top 偏移到遮蔽条底部
+          // （caption 行下方），不覆盖 caption 遮蔽条。
+          // 不用 height:100%——包含块是整窗高度，加 top 偏移后 100% 会溢出底部
+          // （底部内容被截到窗口外）。用 top+bottom:0 撑满遮蔽条下方的剩余空间。
+          element.style.cssText = `position:absolute;left:0;right:0;bottom:0;top:${topInset};border:none;`;
           // 4. 首次 dom-ready（about:blank#lease 就绪 = attach 通过）后 loadURL
           element.addEventListener('dom-ready', () => {
             if (element.dataset.loaded === '1') return;

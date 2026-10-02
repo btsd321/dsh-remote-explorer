@@ -1,6 +1,7 @@
 /**
  * @file 代理凭据材料读写
- * @description 会话级代理令牌、反向端口与反向端点主机的远端落盘读写。
+ * @description 会话级代理令牌、反向端口与反向端点主机的远端落盘读写，
+ *              以及机器级占位账号凭据（base/.credentials.yaml）的写入。
  *
  * 凭据材料随会话固定，存储在远端 `.runtime/` 目录下（令牌文件 600 权限）。
  * 无论哪个本机视图重连、复用会话还是重启 CLI，读回的都是同一组值，
@@ -16,6 +17,7 @@
  */
 
 import type { RemoteContext } from '../provision/remote-context.js';
+import { writeRemoteTextFile } from '../transport/write-text.js';
 import { isValidIpv4 } from '../util/ipv4.js';
 import { quote } from '../util/shell-quote.js';
 
@@ -142,4 +144,55 @@ export async function writeSessionReverseHost(
   const hostFile = paths.sessionReverseHostFile(sessionId);
   const script = `printf '%s\\n' ${quote(host)} > ${quote(hostFile)}`;
   await transport.exec(script);
+}
+
+/**
+ * 写入机器级占位账号凭据（`base/.credentials.yaml`，DSH_HOME = base）。
+ *
+ * 仅本机已登录 DeepSeek 账号时调用：写一条占位 grant record（token = 代理
+ * 令牌，issuer = 平台 origin）让远端 dsh 的 `deepseek-account-platform`
+ * 插件认为已登录，`resolveToken` 返回占位令牌——请求带 `x-dsh-auth-token`
+ * 头经隧道回到本机代理，替换为真实 account token 转发上游。真实 token
+ * 全程不出本机。
+ *
+ * 契约与幂等性：
+ * - **issuer 必须与会话 patch 的 platformOrigin 一致**——dsh 的
+ *   `Service.init` 检查 `issuer === this.origin`，不匹配会丢弃 record
+ * - 每次连接重写（同值幂等）；record 被 dsh 因上游 401 删除后，下次
+ *   连接也能借此恢复
+ * - 值域受限（base64url 令牌、`http://host:port` origin），无 YAML 元
+ *   字符注入面，直接拼 YAML 安全
+ * - 文件权限 600（与真实 credentials.yaml 同权限）；SFTP 主路径带
+ *   mode，回退 exec 后补 chmod
+ *
+ * @param ctx - 远端执行上下文
+ * @param token - 代理令牌（占位凭据值）
+ * @param issuer - 平台 origin（= 会话 patch 的 platformOrigin，纯 origin 不含路径）
+ * @throws RemoteError 两条写入路径（SFTP / exec）都失败
+ */
+export async function writePlaceholderAccountCredentials(
+  ctx: RemoteContext,
+  token: string,
+  issuer: string,
+): Promise<void> {
+  const { transport, paths } = ctx;
+  const credYaml = [
+    'version: 1',
+    'records:',
+    '  deepseek-account-platform/default:',
+    '    kind: grant',
+    '    payload:',
+    '      version: 1',
+    `      token: ${token}`,
+    `      issuer: ${issuer}`,
+    '',
+  ].join('\n');
+  try {
+    await transport.writeRemoteFile(paths.credentialsFile, credYaml, { mode: 0o600 });
+  } catch {
+    // SFTP 不可用（个别加固 sshd 关闭 sftp 子系统）回退 exec；写入内容为
+    // 定长结构 YAML，printf 重定向无长度风险
+    await writeRemoteTextFile(transport, paths.credentialsFile, credYaml);
+    await transport.exec(`chmod 600 ${quote(paths.credentialsFile)}`, { allowNonZeroExit: true });
+  }
 }
