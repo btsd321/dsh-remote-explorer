@@ -254,7 +254,9 @@ export async function startRemoteDsh(
 
     const token = TOKEN_PATTERN.exec(lastLog)?.[1];
     if (token) {
-      log.info('令牌匹配成功', { tokenPrefix: token.slice(0, 8) });
+      // 不打印令牌任何片段（含前缀）——遵守「日志不打印令牌内容」的安全约定；
+      // 令牌长度恒为 43，格式正确性由正则模式保障，无需诊断
+      log.info('令牌匹配成功', { tokenLength: token.length });
       const pid = await readPid(transport, pidFile, signal);
       if (pid === undefined) {
         throw new RemoteError(
