@@ -75,7 +75,7 @@ dsh-remote-explorer <command> [options]
 | `connect <alias>` | Main command: provision → start remote dsh → build tunnel → open browser (long-running) |
 | `status` | List all sessions maintained on this machine |
 | `kill <alias>` | Stop remote dsh process |
-| `clean <alias>` | Clean up stale remote resources (old versions, dead session dirs) |
+| `clean <alias>` | Clean up stale remote resources (old versions, dead session dirs, skill dir) |
 | `list` | List hosts from ~/.ssh/config |
 | `doctor <alias>` | Diagnose a host's provisioning conditions |
 | `provision <alias>` | Provision only, don't start services (idempotent) |
@@ -163,6 +163,21 @@ pnpm exec tsx src/cli/bin.ts provision <alias> --cwd //home/user
 **Why provision separately:** Provisioning is the slowest and most failure-prone step (~75 seconds for a fresh install). Separating it allows independent retry and diagnosis.
 
 **Version isolation:** Each Node and dsh version is installed in its own directory (e.g. `~/.dsh-remote-explorer/btsd321/node/v24.21.0/`, `~/.dsh-remote-explorer/btsd321/versions/dsh-0.1.6-alpha.2/`). Upgrading never overwrites in place — this avoids "Text file busy" errors when a running process holds files open.
+
+**Machine-level vs session-private:** Resources under the remote root fall into two classes:
+
+| Class | Location | Lifetime |
+|---|---|---|
+| Node / dsh installations | `node/<version>/`, `versions/dsh-<version>/` | Machine-level, versions coexist |
+| Plugin store | `profiles/web/` | Machine-level, shared by every session via symlink |
+| **Agent capabilities (skills)** | `.agents/` | **Machine-level, shared by every session** |
+| Session instance state | `sessions/<session id>/` | One per (host, remote directory) |
+
+The remote dsh's `DSH_AGENTS_HOME` points at `.agents`, mirroring `~/.agents` on a local machine. dsh treats `<agentsHome>/skills` as a **user-level** skill root (rank 500), so **opening a session in a different working directory on the same remote keeps your installed skills** — no reinstall needed. Skills in a project's `.dsh/skills` or `.agents/skills` still travel with the repository and outrank machine-level ones (rank 100/200).
+
+Concurrent writes to the skill directory are serialized by a flock at `.agents/.lock`. That lock only covers writes this tool initiates — third-party skill installers do not read it, so installing skills with an external tool concurrently from several sessions can still clobber `.skill-lock.json`.
+
+When upgrading from an earlier version, skills under `sessions/<session id>/agents/` are **not merged into** `.agents` automatically — that directory is no longer read, but it is not deleted either. `mv` what you want into `.agents/skills/` yourself (existing names are skipped, so decide the trade-off), or simply reinstall; leftovers disappear when `clean` removes the dead session directory.
 
 **Output:** A table showing the remote base directory, Node version, dsh version, dsh entry path, and session `DSH_HOME`.
 
@@ -269,7 +284,7 @@ Install directories and session profiles are preserved after kill. Use `connect`
 
 ## clean — Remove stale remote resources
 
-Removes stale session directories, old Node versions, and old dsh versions from the remote host. This is the necessary companion to the version-named, per-session-directory strategy — both accumulate over time.
+Removes stale session directories, old Node versions, old dsh versions, and the machine-level agent capability directory (`.agents`, installed skills included) from the remote host. This is the necessary companion to the version-named, per-session-directory strategy — both accumulate over time.
 
 ```bash
 # Clean with defaults (keep 1 version per category)
@@ -296,8 +311,9 @@ pnpm exec tsx src/cli/bin.ts clean <alias> --keep 2
 - **Stale session directories** — sessions whose pid file points to a dead process; directories owned by other fingerprints are skipped by default (`--include-others` includes them).
 - **Old dsh versions** — keeps the N newest, deletes the rest (protected versions excluded).
 - **Old Node versions** — same rule.
+- **The machine-level agent capability directory (`.agents`)** — removed entirely, installed skills included. It is a single directory with no "keep the N newest" notion, and skills are reinstallable; the next connection sets them up again. It is **not owner-scoped and not protected by active sessions** — `.agents` is account-wide, and an active session reads that same directory, so deleting it only affects the skills that session *discovers* afterwards (a missing skill root is a valid empty state and does not crash the remote process). Keep this in mind when several people share one remote account.
 
-The user-level plugin store (`plugins/`) is shared data and is **never touched by clean**.
+The user-level plugin store (`profiles/web/`) is shared data and is **never touched by clean**.
 
 **Output:** Reports freed space, deleted sessions/versions, and any protected versions.
 
@@ -388,7 +404,7 @@ The tool detects the running remote dsh and reuses it. You get a fresh local tun
 # Stop the remote dsh
 pnpm exec tsx src/cli/bin.ts kill my-server --all
 
-# Clean stale versions and dead sessions
+# Clean stale versions, dead sessions, and the skill directory (skills are reinstallable)
 pnpm exec tsx src/cli/bin.ts clean my-server
 
 # Full remote uninstall (run on the remote host itself)
@@ -511,7 +527,6 @@ Restart `dsh web` after installing (dsh contract: package replacement requires a
   - **Desktop (DeepSeek Harness)**: a single "Connect in new window" button — once the session is ready it opens a **full-window floating desktop** (the desktop shell is a single OS window; every http/https popup and cross-origin navigation is redirected to the system browser, so the only in-app carrier is a webview; the opaque overlay fills the window — opening it hides the main desktop and its title-bar buttons, collapsing restores it, and minimize/fullscreen move the whole window). **No self-made top bar**: the remote dsh web UI fills the window; being web-form it renders no desktop title bar ("App/Edit" menus are an Electron desktop-shell feature the remote web page does not have), so back/close/stop all go through the remote sidebar's status pill (see [Remote window handoff](#remote-window-handoff)); Esc also collapses while the webview has not taken focus. After an app reload the overlay is not restored — reopen it from the panel
   - **Browser**: the dual entry points (VS Code-style) — "Connect in current tab" = after the session is ready, a 3-second cancellable countdown navigates this tab into the remote window; "Connect in new tab" = this page stays as the manager and the session row opens the remote in a new tab
 - Session table: state dot, local port, the row entry (desktop: "Open in new window" = the full-window floating desktop; browser: "Enter (current tab)" and "Open in new tab ↗", the new tab serving the **remote dsh UI through the tunnel**), a "Disconnect" button (with "Also stop remote dsh" checked by default); sessions kept by other local processes are marked "external" and read-only
-- Remote plugins section: with a session selected, manage the user-level plugin store of its remote profile (list / install / enable / disable / uninstall, see [Remote plugin management](#remote-plugin-management))
 - Progress log: incremental live tail of the selected session (provisioning stages, state transitions, errors)
 
 **Slash command** (chat composer):
@@ -531,10 +546,14 @@ The remote window (the full-window floating desktop on Desktop, or the remote ds
 
 ### Remote plugin management
 
-The remote plugin store is **user-level** (one per remote OS account: `~/.dsh-remote-explorer/btsd321/plugins/`, the counterpart of VS Code's `~/.vscode-server/extensions/`); every session profile of that account attaches via symlink with zero copies. Two surfaces operate on the same store:
+The remote plugin store is **user-level** (one per remote OS account: `~/.dsh-remote-explorer/btsd321/profiles/web/`, the counterpart of VS Code's `~/.vscode-server/extensions/`); every session profile of that account attaches via symlink with zero copies.
 
-- **Local manager page**: the panel's "Remote plugins" section — list / install (package name or `name@version`, handed to remote pnpm) / enable / disable / uninstall. Changes hot-apply to **your own live session via hmr** immediately; other users' live sessions pick them up at their next connect
-- **Inside the remote window**: the remote dsh's own Settings plugin UI (provisioning installs pnpm on the remote)
+**Both entry points live on the remote side** — the local panel offers no plugin management, because once a connection succeeds the browser moves to the remote dsh interface and the local manager page is no longer in view:
+
+- **Inside the remote window**: the remote dsh's own Settings plugin UI (provisioning installs pnpm on the remote) — list / install (package name or `name@version`) / enable / disable / uninstall, hot-applied through remote hmr
+- **A remote terminal**: the `dsh plugin` commands, with equivalent capabilities
+
+In short: **connect once, and the remote dsh manages its own plugins from then on.**
 
 Install/uninstall fall back to "effective after reconnect/restart" on remote dsh versions without hmr. Concurrent installs are serialized by pnpm's own directory lock plus a flock around provisioning critical sections. Each session profile carries an `.npmrc` pinning `virtual-store-dir` to the store's `.pnpm` — without it, pnpm run in the profile directory (the remote window's native UI does) rejects the symlinked node_modules with `ERR_PNPM_UNEXPECTED_VIRTUAL_STORE`.
 
@@ -587,5 +606,5 @@ The session table (`~/.dsh/remote-sessions.json`) is shared both ways: the panel
   3. In the remote page's browser console (F12), look for the meta-fetch warn: `HTTP 503 handoff_unavailable` = session runtime materials missing, `HTTP 502 manager_unreachable` = local reverse channel unreachable (the local manager process exited, or the reverse link never came up);
   4. With a WSL NAT session whose self-check fails: run `wslinfo --networking-mode` inside WSL to confirm the mode and `ip route show default` to check the `via` gateway address; enterprise GPO firewall policies may block inbound traffic from the WSL subnet (the Hyper-V firewall allows the WSL subnet by default, but group policy can tighten it) — an administrator needs to allow it.
   As a final check, the remote `/api/dsh-remote-handoff/meta` with the session cookie should return 200.
-- **Remote plugin install fails**: read the pnpm error in the panel log; the registry comes from the provisioning benchmark cache; concurrent provisioning/install on the same remote account makes the later one wait on the flock, timing out after 15 minutes with "another bootstrap is in progress"
+- **Remote plugin install fails**: read the pnpm error inside the remote window's Settings plugin UI (the remote dsh runs the install); the registry comes from the remote pnpm's own configuration; concurrent provisioning/install on the same remote account makes the later one wait on the flock, timing out after 15 minutes with "another bootstrap is in progress"
 - **Installing a GitHub plugin reports "GitHub connection timeout"**: dsh probes `github:` specs over HTTPS (`git ls-remote`) — SSH (port 22) working does not mean HTTPS (port 443) works. Give the launcher a proxy: in CLI, set `DSH_REMOTE_PROXY` (see [Common workflows](#common-workflows)); in the plugin panel, use the ⚙ gear button next to the host input or on a session row (the proxy preset fills it in one click). The config takes effect on the **next connect** — a running session must be disconnected (with "Also stop remote dsh" checked) and reconnected before the variables are injected

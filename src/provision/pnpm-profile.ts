@@ -136,9 +136,9 @@ export function ensurePnpmWorkspaceSettings(yaml: string): string {
  * 确保 host profile 的 pnpm-workspace.yaml 含 pnpm 11 运行前提（幂等）。
  *
  * 读现有文本 → {@link ensurePnpmWorkspaceSettings} 纯函数补齐 → 有变化才写回
- * （无变化不产生任何写IO）。目录位置与 remote-plugin-store 的 pnpm 操作目录
- * 同源（`paths.hostProfileDir(DEFAULT_PLATFORM)`）——补的就是 `pnpm add` 的
- * 工作目录，两处必须指向同一处。
+ * （无变化不产生任何写IO）。目录位置是 host profile 的
+ * `paths.hostProfileDir(DEFAULT_PLATFORM)`——补的就是 `pnpm add` 的工作目录，
+ * 两处必须指向同一处：远端窗口原生插件 UI 与 `dsh plugin` 都在此目录动包。
  *
  * @param ctx - 远端执行上下文
  * @param options - 取消信号与进度回调

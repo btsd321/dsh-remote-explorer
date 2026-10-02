@@ -58,7 +58,7 @@ pnpm run build:plugin && dsh plugin --profile web add /path/to/repo
 
 装完重启 `dsh web`。插件提供三个入口：
 
-- **左导航「远程 SSH 会话」全局面板**：选主机、连接（桌面端单按钮弹整窗浮动桌面 webview——打开即隐藏主桌面、远程 web 界面铺满整窗、返回/关闭/停止走远端侧栏状态 pill；浏览器端当前标签切入 / 新标签双入口）、断开、远端插件管理、实时进度日志；远端窗口侧栏有状态 pill，可返回管理页或关闭/停止连接
+- **左导航「远程 SSH 会话」全局面板**：选主机、连接（桌面端单按钮弹整窗浮动桌面 webview——打开即隐藏主桌面、远程 web 界面铺满整窗、返回/关闭/停止走远端侧栏状态 pill；浏览器端当前标签切入 / 新标签双入口）、断开、实时进度日志；远端窗口侧栏有状态 pill，可返回管理页或关闭/停止连接
 - **slash 命令** `/remote-explorer`：`hosts | connect <别名> [远端目录] | status | disconnect <别名|会话id> [--keep-remote]`
 - **agent 工具** `remote_hosts_list / remote_connect / remote_status / remote_kill`（受 dsh 的工具审批门槛约束）
 
@@ -132,11 +132,24 @@ dsh 自身会把代理变量透传给它拉起的 `git`/`pnpm` 子进程，装�
 
 ## 远端落盘隔离
 
-对标 VS Code `~/.vscode-server` 的单根自治模型：本工具在远端的一切落盘都在 `~/.dsh-remote-explorer/btsd321/` 内（安装、每会话状态、npm 缓存、临时文件），**从不写入**远端 `~/.dsh`（官方 dsh 的家）与 `~/.npm`（远端 npm 使用者共享的缓存）。远端 dsh 的 skill 目录也重定向到会话内（`DSH_AGENTS_HOME`），不读机器全局的 `~/.agents`。
+对标 VS Code `~/.vscode-server` 的单根自治模型：本工具在远端的一切落盘都在 `~/.dsh-remote-explorer/btsd321/` 内（安装、每会话状态、技能目录、npm 缓存、临时文件），**从不写入**远端 `~/.dsh`（官方 dsh 的家）与 `~/.npm`（远端 npm 使用者共享的缓存），也不读远端机器全局的 `~/.agents`。
 
 - 同机跑官方 dsh 的其他人不受任何影响；`doctor` 的「隔离检查」段会报告占用。
 - 完全卸载 = `rm -rf ~/.dsh-remote-explorer/btsd321`，一个命令走干净。
 - 已知低风险共享：远端 pnpm store——仅当有人主动在远端跑 `dsh plugin` 才触及，内容寻址并发安全。
+
+## 机器级共享与技能
+
+这个根目录下的资源分两类：
+
+- **机器级共享**（该远程账号一份，所有会话共用）：Node 与 dsh 各版本安装、`profiles/`（插件唯一真源）、`.agents/`（agent 能力，含技能）
+- **会话私有**（每个远端工作目录一份）：`sessions/<会话 id>/` 下的对话历史、storages、附件、缓存、运行时材料
+
+`DSH_AGENTS_HOME` 指向 `btsd321/.agents`，与本机 `~/.agents` 同形。dsh 把 `<agentsHome>/skills` 当作**用户级**技能根（rank 500，低于项目级 rank 100/200），语义是「这台机器的使用者」而非「这一次会话」；因此**在同一台远端换个工作目录开会话，已装的技能依然在**，不需要重装。项目内 `.dsh/skills`、`.agents/skills` 的技能仍按仓库走且优先级更高。
+
+技能目录的并发写由 `.agents/.lock`（flock）串行化。注意该锁只覆盖本工具发起的写入——第三方技能安装器不读它，跨会话并发用外部工具装技能仍有互相覆盖 `.skill-lock.json` 的风险。
+
+升级自早期版本时，`sessions/<会话 id>/agents/` 里的旧技能**不会自动搬过来**——它们已不再被读取，但也不会被删除。需要的话手工 `mv` 进 `.agents/skills/`，或者直接重装（更省事）；不需要的话随 `clean` 清理死会话目录时一并消失。
 
 **在 Git Bash 里写远端路径要用双斜杠**（`--cwd //home/xxx`）或先设 `MSYS_NO_PATHCONV=1`。MSYS 会把 `/home/xxx` 改写成 `D:/SoftWare/Git/home/xxx`，这发生在参数到达程序之前，程序只能识别并拒绝。
 
@@ -149,11 +162,16 @@ dsh 自身会把代理变量透传给它拉起的 `git`/`pnpm` 子进程，装�
 - **不同远程 OS 账号**连接同一主机 = 完全隔离（各自的远端根目录、会话与插件）
 - **同一远程账号** = 共享会话根：同 (主机, 远端目录) 即同一个远端会话（多人多视图），会话内容互见、LLM 凭据代理归先到者——这是预期行为（VS Code 同账号共享 server 亦然）。每人独立远程账号可获得完全隔离
 - `kill --all` 与 `clean` 默认只作用于**本机发起的会话**（owner 指纹，会话启动时写入远端 `.runtime/owner`）与无活进程的残留；他人会话跳过并列明，`--include-others` 恢复全量行为
+- **例外：`clean` 对机器级 `.agents` 不做 owner scope**——它是全账号共享的单一目录，`clean` 会整个清除（含已装技能），与你的指纹无关。技能属可重装资源，下次连接重新安装即可
 
-远端插件管理双表面（VS Code「连着就能管」），插件仓库为**用户级**（该远程账号一份，所有会话共享，对标 `~/.vscode-server/extensions/`；会话 profile 经 symlink 接入，零副本）：
+远端插件全部交由**远端 dsh 自己**管理，插件仓库为**用户级**（该远程账号一份，所有会话共享，对标 `~/.vscode-server/extensions/`；会话 profile 经 symlink 接入，零副本）。
 
-- **远端窗口内**：远端 dsh 自带的 Settings 插件 UI 完全可用（引导期已为远端装好 pnpm）
-- **本地管理页**：远程会话面板的「远端插件」区可做清单 / 安装 / 启停 / 卸载；操作后**本会话立即 hmr 热生效**，其他会话在下次连接时同步（VS Code 的 Reload Required 等价语义，不自动重启远端）
+管理入口有两个，都在远端那一侧：
+
+- **远端窗口内**：远端 dsh 自带的 Settings 插件 UI（引导期已为远端装好 pnpm）——清单 / 安装 / 启停 / 卸载，改动经远端 hmr 热生效
+- **远端终端**：`dsh plugin` 系列命令，等价能力
+
+本地面板**不提供**插件管理：连接成功后浏览器会切到远端 dsh 界面，本地管理页那时已不在用户视野里，保留一个看不见的管理区没有意义。首个连接建立后，远端窗口就是你管理这台机器插件的完整界面。
 
 ## 架构
 
@@ -224,7 +242,6 @@ dsh 自身会把代理变量透传给它拉起的 `git`/`pnpm` 子进程，装�
 | [src/credential/local-credentials.ts](src/credential/local-credentials.ts) | 读取本机 `.credentials.yaml` 的 refs 段，作为环境变量的凭据回退源 |
 | [src/credential/token.ts](src/credential/token.ts) | 代理令牌：生成与常数时间比较 |
 | [src/credential/proxy-secret.ts](src/credential/proxy-secret.ts) | 凭据材料读写：会话级令牌与反向端口的远端落盘 |
-| [src/plugin/remote-plugin-store.ts](src/plugin/remote-plugin-store.ts) | 远端插件包管理：list / install / remove / toggle |
 | [src/handoff/](src/handoff/) | 远端窗口交接组件：宿主半（远端 dsh 内 bundle）+ 浏览器半（状态 pill 与管理菜单） |
 | [src/cli/](src/cli/) | 命令分派、参数解析、终端输出、命令级认证装配 |
 

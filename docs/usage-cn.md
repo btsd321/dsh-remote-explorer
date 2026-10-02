@@ -75,7 +75,7 @@ dsh-remote-explorer <命令> [参数]
 | `connect <别名>` | 主命令：引导 → 起远端 dsh → 建隧道 → 开浏览器（常驻） |
 | `status` | 列出本机正在维持的所有会话 |
 | `kill <别名>` | 停止远端 dsh 进程 |
-| `clean <别名>` | 清理远端陈旧资源（旧版本、死会话目录） |
+| `clean <别名>` | 清理远端陈旧资源（旧版本、死会话目录、技能目录） |
 | `list` | 列出 ~/.ssh/config 中的主机 |
 | `doctor <别名>` | 诊断某台主机的引导条件 |
 | `provision <别名>` | 只做引导，不起服务（幂等） |
@@ -163,6 +163,21 @@ pnpm exec tsx src/cli/bin.ts provision <别名> --cwd //home/user
 **为什么单独成命令：** 引导是最慢也最容易失败的一步（全新安装约 75 秒）。独立出来便于单独重试与诊断。
 
 **版本隔离：** 每个 Node 和 dsh 版本装在各自目录（如 `~/.dsh-remote-explorer/btsd321/node/v24.21.0/`、`~/.dsh-remote-explorer/btsd321/versions/dsh-0.1.6-alpha.2/`）。升级从不原地覆盖——这避免了"运行中进程占着文件，写入报 Text file busy"的故障。
+
+**机器级共享 vs 会话私有：** 远端根目录下的资源分两类——
+
+| 类别 | 位置 | 生命周期 |
+|---|---|---|
+| Node / dsh 安装 | `node/<版本>/`、`versions/dsh-<版本>/` | 机器级，多版本并存 |
+| 插件仓库 | `profiles/web/` | 机器级，所有会话经 symlink 共享 |
+| **agent 能力（技能）** | `.agents/` | **机器级，所有会话共享** |
+| 会话实例状态 | `sessions/<会话 id>/` | 每个 (主机, 远端目录) 一份 |
+
+远端 dsh 的 `DSH_AGENTS_HOME` 指向 `.agents`，与本机 `~/.agents` 同形。dsh 把 `<agentsHome>/skills` 当作**用户级**技能根（rank 500），所以**在同一台远端换个工作目录开会话，已装技能依然可用**，不需要重装。项目内 `.dsh/skills`、`.agents/skills` 的技能仍随仓库走，且优先级（rank 100/200）高于机器级。
+
+技能目录的并发写由 `.agents/.lock`（flock）串行化。该锁只覆盖本工具发起的写入——第三方技能安装器不读它，跨会话用外部工具并发装技能仍可能互相覆盖 `.skill-lock.json`。
+
+从早期版本升级时，`sessions/<会话 id>/agents/` 下的旧技能**不会自动并入** `.agents`——该目录已不再被读取，但也未被删除。需要就手工 `mv` 进 `.agents/skills/`（同名项会被跳过，请自行决定取舍），或者直接重装；不需要就随 `clean` 清理死会话目录时一并消失。
 
 **输出：** 表格显示远端根目录、Node 版本、dsh 版本、dsh 入口路径和会话 `DSH_HOME`。
 
@@ -269,7 +284,7 @@ pnpm exec tsx src/cli/bin.ts kill <别名> --all
 
 ## clean — 清理陈旧远端资源
 
-删除远端的陈旧会话目录、旧版 Node 和旧版 dsh。这是版本入名 + 每会话目录策略的必要配套——两者都会累积。
+删除远端的陈旧会话目录、旧版 Node 和旧版 dsh，以及机器级 agent 能力目录（`.agents`，含已装技能）。这是版本入名 + 每会话目录策略的必要配套——两者都会累积。
 
 ```bash
 # 默认各保留最新 1 个版本
@@ -296,8 +311,9 @@ pnpm exec tsx src/cli/bin.ts clean <别名> --keep 2
 - **陈旧会话目录** — pid 文件指向的进程已不在的会话；他人指纹的目录默认跳过（`--include-others` 可包含）。
 - **旧版 dsh** — 保留最新 N 个，其余删除（受保护的除外）。
 - **旧版 Node** — 同上。
+- **机器级 agent 能力目录（`.agents`）** — 整个删除，含已装技能。它是单一目录，没有「保留最新 N 个」的概念；技能属可重装资源，下次连接重新安装即可。**不按 owner 指纹 scope，也不按活会话保护**——`.agents` 是全账号共享的，活会话读的是同一目录，删掉只影响它之后**发现**到的技能（技能根缺失属于有效空状态，不会让远端进程崩）。多人共用同一远端账号时请注意这一点。
 
-用户级插件仓库（`plugins/`）是共享数据，**永不被 clean 触碰**。
+用户级插件仓库（`profiles/web/`）是共享数据，**永不被 clean 触碰**。
 
 **输出：** 报告释放的空间、删除的会话/版本以及受保护跳过的版本。
 
@@ -387,7 +403,7 @@ DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect my-server --cwd //h
 # 停止远端 dsh
 pnpm exec tsx src/cli/bin.ts kill my-server --all
 
-# 清理旧版本和死会话
+# 清理旧版本、死会话与技能目录（技能可重装，下次连接重新安装）
 pnpm exec tsx src/cli/bin.ts clean my-server
 
 # 远端完整卸载（在远端主机上执行）
@@ -510,7 +526,6 @@ pnpm exec tsx scripts/dev-plugin.ts --sync   # 只同步产物进沙箱
   - **桌面端（DeepSeek Harness）**：单按钮「在新窗口连接」——就绪后弹**整窗浮动桌面**（桌面壳是单 OS 窗口，http/https 弹窗与跨 origin 导航全被甩给系统浏览器，应用内唯一通道是 webview；浮层不透明铺满窗口 = 打开即隐藏主桌面及其标题栏按钮，收起即还原，窗口最小化/全屏整体一起动）。**不叠加自建顶栏**：远程 dsh 的 web 界面铺满整窗，它没有桌面壳标题栏（web 形态本就不渲染「应用/编辑」菜单条），返回/关闭/停止一律走远程侧栏底部那枚状态 pill（见[远端窗口交接](#远端窗口交接handoff)）；加载阶段（webview 未夺焦）Esc 也可收起。应用重载后浮层不自动恢复，从面板重开即可
   - **浏览器端**：双入口（对标 VS Code）——「在当前标签页连接」= 就绪后 3 秒倒计时同标签切入远端窗口（可取消）；「在新标签页连接」= 本页留守管理，会话行按钮开远端新标签
 - 会话表：状态点、本机端口、行内入口（桌面端「新窗口打开」= 整窗浮动桌面；浏览器端「进入（当前标签）」与「新标签打开 ↗」，新页 = **隧道转发后的远端 dsh 界面**）、「断开」按钮（默认勾选「同时停止远端 dsh」）；其他本机进程维持的会话标「外部」只读
-- 远端插件区：选中会话后管理其远端 profile 的用户级插件仓库（清单 / 安装 / 启停 / 卸载，见[远端插件管理](#远端插件管理)）
 - 进度日志：选中会话后实时增量滚动（引导阶段、状态迁移、错误全在这里）
 
 **slash 命令**（聊天输入框）：
@@ -530,10 +545,14 @@ pnpm exec tsx scripts/dev-plugin.ts --sync   # 只同步产物进沙箱
 
 ### 远端插件管理
 
-远端插件仓库是**用户级**的（每个远程 OS 账号一份：`~/.dsh-remote-explorer/btsd321/plugins/`，对标 VS Code 的 `~/.vscode-server/extensions/`）；该账号所有会话的 profile 经 symlink 接入，零副本。两个表面操作同一份仓库：
+远端插件仓库是**用户级**的（每个远程 OS 账号一份：`~/.dsh-remote-explorer/btsd321/profiles/web/`，对标 VS Code 的 `~/.vscode-server/extensions/`）；该账号所有会话的 profile 经 symlink 接入，零副本。
 
-- **本地管理页**：面板「远端插件」区——清单 / 安装（包名或 `包名@版本`，交给远端 pnpm）/ 启停 / 卸载。操作后**本机活会话立即经 hmr 热生效**，其他用户的活会话在其下次连接时同步
-- **远端窗口内**：远端 dsh 自带的 Settings 插件 UI（引导期已为远端装好 pnpm）
+**管理入口都在远端那一侧**，本地面板不提供插件管理——连接成功后浏览器切到远端 dsh 界面，本地管理页那时已不在视野里：
+
+- **远端窗口内**：远端 dsh 自带的 Settings 插件 UI（引导期已为远端装好 pnpm）——清单 / 安装（包名或 `包名@版本`）/ 启停 / 卸载，改动经远端 hmr 热生效
+- **远端终端**：`dsh plugin` 系列命令，等价能力
+
+也就是说：**连接一次，之后的插件都由远端 dsh 自己管**。
 
 安装/卸载对老于 hmr 的远端 dsh 回退为「重连或重启后生效」。并发安装由 pnpm 自身目录锁与引导临界区 flock 串行化。会话 profile 里写有 `.npmrc`（`virtual-store-dir` 钉到 store 的 `.pnpm`）——profile 的 node_modules 是指向 store 的 symlink，不钉的话远端窗口原生 UI 在 profile 目录跑 pnpm 会报 `ERR_PNPM_UNEXPECTED_VIRTUAL_STORE`。
 
@@ -586,5 +605,5 @@ pnpm exec tsx scripts/dev-plugin.ts --sync   # 只同步产物进沙箱
   3. 远端页面浏览器 console（F12）看 meta 拉取失败 warn：`HTTP 503 handoff_unavailable` = 会话运行时材料缺失，`HTTP 502 manager_unreachable` = 本机反向通道不可达（本地管理进程已退出或反向链路未接通）；
   4. WSL NAT 模式下自检不通时：在 WSL 内执行 `wslinfo --networking-mode` 确认模式、`ip route show default` 核对 `via` 网关地址；企业 GPO 防火墙策略可能拦截 WSL 子网入站（Hyper-V 防火墙默认放行 WSL 子网，组策略可收紧），需管理员放行。
   最后可带 Cookie 访问远端 `/api/dsh-remote-handoff/meta` 验证：应得 200。
-- **远端插件安装失败**：面板日志看 pnpm 报错；registry 由引导测速缓存决定；同一远端账号并发引导/安装时后者等 flock，超时 15 分钟报「另一引导正在进行」
+- **远端插件安装失败**：在远端窗口的 Settings 插件 UI 内看 pnpm 报错（安装由远端 dsh 执行）；registry 由远端 pnpm 自身配置决定；同一远端账号并发引导/安装时后者等 flock，超时 15 分钟报「另一引导正在进行」
 - **远端装 GitHub 插件报「连接 GitHub 超时」**：dsh 装 `github:` 插件走 HTTPS（`git ls-remote`），SSH(22) 通不代表 HTTPS(443) 通。给启动器配代理：CLI 设 `DSH_REMOTE_PROXY`（见[常见工作流](#常见工作流)），插件面板用主机输入框旁或会话行的 ⚙ 齿轮按主机配置（代理快捷项可一键填入）。配置在**下一次连接**生效——已运行的会话需断开（勾选「同时停止远端 dsh」）后重连才会注入
