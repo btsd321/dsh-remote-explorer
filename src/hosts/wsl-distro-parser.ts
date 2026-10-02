@@ -35,6 +35,14 @@ export interface WslDistroInfo {
 /** wsl.exe 完整路径（防 PATH 劫持，与 Windows Terminal 做法一致） */
 const WSL_EXE_PATH = 'C:\\Windows\\System32\\wsl.exe';
 
+/**
+ * wsl.exe 调用超时（毫秒）。
+ *
+ * WSL 服务未启动或系统繁忙时 wsl.exe 可能长期挂起，超时兜底让发行版
+ * 枚举失败而不是拖住整个命令。
+ */
+const WSL_EXE_TIMEOUT_MS = 10_000;
+
 /** 需要过滤的非用户发行版前缀（Docker/Rancher 的工具发行版） */
 const FILTERED_DISTRO_PREFIXES = ['docker-desktop', 'rancher-desktop'] as const;
 
@@ -123,7 +131,7 @@ export function refreshWslCache(): void {
  */
 async function runWslExe(args: readonly string[]): Promise<string> {
   const result = await new Promise<{ stdout: Buffer; stderr: Buffer }>((resolve, reject) => {
-    execFile(WSL_EXE_PATH, [...args], { encoding: 'buffer', timeout: 10_000 }, (error, stdout, stderr) => {
+    execFile(WSL_EXE_PATH, [...args], { encoding: 'buffer', timeout: WSL_EXE_TIMEOUT_MS }, (error, stdout, stderr) => {
       if (error) {
         reject(error);
         return;

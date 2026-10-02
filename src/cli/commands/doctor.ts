@@ -13,7 +13,7 @@
 import { SshTransport } from '../../transport/ssh-transport.js';
 import { WslTransport } from '../../transport/wsl-transport.js';
 import type { RemoteTransport } from '../../transport/types.js';
-import type { TransportType } from '../../session/session-manager.js';
+import type { TransportType } from '../../session/options.js';
 import {
   checkNodeStability as probeNodeStability,
   probeRemote,
