@@ -104,11 +104,11 @@ pnpm run setup:hooks
 入口层      cli/            命令分派、参数解析、终端输出（CLI 形态）
             plugin/         dsh 插件宿主半：supervisor 簿记、advanced-store 高级选项全局存储（三弹窗的「上一次输入」）、connect-summary 连接选项日志、命令/工具/路由注册（插件管理交由远端 dsh 自己，本地无该表面）
             plugin-client/  dsh 插件浏览器半：远程会话全局面板（React）、ssh-connect-form 连接表单、dialogs/ 高级选项三弹窗（跳板机/环境变量/代理，共享 dialog-shell 壳）、useSessionPolling 轮询 Hook、remote-window 桌面浮层（body 级覆盖层 + webview 载体 + overlay-inset 顶部让位计算）、desktop-bridge 桌面壳桥接、共享常量与样式
-编排层      session/      会话生命周期、心跳、重连、多会话簿记；open-pipeline 打开流水线（传输工厂含跳板机分流 planJumpHosts + prepare/probe/provision/tunnels 四阶段）、wsl-reverse WSL 反向通道编排、proxy-env 代理与用户环境变量收集注入
+编排层      session/      会话生命周期、心跳、重连、多会话簿记；open-pipeline 打开流水线（传输工厂含跳板机分流 planJumpHosts + prepare/probe/provision/tunnels 四阶段）、wsl-reverse WSL 反向通道编排、proxy-env 代理与用户环境变量收集注入、cancellable-wait 可取消等待原语（轮询/退避等待的单一实现）
 能力层      provision/    装 Node、dsh 与 pnpm（探针读落盘、镜像候选链、11 系前提补齐）、镜像测速、生成会话 profile、agents-lock 机器级技能装写锁、RemoteContext 远端执行上下文
             tunnel/       端口分配、正向转发、reverse-listener Windows 侧反向监听（分配即绑定）
             credential/   LLM 凭据代理（反向隧道，key 不出本机；DeepSeek 账号通道按 x-dsh-auth-token 头替换）、proxy-secret 凭据材料读写（含 reverse-host 与机器级占位账号凭据）
-            handoff/      远端窗口交接组件（宿主半跑在远端 dsh、浏览器半是状态 pill + 管理菜单）
+            handoff/      远端窗口交接组件（宿主半跑在远端 dsh、浏览器半是状态 pill + 管理菜单）；handoff/protocol.ts 是跨层共享契约模块（协议常量被入口/编排/能力三层引用，自身零依赖）
 传输层      transport/    ssh2 连接、命令执行、池化 SFTP、开通道、反向转发、通道配额、platform 平台探测与命令构建、wsl-transport WSL 发行版传输、wsl-network WSL 网络模式探测纯函数
 基础层      hosts/        ssh config 解析（主机配置唯一来源；含面板跳板链解析与 config/直连分流判据）
             util/         shell 转义、错误类型、会话 id、远端路径校验、字节格式化、状态显示常量、ipv4 校验
