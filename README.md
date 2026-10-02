@@ -129,7 +129,7 @@ The remote dsh is launched by this tool, so its environment carries no proxy var
 DSH_REMOTE_PROXY=http://127.0.0.1:18890 DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect myhost
 ```
 
-dsh itself passes proxy variables through to the `git`/`pnpm` child processes it spawns, so plugin installs and dependency fetches go through the same proxy. Leaving `DSH_REMOTE_PROXY` unset injects nothing — machines with direct internet are unaffected. In plugin form, the advanced-options **Proxy dialog** takes precedence over this fallback (globally remembered last input, persisted in `~/.dsh/remote-advanced.json`).
+dsh itself passes proxy variables through to the `git`/`pnpm` child processes it spawns, so plugin installs and dependency fetches go through the same proxy. Leaving `DSH_REMOTE_PROXY` unset injects nothing — machines with direct internet are unaffected. In plugin form, the advanced-options **Proxy dialog** takes precedence over this fallback (last input remembered per transport form, persisted in `~/.dsh/remote-advanced.json`). **Proxy injection applies to SSH connections only** — WSL connections never inject proxy variables (advanced options are stored per transport form: the SSH domain has env/proxy/jump hosts, the WSL domain has env only; see the panel's advanced options).
 
 ## Remote disk isolation
 
@@ -247,7 +247,7 @@ Foundation   hosts/   util/
 | [src/credential/token.ts](src/credential/token.ts) | Proxy token: generation and constant-time comparison |
 | [src/credential/proxy-secret.ts](src/credential/proxy-secret.ts) | Credential material I/O: session-scoped token, reverse port, machine-level placeholder account credentials |
 | [src/handoff/](src/handoff/) | Remote-window handoff: host half (bundle inside remote dsh) + browser half (status pill and management menu); protocol.ts is the cross-layer shared contract (constants referenced by the entry/orchestration/capability layers, zero dependencies) |
-| [src/plugin/](src/plugin/) | Plugin host half: session supervisor (booking + bounded log buffer), `/api` routes, advanced-options global store (last input, 0600), connect-option summary log |
+| [src/plugin/](src/plugin/) | Plugin host half: session supervisor (booking + bounded log buffer), `/api` routes, advanced-options store (per transport form: SSH domain has env/proxy/jump hosts, WSL domain env only, 0600), connect-option summary log |
 | [src/plugin-client/](src/plugin-client/) | Browser half: SSH/WSL panels, connect form with the three advanced-option dialogs (jump hosts / env vars / proxy), session polling, desktop floating window |
 | [src/cli/](src/cli/) | Command dispatch, argument parsing, terminal output, per-command auth wiring |
 
