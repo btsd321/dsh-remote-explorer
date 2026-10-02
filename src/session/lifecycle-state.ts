@@ -114,6 +114,11 @@ export function transition(
     case 'heartbeat-ok':
       // 心跳恢复即清零计数：连续性是判定依据，偶发单次失败不该累积
       if (state.tag !== 'connected' && state.tag !== 'heartbeat-missed') return state;
+      // 已连接且无丢失计数的稳态：语义上状态未变，**必须返回同一引用**——
+      // 调用方（RemoteSession.apply）按引用判等去重回调，返回新对象会让
+      // 每次心跳（默认 5 秒一次）都触发一次 onStateChange，「已连接」状态
+      // 日志无限刷屏（面板与 handoff 日志尾同源受害，实测踩过）
+      if (state.tag === 'connected' && state.missedHeartbeats === 0) return state;
       return { ...state, tag: 'connected', missedHeartbeats: 0 };
 
     case 'heartbeat-fail': {
