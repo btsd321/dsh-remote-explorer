@@ -128,7 +128,7 @@ pnpm exec tsx src/cli/bin.ts list --ssh-config /path/to/config
 DSH_REMOTE_PROXY=http://127.0.0.1:18890 DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect myhost
 ```
 
-dsh 自身会把代理变量透传给它拉起的 `git`/`pnpm` 子进程，装插件与拉依赖都会走同一代理。不设 `DSH_REMOTE_PROXY` 则什么都不注入，有公网的机器零影响。插件形态还支持按主机配置自定义环境变量（面板的齿轮按钮，存 `~/.dsh/remote-host-env.json`），优先级高于该兜底变量。
+dsh 自身会把代理变量透传给它拉起的 `git`/`pnpm` 子进程，装插件与拉依赖都会走同一代理。不设 `DSH_REMOTE_PROXY` 则什么都不注入，有公网的机器零影响。插件形态还支持按主机配置自定义环境变量（面板的齿轮按钮，存 `~/.dsh/remote-host-env.json`），优先级高于该兜底变量。**代理注入仅对 SSH 连接生效**——WSL 连接不注入任何代理变量（高级选项按传输形态分域存储：SSH 域有环境变量/代理/跳板机三项，WSL 域只有环境变量，见面板「高级选项」）。
 
 ## 远端落盘隔离
 

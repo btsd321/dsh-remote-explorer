@@ -509,11 +509,13 @@ export class RemoteSession {
           );
         }
         // 重连重启远端进程时同样注入用户 env 与代理（open() 的同一合并语义）
-        // 与 WSL 用户名；不传 stage 回调——重连是后台行为，不向前端重复报
-        // 阶段进度（既有语义）
+        // 与 WSL 用户名；transportType 透传——WSL 重连重启同样切断代理兜底
+        // 层（launch 内按传输形态分流，见 tunnels.ts）。不传 stage 回调——
+        // 重连是后台行为，不向前端重复报阶段进度（既有语义）
         this.process = await launch(
           next, this.provisioned, this.sessionId,
           {
+            ...(this.options.transportType !== undefined ? { transportType: this.options.transportType } : {}),
             ...(this.options.extraEnv !== undefined ? { extraEnv: this.options.extraEnv } : {}),
             ...(this.options.proxy !== undefined ? { proxy: this.options.proxy } : {}),
             ...(this.options.wslUser !== undefined ? { wslUser: this.options.wslUser } : {}),

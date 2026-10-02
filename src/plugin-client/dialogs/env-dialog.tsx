@@ -1,9 +1,12 @@
 /**
- * @file 环境变量弹窗（高级选项之一）
- * @description 全局「上一次输入」的环境变量编辑器：打开时 GET /advanced 读
- *              回，保存时 POST 部分更新（只提交 env 字段，缺省字段保持原值
- *              ——三个弹窗互不清除对方）。全局单条不按主机区分——换主机
- *              连接沿用同一份（用户拍板的语义，取代旧 per-host 齿轮模型）。
+ * @file 环境变量弹窗（高级选项之一，按传输形态分域）
+ * @description 环境变量编辑器：打开时 GET /advanced?transportType= 读回
+ *              **当前传输形态对应域**的 env，保存时 POST 部分更新（只提交
+ *              env 字段，缺省字段保持域内原值——同域弹窗互不清除对方）。
+ *              配置按连接形态（SSH / WSL）分开保存，互不影响：SSH 表单挂
+ *              本弹窗读写 ssh 域，WSL 面板挂本弹窗读写 wsl 域；域内不按
+ *              主机/发行版区分——换主机连接沿用同一份（用户拍板的语义，
+ *              取代旧 per-host 齿轮模型）。
  *
  * 改造自旧 HostEnvDialog（代理快捷项已移除——代理独立成弹窗与字段）。
  *
@@ -44,6 +47,8 @@ interface EnvRow {
 
 /** 弹窗 props */
 export interface EnvDialogProps {
+  /** 传输形态（高级选项分域的域键）：SSH 表单传 'ssh'，WSL 面板传 'wsl' */
+  transportType: 'ssh' | 'wsl';
   /** 关闭弹窗（取消或保存成功后由父组件卸载） */
   onClose: () => void;
   /** 命名空间绑定的翻译函数 */
@@ -53,16 +58,16 @@ export interface EnvDialogProps {
 /**
  * 环境变量弹窗。
  *
- * 打开时加载既有配置，编辑在本地行 state 上进行；保存由弹窗内部调
- * postAdvanced 完成（只提交 env 字段——其余字段缺省 = 清除，所以必须在
- * 服务端原值上合并……见 onSave 的实现注释），错误显示在弹窗内，成功后
- * 回调 onClose 卸载。
+ * 打开时加载 transportType 对应域的既有配置，编辑在本地行 state 上进行；
+ * 保存由弹窗内部调 postAdvanced 完成（只提交 env 字段——其余字段缺省 =
+ * 清除，所以必须在服务端原值上合并……见 onSave 的实现注释），错误显示在
+ * 弹窗内，成功后回调 onClose 卸载。
  *
- * @param props - 关闭回调、locale 面
+ * @param props - 传输形态、关闭回调、locale 面
  * @returns 弹窗浮层
  */
 export function EnvDialog(props: EnvDialogProps): ReactNode {
-  const { onClose, t } = props;
+  const { transportType, onClose, t } = props;
   const [rows, setRows] = React.useState<EnvRow[]>([]);
   /** 加载阶段：loading 拉取中；ready 可编辑；error 拉取失败（可重试） */
   const [loadPhase, setLoadPhase] = React.useState<'loading' | 'ready' | 'error'>('loading');
@@ -72,12 +77,12 @@ export function EnvDialog(props: EnvDialogProps): ReactNode {
   /** 重试计数：自增触发加载 effect 重跑 */
   const [reloadTick, setReloadTick] = React.useState(0);
 
-  // 打开时拉既有配置；stopped 防卸载后回写 state
+  // 打开时拉 transportType 对应域的既有配置；stopped 防卸载后回写 state
   React.useEffect(() => {
     let stopped = false;
     setLoadPhase('loading');
     setLoadError('');
-    void fetchAdvanced()
+    void fetchAdvanced(transportType)
       .then(advanced => {
         if (stopped) return;
         const entries = Object.entries(advanced.env);
@@ -93,7 +98,7 @@ export function EnvDialog(props: EnvDialogProps): ReactNode {
         setLoadPhase('error');
       });
     return () => { stopped = true; };
-  }, [reloadTick]);
+  }, [transportType, reloadTick]);
 
   /**
    * 保存：前端先校验（键名/保留键/重复行/控制字符，与宿主半一致），
@@ -131,9 +136,9 @@ export function EnvDialog(props: EnvDialogProps): ReactNode {
     }
     setBusy(true);
     try {
-      // 只提交 env 字段：POST 是部分更新语义——缺省字段（proxy/jumpHosts）
-      // 保持存储原值，本弹窗不清除另两个弹窗的配置
-      await postAdvanced({ env });
+      // 只提交 env 字段：POST 是按域的部分更新语义——缺省字段（proxy/
+      // jumpHosts，仅 ssh 域有）保持存储原值，本弹窗不清除同域其他弹窗的配置
+      await postAdvanced(transportType, { env });
       onClose();
     } catch (error) {
       setSaveError(messageOf(error));
@@ -174,6 +179,7 @@ export function EnvDialog(props: EnvDialogProps): ReactNode {
       )}
     >
       <div style={{ fontSize: 12, opacity: 0.7, lineHeight: 1.5 }}>{t('envDialogHint')}</div>
+      <div style={{ fontSize: 12, opacity: 0.7, lineHeight: 1.5 }}>{t('envDialogDomainHint')}</div>
       {dialogLoadState(loadPhase, loadError, () => { setReloadTick(value => value + 1); }, t)}
       {loadPhase === 'ready'
         ? (

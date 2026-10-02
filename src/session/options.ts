@@ -77,18 +77,21 @@ export interface OpenSessionOptions {
    * 调用方（插件 supervisor）传入的用户自定义环境变量，键已在读取侧过滤、
    * 进本层后再过一次 assertSafeEnvKeys 校验（键名会直接拼进远端启动命令，
    * 非法键名 = 命令注入）。合并优先级：本层还会把 collectProxyEnv()（本机
-   * DSH_REMOTE_PROXY 兜底，最低优先）与 credential.remoteEnv()（凭据占位
+   * DSH_REMOTE_PROXY 兜底，最低优先，**仅 SSH 连接**）与
+   * credential.remoteEnv()（凭据占位
    * 键如 DEEPSEEK_API_KEY，最高优先）并进同一份注入环境——后者不被它覆盖，
    * 防止用户 env 意外挤掉占位令牌导致远端 dsh 报 MISSING_CREDENTIAL
    */
   extraEnv?: Record<string, string>;
   /**
-   * 代理 URL（面板高级选项的代理弹窗，全局「上一次输入」）。
+   * 代理 URL（面板高级选项的代理弹窗，SSH 域「上一次输入」）。
    *
    * 连接时经 collectProxyEnv(explicit) 展开为八个代理键注入远端 dsh，优先级
    * 低于 extraEnv（用户 env 里的同名键可覆盖）、高于 DSH_REMOTE_PROXY 环境
    * 变量兜底；空串/undefined = 未配置。值只存本进程内存与宿主侧 0600 文件，
-   * 不进任何日志（连接日志打印时 userinfo 打码，见 connect-summary）
+   * 不进任何日志（连接日志打印时 userinfo 打码，见 connect-summary）。
+   * **仅 SSH 连接生效**——WSL 连接无代理层（DSH_REMOTE_PROXY 兜底也被
+   * 切断，分流落点在 open-pipeline/tunnels 的 launch）
    */
   proxy?: string;
   /**

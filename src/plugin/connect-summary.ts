@@ -11,6 +11,10 @@
  *   密码值与私钥路径**（路径含本机用户目录结构，非必要不外泄）
  * - 私钥覆盖只打「有/无」
  *
+ * 形态约束：代理与私钥覆盖两行**SSH 专属**（transportType='ssh' 才渲染）
+ * ——WSL 不支持这两项配置，渲染「代理: 未配置」「私钥覆盖: 无」会误导
+ * 用户以为可配。跳板机行同规则（既有语义）。
+ *
  * 分层：本文件属插件层，类型上依赖编排层（JumpPlan）与基础层（ResolvedHost），
  * 均为纯类型导入，不做任何 IO——渲染逻辑独立成模块的目的就是可单测。
  */
@@ -32,7 +36,7 @@ export interface ConnectSummaryInput {
   jumpPlanError?: string;
   /** 注入的环境变量（只渲染键名） */
   envKeys: string[];
-  /** 面板代理（原文传入，渲染时打码 userinfo）；undefined = 未配置 */
+  /** 面板代理（原文传入，渲染时打码 userinfo）；undefined = 未配置；仅 SSH 渲染该行 */
   proxy?: string;
   /** 生效的本机端口（0 = OS 分配） */
   localPort: number;
@@ -44,7 +48,7 @@ export interface ConnectSummaryInput {
   forceRestart: boolean;
   /** 生效的重测镜像标记 */
   refreshMirrors: boolean;
-  /** 是否带私钥路径覆盖 */
+  /** 是否带私钥路径覆盖（仅 SSH 渲染该段） */
   privateKey: boolean;
 }
 
@@ -52,7 +56,9 @@ export interface ConnectSummaryInput {
  * 渲染连接选项日志行。
  *
  * 行序固定（主机 → 跳板机 → 环境变量 → 代理 → 其余选项），消费方逐行
- * push 进日志缓冲即可；首行带「连接选项:」前缀便于日志检索。
+ * push 进日志缓冲即可；首行带「连接选项:」前缀便于日志检索。跳板机/代理/
+ * 私钥覆盖是 SSH 专属行（WSL 不支持，不渲染占位行免误导，见文件头形态
+ * 约束）。
  *
  * @param input - 生效值汇总
  * @returns 日志行（非空，至少一行）
@@ -84,18 +90,21 @@ export function renderConnectSummary(input: ConnectSummaryInput): string[] {
     ? `  环境变量: ${input.envKeys.join(', ')}`
     : '  环境变量: 未配置');
 
-  // 代理：userinfo 打码
-  lines.push(input.proxy !== undefined && input.proxy !== ''
-    ? `  代理: ${maskProxyUrl(input.proxy)}`
-    : '  代理: 未配置');
+  // 代理（SSH 专属；WSL 不支持代理配置，不渲染「未配置」占位行免误导）
+  if (input.transportType === 'ssh') {
+    lines.push(input.proxy !== undefined && input.proxy !== ''
+      ? `  代理: ${maskProxyUrl(input.proxy)}`
+      : '  代理: 未配置');
+  }
 
-  // 其余选项（值非敏感：端口/版本/开关）
+  // 其余选项（值非敏感：端口/版本/开关）；私钥覆盖为 SSH 专属（WSL 无
+  // 私钥认证概念，不拼进该行）
   lines.push(`  本地端口: ${input.localPort === 0 ? 'OS 分配' : input.localPort}`
     + ` / Node: ${input.nodeVersion ?? '默认'}`
     + ` / dsh: ${input.dshVersion ?? '默认'}`
     + ` / 强制重启: ${input.forceRestart ? '是' : '否'}`
     + ` / 重测镜像: ${input.refreshMirrors ? '是' : '否'}`
-    + ` / 私钥覆盖: ${input.privateKey ? '有' : '无'}`);
+    + (input.transportType === 'ssh' ? ` / 私钥覆盖: ${input.privateKey ? '有' : '无'}` : ''));
   return lines;
 }
 

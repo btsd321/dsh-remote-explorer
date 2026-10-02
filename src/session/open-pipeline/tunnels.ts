@@ -114,15 +114,18 @@ export async function setupTunnels(
  * 端口分配有固有竞态（探到空闲与实际绑定之间存在窗口），
  * 所以失败后换端口重试一次。
  *
- * 环境注入三层合并（后者覆盖前者同名键）：
+ * 环境注入三层合并（后者覆盖前者同名键，**仅 SSH 有代理层**）：
  * `collectProxyEnv(options.proxy)`（面板代理显式值，`DSH_REMOTE_PROXY`
  * 环境变量兜底）< `options.extraEnv`（面板环境变量）< `credential.remoteEnv()`
  * （凭据占位键最高优先，防被用户 env 覆盖导致远端报 MISSING_CREDENTIAL）。
+ * WSL 连接**无代理层**——即使宿主进程设了 `DSH_REMOTE_PROXY` 也不注入：
+ * 该变量是为 SSH 远端装插件走代理设计的，WSL 内出网语义不同（NAT/镜像
+ * 模式直连宿主网络），代理键塞进 WSL 进程只会得到错误路由。
  *
  * @param transport - 传输实例
  * @param provisioned - 引导结果
  * @param sessionId - 会话 id
- * @param options - 打开选项（进度回调、代理、用户自定义 env 与 WSL 用户名）
+ * @param options - 打开选项（进度回调、传输形态、代理、用户自定义 env 与 WSL 用户名）
  * @param port - 预分配的 web 端口
  * @param credential - 凭据策略；存在则占位凭据进环境
  * @returns 远端进程信息
@@ -132,7 +135,7 @@ export async function launch(
   transport: RemoteTransport,
   provisioned: ProvisionResult,
   sessionId: string,
-  options: Pick<OpenSessionOptions, 'onStageStart' | 'onStageDone' | 'proxy' | 'extraEnv' | 'wslUser'>,
+  options: Pick<OpenSessionOptions, 'onStageStart' | 'onStageDone' | 'transportType' | 'proxy' | 'extraEnv' | 'wslUser'>,
   port: number,
   credential: TunnelProxyCredential | undefined,
 ): Promise<RemoteProcessInfo> {
@@ -141,7 +144,11 @@ export async function launch(
   // （DSH_HOME/DSH_AGENTS_HOME/PATH）被用户值覆盖会破坏会话隔离与技能共享契约
   assertSafeEnvKeys(options.extraEnv ?? {}, `主机 ${transport.hostAlias}`);
   const extraEnv: Record<string, string> = {
-    ...collectProxyEnv(options.proxy),
+    // 代理层仅 SSH：WSL 连接切断 DSH_REMOTE_PROXY 兜底（见函数 JSDoc）。
+    // 判定用 !== 'wsl' 而非 === 'ssh'：transportType 是可选字段（缺省语义
+    // 'ssh'），CLI 的 SSH 连接不传该字段（undefined）——用 === 'ssh' 会把
+    // CLI SSH 连接的代理兜底一并误切断
+    ...(options.transportType !== 'wsl' ? collectProxyEnv(options.proxy) : {}),
     ...(options.extraEnv ?? {}),
     ...(credential ? credential.remoteEnv() : {}),
   };
