@@ -10,7 +10,8 @@
  */
 
 import type { LogEntry, SessionSnapshot } from '../plugin/supervisor.js';
-import type { SshHostSummary } from '../hosts/ssh-config-parser.js';
+import type { StoredJumpEntry } from '../plugin/advanced-store.js';
+import type { JumpEntry, SshHostSummary } from '../hosts/ssh-config-parser.js';
 
 /** 宿主路由前缀（与 src/plugin/routes.ts 的 ROUTE_PREFIX 一致，check 脚本盯住宿主侧） */
 const BASE = '/api/dsh-remote-explorer';
@@ -114,6 +115,30 @@ export interface WslDistroSummary {
   isDefault: boolean;
 }
 
+/** 高级选项配置的读取形态（GET /advanced 出参，与宿主 advanced-store 同步） */
+export interface AdvancedPayload {
+  /** 注入远端 dsh 的用户环境变量 */
+  env: Record<string, string>;
+  /** 代理 URL；未配置时缺省 */
+  proxy?: string;
+  /** 直连主机跳板机条目（落盘子集，无密码）；未配置时缺省 */
+  jumpHosts?: StoredJumpEntry[];
+}
+
+/**
+ * 高级选项的保存形态（POST /advanced 入参）。**部分更新语义**：只需携带本
+ * 弹窗的编辑面，缺省字段保持存储原值；显式空值 = 清除该字段（env 空对象 /
+ * proxy 空串 / jumpHosts 空数组）
+ */
+export interface AdvancedSaveBody {
+  /** 环境变量键值对（携带时整组替换） */
+  env?: Record<string, string>;
+  /** 代理 URL（空串 = 清除） */
+  proxy?: string;
+  /** 直连主机跳板机条目（落盘子集；空数组 = 清除） */
+  jumpHosts?: StoredJumpEntry[];
+}
+
 /** 面板连接请求体（与宿主 /connect 的字段一致） */
 export interface ConnectBody {
   /** 主机别名或 user@host[:port]（SSH 传输时必填） */
@@ -142,6 +167,11 @@ export interface ConnectBody {
   distroName?: string;
   /** WSL 用户名（留空 = 发行版默认用户） */
   wslUser?: string;
+  /**
+   * 直连主机的跳板机条目（弹窗保存后的完整快照，含内存态密码）。
+   * 仅 user@host 直连主机生效；密码随本请求内存传递，绝不持久化
+   */
+  jumpHosts?: JumpEntry[];
 }
 
 /**
@@ -176,32 +206,32 @@ export async function postDisconnect(target: string, stopRemote: boolean): Promi
 }
 
 /**
- * 拉某主机的自定义环境变量配置（面板齿轮按钮维护，仅存宿主侧）。
+ * 拉全局高级选项配置（连接表单三弹窗的「上一次输入」，不按主机区分）。
  *
- * @param hostAlias - 主机别名（ssh config 别名或 user@host[:port]）
- * @returns 该主机的环境变量键值对；未配置过返回空对象
+ * @returns 配置（env 键值对、可选 proxy、可选跳板机条目）；未配置过返回空 env
  * @throws ApiError bad_usage / http_error
  */
-export async function fetchHostEnv(hostAlias: string): Promise<Record<string, string>> {
-  const result = await request<{ env: Record<string, string> }>(
-    `/host-env?hostAlias=${encodeURIComponent(hostAlias)}`,
-  );
-  return result.env;
+export async function fetchAdvanced(): Promise<AdvancedPayload> {
+  return request<AdvancedPayload>('/advanced');
 }
 
 /**
- * 保存某主机的自定义环境变量配置（存宿主侧，下一次连接该主机时注入远端 dsh 进程）。
+ * 保存全局高级选项配置（存宿主侧 0600 文件，下一次连接时注入远端 dsh 进程）。
  *
- * @param hostAlias - 主机别名
- * @param env - 环境变量键值对；键名须匹配 /^[A-Za-z_][A-Za-z0-9_]*$/，
- *              DSH_HOME/DSH_AGENTS_HOME/PATH 为保留键，值不得含控制字符
+ * POST 是**部分更新**语义：缺省字段保持存储原值（三个弹窗各管一个字段，
+ * 互不清除对方）；显式空值 = 清除该字段（env 空对象 / proxy 空串 /
+ * jumpHosts 空数组）。jumpHosts 只传落盘子集（target + identityFile）——
+ * **密码绝不发往此接口**（宿主侧对带 password 的条目直接 400），密码只随
+ * /connect 请求内存传递。
+ *
+ * @param payload - 待更新字段（只需携带本弹窗的编辑面）
  * @throws ApiError bad_usage（校验失败，中文消息透传到弹窗展示）
  */
-export async function postHostEnv(hostAlias: string, env: Record<string, string>): Promise<void> {
-  await request<{ ok: true }>('/host-env', {
+export async function postAdvanced(payload: AdvancedSaveBody): Promise<void> {
+  await request<{ ok: true }>('/advanced', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ hostAlias, env }),
+    body: JSON.stringify(payload),
   });
 }
 

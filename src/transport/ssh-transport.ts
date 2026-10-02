@@ -774,17 +774,21 @@ export class SshTransport implements RemoteTransport {
           { cause: error, hostAlias: this.hostAlias },
         );
       }
-    } else if (this.getPassword === undefined) {
-      // 闸门（assertConnectable）通常已拦下；此处兜底未走闸门的直接调用方
+    } else if (host.password === undefined && this.getPassword === undefined) {
+      // 闸门（assertConnectable）通常已拦下；此处兜底未走闸门的直接调用方。
+      // 认证途径按优先级：IdentityFile > 条目固定密码（host.password，面板
+      // 跳板机条目携带）> getPassword provider（交互提示/面板表单）
       throw new RemoteError(
         'HOST_CONFIG_INVALID',
-        `${label} 缺少 IdentityFile，且未提供密码输入途径（需要交互式终端或 --password）`,
+        `${label} 缺少 IdentityFile，且未提供密码输入途径（需要交互式终端、--password 或跳板机条目密码）`,
         { hostAlias: this.hostAlias },
       );
     }
 
-    // 2. 密码认证（仅无私钥时）：state 在单次 connectClient 内局部持有
-    const usePasswordAuth = privateKey === undefined && this.getPassword !== undefined;
+    // 2. 密码认证（仅无私钥时）：固定密码或 provider 任一可用即启用；
+    //    state 在单次 connectClient 内局部持有
+    const usePasswordAuth = privateKey === undefined
+      && (host.password !== undefined || this.getPassword !== undefined);
     const auth: PasswordAuthState = { password: undefined, failures: 0, outcome: undefined };
     const hostKey = `${host.username}@${host.host}:${host.port}`;
     const authHandler = usePasswordAuth
@@ -903,8 +907,12 @@ export class SshTransport implements RemoteTransport {
         return undefined;
       }
     }
-    // 3. 取密码（attempt > 1 时 provider 会弃缓存重新提示）
-    const password = await this.getPassword?.(hostKey, label, auth.failures + 1);
+    // 3. 取密码：首次用本条主机配置携带的固定密码（面板跳板机条目，
+    //    见 ResolvedHost.password 的安全约束）；被拒后（failures > 0）回落
+    //    provider——交互提示（attempt > 1 时 provider 弃缓存重新提示）
+    const password = auth.failures === 0 && host.password !== undefined
+      ? host.password
+      : await this.getPassword?.(hostKey, label, auth.failures + 1);
     if (password === undefined) {
       auth.outcome = 'cancelled';
       return undefined;

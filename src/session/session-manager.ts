@@ -508,13 +508,14 @@ export class RemoteSession {
             { hostAlias: this.options.hostAlias },
           );
         }
-        // 重连重启远端进程时同样注入用户 env（代理等，open() 的同一合并语义）
+        // 重连重启远端进程时同样注入用户 env 与代理（open() 的同一合并语义）
         // 与 WSL 用户名；不传 stage 回调——重连是后台行为，不向前端重复报
         // 阶段进度（既有语义）
         this.process = await launch(
           next, this.provisioned, this.sessionId,
           {
             ...(this.options.extraEnv !== undefined ? { extraEnv: this.options.extraEnv } : {}),
+            ...(this.options.proxy !== undefined ? { proxy: this.options.proxy } : {}),
             ...(this.options.wslUser !== undefined ? { wslUser: this.options.wslUser } : {}),
           },
           port, this.credential,

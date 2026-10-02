@@ -17,6 +17,7 @@ import type { ReconnectConfig } from './reconnect.js';
 import type { LifecycleConfig, SessionState } from './lifecycle-state.js';
 import type { PasswordPromptFn } from '../util/password-prompt.js';
 import type { ManageHandlers } from '../handoff/protocol.js';
+import type { JumpEntry } from '../hosts/ssh-config-parser.js';
 
 /** 传输类型标识 */
 export type TransportType = 'ssh' | 'wsl';
@@ -71,7 +72,7 @@ export interface OpenSessionOptions {
    */
   promptPassword?: PasswordPromptFn;
   /**
-   * 注入远端 dsh 进程的额外环境变量（插件形态的 per-host 齿轮配置）。
+   * 注入远端 dsh 进程的额外环境变量（插件高级选项的环境变量弹窗）。
    *
    * 调用方（插件 supervisor）传入的用户自定义环境变量，键已在读取侧过滤、
    * 进本层后再过一次 assertSafeEnvKeys 校验（键名会直接拼进远端启动命令，
@@ -81,6 +82,25 @@ export interface OpenSessionOptions {
    * 防止用户 env 意外挤掉占位令牌导致远端 dsh 报 MISSING_CREDENTIAL
    */
   extraEnv?: Record<string, string>;
+  /**
+   * 代理 URL（面板高级选项的代理弹窗，全局「上一次输入」）。
+   *
+   * 连接时经 collectProxyEnv(explicit) 展开为八个代理键注入远端 dsh，优先级
+   * 低于 extraEnv（用户 env 里的同名键可覆盖）、高于 DSH_REMOTE_PROXY 环境
+   * 变量兜底；空串/undefined = 未配置。值只存本进程内存与宿主侧 0600 文件，
+   * 不进任何日志（连接日志打印时 userinfo 打码，见 connect-summary）
+   */
+  proxy?: string;
+  /**
+   * 直连主机的跳板机条目（面板高级选项的跳板机弹窗）。
+   *
+   * **仅对 user@host[:port] 直连主机生效**——config 别名主机的跳板机由
+   * ~/.ssh/config 的 ProxyJump 决定，此处的值被忽略（分流规则唯一落点在
+   * session/transport/factory.ts 的 planJumpHosts）。条目认证覆盖（私钥/
+   * 密码）与安全约束见 JumpEntry 的字段注释——**密码只经本请求内存传递，
+   * 绝不落盘**（每次连接由用户输入，会话结束丢弃引用）
+   */
+  jumpHosts?: JumpEntry[];
   /**
    * 转发失败告警回调（插件形态接进会话日志缓冲）。
    * 不传时 LocalForward 直写 stderr（CLI 形态既有行为）

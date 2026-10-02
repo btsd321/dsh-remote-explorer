@@ -20,11 +20,17 @@
 import { openSession, type RemoteSession, type TransportType } from '../session/session-manager.js';
 import { HANDOFF_PROTOCOL_VERSION, type ManageHandlers } from '../handoff/protocol.js';
 import { listSessions } from '../session/session-registry.js';
-import { readHostEnv } from './host-env-store.js';
+import { readAdvancedConfig } from './advanced-store.js';
+import { renderConnectSummary } from './connect-summary.js';
+import { planJumpHosts } from '../session/transport/factory.js';
+import type { JumpEntry } from '../hosts/ssh-config-parser.js';
 import { INITIAL_STATE, type SessionState } from '../session/lifecycle-state.js';
 import { computeSessionId } from '../util/session-id.js';
 import { normalizeRemoteCwd, validateRemoteCwd } from '../util/remote-cwd.js';
 import { toErrorMessage } from '../util/errors.js';
+import { createLogger } from '../util/logger.js';
+
+const log = createLogger('supervisor');
 
 /** 每会话日志缓冲上限（超出丢最旧；面板按 seq 增量拉取，够用即可） */
 const MAX_LOG_ENTRIES = 1_000;
@@ -134,6 +140,14 @@ export interface ConnectRequest {
    * 经 meta 路由交给远端 handoff 组件渲染「返回/并返回」动作；缺省则远端菜单只读
    */
   managerUrl?: string;
+  /**
+   * 直连主机的跳板机条目（面板跳板机弹窗保存后的完整条目，含内存态密码）。
+   *
+   * 密码只随本请求存在于进程内存（透传给 openSession → ResolvedHost.password），
+   * 绝不落盘、绝不进日志缓冲与快照；条目的 target/identityFile 部分由弹窗
+   * 保存时持久化到 advanced store，这里携带的是连接时刻的生效快照
+   */
+  jumpHosts?: JumpEntry[];
 }
 
 // 构建期注入（build-plugin.ts 的 define，ping 路由同款）；dev 流程不会调到 meta 闭包
@@ -381,14 +395,53 @@ export class SessionSupervisor {
   private async runOpen(record: SupervisedSession, request: ConnectRequest): Promise<void> {
     this.push(record, 'info', `runOpen 开始: transportType=${record.transportType}, hostAlias=${request.hostAlias}, distroName=${request.distroName ?? '(无)'}`);
     try {
-      // per-host 环境变量（面板齿轮配置，本机 ~/.dsh/remote-host-env.json）：
-      // ConnectRequest 不携带 env——面板/命令/工具三个入口统一从这里读，
-      // 坏键已在读取侧过滤。空对象不传（避免把 undefined 语义写进可选项）
-      const hostEnv = readHostEnv(request.hostAlias);
-      if (Object.keys(hostEnv).length > 0) {
-        // 只打键名不打值（值可能含代理认证信息或敏感 token）
-        this.push(record, 'info', `注入主机环境变量: ${Object.keys(hostEnv).join(', ')}`);
+      // 全局高级选项（连接表单三弹窗的「上一次输入」，不按主机区分）：
+      // env/proxy 从存储直读；跳板机条目以请求携带的完整快照（含内存态
+      // 密码）优先，无则回落持久化子集（命令/工具入口的连接）。
+      // 坏键已在读取侧过滤。空值不传（避免把 undefined 语义写进可选项）
+      const advanced = readAdvancedConfig();
+      const jumpHosts = request.jumpHosts ?? advanced.jumpHosts;
+
+      // 生效值（请求覆盖 > 插件配置默认）：连接日志与 openSession 同源
+      const localPort = request.localPort ?? this.defaults.localPort;
+      const forceRestart = request.forceRestart ?? this.defaults.forceRestart;
+      const refreshMirrors = request.refreshMirrors ?? this.defaults.refreshMirrors;
+      const nodeVersion = request.nodeVersion ?? this.defaults.nodeVersion;
+      const dshVersion = request.dshVersion ?? this.defaults.dshVersion;
+
+      // 连接选项日志（用户排查「连的是什么」的一手资料）：渲染纪律见
+      // connect-summary（键名/打码/途径种类，绝不打值）；双落——面板日志
+      // 缓冲（this.push）与宿主进程日志（log.info）
+      let jumpPlan;
+      let jumpPlanError;
+      if (record.transportType === 'ssh') {
+        try {
+          jumpPlan = planJumpHosts(request.hostAlias, jumpHosts);
+        } catch (error) {
+          // 解析失败（坏条目/未知主机）：连接随后会以原错误失败，这里先留痕
+          jumpPlanError = toErrorMessage(error);
+        }
       }
+      const summaryLines = renderConnectSummary({
+        hostAlias: request.hostAlias,
+        transportType: record.transportType,
+        ...(request.distroName !== undefined ? { distroName: request.distroName } : {}),
+        ...(jumpPlan !== undefined ? { jumpPlan } : {}),
+        ...(jumpPlanError !== undefined ? { jumpPlanError } : {}),
+        envKeys: Object.keys(advanced.env),
+        ...(advanced.proxy !== undefined && advanced.proxy !== '' ? { proxy: advanced.proxy } : {}),
+        localPort,
+        ...(nodeVersion !== undefined && nodeVersion !== '' ? { nodeVersion } : {}),
+        ...(dshVersion !== undefined && dshVersion !== '' ? { dshVersion } : {}),
+        forceRestart,
+        refreshMirrors,
+        privateKey: request.privateKey !== undefined && request.privateKey !== '',
+      });
+      for (const line of summaryLines) {
+        this.push(record, 'info', line);
+        log.info(line);
+      }
+
       const session = await openSession({
         hostAlias: request.hostAlias,
         remoteCwd: record.remoteCwd,
@@ -398,14 +451,16 @@ export class SessionSupervisor {
         ...(request.wslUser ? { wslUser: request.wslUser } : {}),
         // 端口：请求覆盖 > 插件配置 > 0（OS 分配）——openSession 对 0 的语义
         // 就是自动分配，直接透传
-        localPort: request.localPort ?? this.defaults.localPort,
-        forceRestart: request.forceRestart ?? this.defaults.forceRestart,
-        refreshMirrors: request.refreshMirrors ?? this.defaults.refreshMirrors,
-        ...(this.defaults.nodeVersion ? { nodeVersion: this.defaults.nodeVersion } : {}),
-        ...(this.defaults.dshVersion ? { dshVersion: this.defaults.dshVersion } : {}),
+        localPort,
+        forceRestart,
+        refreshMirrors,
+        ...(nodeVersion !== undefined && nodeVersion !== '' ? { nodeVersion } : {}),
+        ...(dshVersion !== undefined && dshVersion !== '' ? { dshVersion } : {}),
         ...(request.privateKey ? { privateKey: request.privateKey } : {}),
         ...(request.password !== undefined ? { password: request.password } : {}),
-        ...(Object.keys(hostEnv).length > 0 ? { extraEnv: hostEnv } : {}),
+        ...(Object.keys(advanced.env).length > 0 ? { extraEnv: advanced.env } : {}),
+        ...(advanced.proxy !== undefined && advanced.proxy !== '' ? { proxy: advanced.proxy } : {}),
+        ...(jumpHosts !== undefined && jumpHosts.length > 0 ? { jumpHosts } : {}),
         onStageStart: (stage) => { this.push(record, 'info', `[开始] ${stage}`); },
         onStageDone: (detail) => {
           this.push(record, 'info', `[完成] ${detail ?? ''}`);
