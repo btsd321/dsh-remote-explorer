@@ -25,7 +25,6 @@ import { INITIAL_STATE, type SessionState } from '../session/lifecycle-state.js'
 import { computeSessionId } from '../util/session-id.js';
 import { normalizeRemoteCwd, validateRemoteCwd } from '../util/remote-cwd.js';
 import { toErrorMessage } from '../util/errors.js';
-import { RemotePluginStore, type PluginStoreHost } from './remote-plugin-store.js';
 
 /** 每会话日志缓冲上限（超出丢最旧；面板按 seq 增量拉取，够用即可） */
 const MAX_LOG_ENTRIES = 1_000;
@@ -153,9 +152,7 @@ export type SupervisorErrorCode =
   /** 会话仍在连接中，不能断开（等它成功或失败） */
   | 'still_connecting'
   /** 目标是其他进程维持的视图，本进程无权断开 */
-  | 'external_session'
-  /** 远端插件操作失败（pnpm 退出非零、清单损坏等） */
-  | 'remote_plugin';
+  | 'external_session';
 
 /**
  * 监督器错误：带机器可读 code 的 Error。
@@ -169,18 +166,6 @@ export class SupervisorError extends Error {
     super(message);
     this.name = 'SupervisorError';
   }
-}
-
-/** 远端插件清单项（profile inventory 投影，形状对齐 harness ProfilePluginInventory） */
-export interface RemotePluginInfo {
-  /** 包名 */
-  name: string;
-  /** 已装版本（node_modules 里 package.json 的 version） */
-  version: string;
-  /** 是否声明 dsh.bundle.patch（是 bundle 而非普通依赖） */
-  bundle: boolean;
-  /** 是否在 bundles 列表里（启用中） */
-  enabled: boolean;
 }
 
 /** 监督器的默认值来源（插件 Config 的子集） */
@@ -236,25 +221,11 @@ interface SupervisedSession {
  */
 export class SessionSupervisor {
   private readonly sessions = new Map<string, SupervisedSession>();
-  /** 远端插件包管理器（从本类拆出，经回调注入会话访问能力） */
-  private readonly pluginStore: RemotePluginStore;
 
   /**
    * @param defaults - 插件配置提供的默认值
    */
-  constructor(private readonly defaults: SupervisorDefaults) {
-    // 构造 host 适配器：把监督器的内部能力投影成 PluginStoreHost 窄接口，
-    // 让 RemotePluginStore 不直接依赖 SessionSupervisor 类
-    const host: PluginStoreHost = {
-      getReadySession: (sessionId) => this.requireReadySession(sessionId).session,
-      pushLog: (sessionId, kind, text) => {
-        const record = this.sessions.get(sessionId);
-        if (record !== undefined) this.push(record, kind, text);
-      },
-      makeError: (code, message) => new SupervisorError(code, message),
-    };
-    this.pluginStore = new RemotePluginStore(host);
-  }
+  constructor(private readonly defaults: SupervisorDefaults) {}
 
   /**
    * 非阻塞发起连接。
@@ -567,76 +538,6 @@ export class SessionSupervisor {
   private manageSnapshot(record: SupervisedSession): Omit<SessionSnapshot, 'logTail' | 'url'> {
     const { logTail: _tail, url: _url, ...rest } = this.snapshotOf(record);
     return rest;
-  }
-
-  // ── 远端插件管理（委托给 RemotePluginStore，保持公开 API 不变） ──────────
-
-  /**
-   * 远端插件清单：读远端 profile 的 manifest 与 node_modules 版本/bundle 标记。
-   *
-   * @param sessionId - 会话 id
-   * @returns 清单；会话不存在/未就绪时抛监督器错误
-   */
-  async listRemotePlugins(sessionId: string): Promise<RemotePluginInfo[]> {
-    return this.pluginStore.listRemotePlugins(sessionId);
-  }
-
-  /**
-   * 远端安装插件：profile 目录内 pnpm add，成功后 reconcile bundles。
-   *
-   * @param sessionId - 会话 id
-   * @param spec - pnpm 安装规格（包名@版本等）
-   * @returns 安装后的清单
-   * @throws SupervisorError('remote_plugin') pnpm 失败
-   */
-  async installRemotePlugin(sessionId: string, spec: string): Promise<RemotePluginInfo[]> {
-    return this.pluginStore.installRemotePlugin(sessionId, spec);
-  }
-
-  /**
-   * 远端卸载插件：pnpm remove + 从 bundles 摘除。
-   *
-   * @param sessionId - 会话 id
-   * @param name - 包名
-   * @returns 卸载后的清单
-   */
-  async removeRemotePlugin(sessionId: string, name: string): Promise<RemotePluginInfo[]> {
-    return this.pluginStore.removeRemotePlugin(sessionId, name);
-  }
-
-  /**
-   * 远端插件启停：只改 profile 清单的 bundles 列表，hmr 热生效。
-   *
-   * @param sessionId - 会话 id
-   * @param name - 包名
-   * @param enabled - true 启用 / false 停用
-   * @returns 操作后的清单
-   */
-  async toggleRemotePlugin(sessionId: string, name: string, enabled: boolean): Promise<RemotePluginInfo[]> {
-    return this.pluginStore.toggleRemotePlugin(sessionId, name, enabled);
-  }
-
-  // ── 内部辅助 ────────────────────────────────────────────────────────────
-
-  /**
-   * 取一个本进程登记且已就绪的会话。
-   *
-   * @param sessionId - 会话 id
-   * @returns 登记项与会话对象
-   * @throws SupervisorError not_found / still_connecting
-   */
-  private requireReadySession(sessionId: string): { record: SupervisedSession; session: RemoteSession } {
-    const record = this.sessions.get(sessionId);
-    if (record === undefined) {
-      throw new SupervisorError('not_found', `没有会话 ${sessionId}`);
-    }
-    if (record.connecting) {
-      throw new SupervisorError('still_connecting', `会话 ${record.hostAlias} 仍在连接中`);
-    }
-    if (record.session === undefined) {
-      throw new SupervisorError('not_found', `会话 ${sessionId} 未在运行`);
-    }
-    return { record, session: record.session };
   }
 
 }

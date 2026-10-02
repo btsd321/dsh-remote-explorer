@@ -29,7 +29,6 @@ import {
   fetchHosts, messageOf, postConnect, postDisconnect, type PanelSession,
 } from './api.js';
 import { openRemoteWindow, OVERLAY_INTENT_ORIGIN } from './remote-window.js';
-import { RemotePluginsSection } from './panel-plugins.js';
 import { HostEnvDialog } from './host-env-dialog.js';
 import { HostPicker } from './host-picker.js';
 import { STATE_COLORS, STATE_LABEL_KEYS } from '../util/session-display.js';
@@ -385,9 +384,6 @@ export function SshSessionPanel(props: SshSessionPanelProps): ReactNode {
             </div>
           )}
       </section>
-
-      {/* ---- 远端插件管理（VS Code「本地视图管远端」表面） ---- */}
-      <RemotePluginsSection sessionId={selectedId} t={t} />
 
       {/* ---- 进度日志 ---- */}
       <section>
