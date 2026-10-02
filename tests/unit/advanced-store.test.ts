@@ -2,9 +2,11 @@
  * @file plugin/advanced-store.ts 单元测试
  * @description 覆盖 validateAdvancedConfig() 的三类字段校验（env 键名/保留键/
  *              控制字符、proxy URL 形态、jumpHosts 条目形态），
- *              readAdvancedConfig()/writeAdvancedConfig() 的读写回路、原子
- *              落盘结构、全空删除语义、损坏文件容错与坏项过滤。全部走参数化
- *              的临时目录（baseDir），不触碰真实的 ~/.dsh/remote-advanced.json。
+ *              readAdvancedConfig()/writeAdvancedConfig() 的分域读写回路、
+ *              v2 落盘结构、v1→v2 迁移、域互不影响、清空一域保留另一域、
+ *              两域全空删除语义、WSL 域只认 env 的防御、损坏文件容错与坏项
+ *              过滤。全部走参数化的临时目录（baseDir），不触碰真实的
+ *              ~/.dsh/remote-advanced.json。
  */
 
 import { describe, it, after } from 'node:test';
@@ -27,7 +29,7 @@ after(() => {
 });
 
 /**
- * 在临时目录直接手写落盘文件（模拟手工编辑/损坏场景）。
+ * 在临时目录直接手写落盘文件（模拟手工编辑/损坏/旧版本场景）。
  *
  * @param text - 文件内容
  */
@@ -144,53 +146,136 @@ describe('validateAdvancedConfig', () => {
   });
 });
 
-// ─── 读写回路 ──────────────────────────────────────────────────────────────
+// ─── 分域读写回路 ──────────────────────────────────────────────────────────
 
-describe('read/write 回路', () => {
-  it('写入后读回同值（含三字段，跳板机为落盘子集）', () => {
-    writeAdvancedConfig({
+describe('分域读写回路', () => {
+  it('ssh 域写入后读回同值（含三字段，跳板机为落盘子集）', () => {
+    writeAdvancedConfig('ssh', {
       env: { FOO: 'bar', EMPTY: '' },
       proxy: 'http://127.0.0.1:18890',
       jumpHosts: [{ target: 'jump1', identityFile: 'C:/keys/id_rsa' }],
     }, BASE_DIR);
-    assert.deepEqual(readAdvancedConfig(BASE_DIR), {
+    assert.deepEqual(readAdvancedConfig('ssh', BASE_DIR), {
       env: { FOO: 'bar', EMPTY: '' },
       proxy: 'http://127.0.0.1:18890',
       jumpHosts: [{ target: 'jump1', identityFile: 'C:/keys/id_rsa' }],
     });
   });
 
-  it('落盘结构含 version 与字段（0600 原子写产物）', () => {
-    writeAdvancedConfig({ env: { FOO: 'bar' } }, BASE_DIR);
-    const parsed = JSON.parse(readRawFile()) as Record<string, unknown>;
-    assert.equal(parsed.version, 1);
-    assert.deepEqual(parsed.env, { FOO: 'bar' });
-    assert.equal(parsed.proxy, undefined);
-    assert.equal(parsed.jumpHosts, undefined);
+  it('wsl 域写入后读回同值（只有 env）', () => {
+    writeAdvancedConfig('wsl', { env: { WSL_VAR: '1' } }, BASE_DIR);
+    assert.deepEqual(readAdvancedConfig('wsl', BASE_DIR), { env: { WSL_VAR: '1' } });
   });
 
-  it('全空保存删除文件（清空配置不留空壳）', () => {
-    writeAdvancedConfig({ env: { FOO: 'bar' } }, BASE_DIR);
-    writeAdvancedConfig({ env: {} }, BASE_DIR);
-    assert.equal(existsSync(join(BASE_DIR, FILE_NAME)), false);
-    assert.deepEqual(readAdvancedConfig(BASE_DIR), { env: {} });
+  it('两域互不影响：写一域不动另一域', () => {
+    writeAdvancedConfig('ssh', {
+      env: { SSH_VAR: '1' },
+      proxy: 'http://127.0.0.1:18890',
+      jumpHosts: [{ target: 'jump1' }],
+    }, BASE_DIR);
+    writeAdvancedConfig('wsl', { env: { WSL_VAR: '2' } }, BASE_DIR);
+    assert.deepEqual(readAdvancedConfig('ssh', BASE_DIR), {
+      env: { SSH_VAR: '1' },
+      proxy: 'http://127.0.0.1:18890',
+      jumpHosts: [{ target: 'jump1' }],
+    });
+    assert.deepEqual(readAdvancedConfig('wsl', BASE_DIR), { env: { WSL_VAR: '2' } });
+  });
+
+  it('落盘结构 v2：version=2 + ssh/wsl 两域', () => {
+    writeAdvancedConfig('ssh', { env: { FOO: 'bar' } }, BASE_DIR);
+    writeAdvancedConfig('wsl', { env: { WSL_VAR: '1' } }, BASE_DIR);
+    const parsed = JSON.parse(readRawFile()) as Record<string, unknown>;
+    assert.equal(parsed.version, 2);
+    assert.deepEqual(parsed.ssh, { env: { FOO: 'bar' } });
+    assert.deepEqual(parsed.wsl, { env: { WSL_VAR: '1' } });
   });
 
   it('空串 proxy 按未配置落盘（不写空壳字段）', () => {
-    // env 带一个值避免触发「全空删除文件」语义——这里只验 proxy 空串不落盘
-    writeAdvancedConfig({ env: { KEEP: '1' }, proxy: '' }, BASE_DIR);
-    const parsed = JSON.parse(readRawFile()) as Record<string, unknown>;
-    assert.equal(parsed.proxy, undefined);
-    assert.deepEqual(parsed.env, { KEEP: '1' });
+    // env 带一个值避免触发「两域全空删除文件」语义——这里只验 proxy 空串不落盘
+    writeAdvancedConfig('ssh', { env: { KEEP: '1' }, proxy: '' }, BASE_DIR);
+    const parsed = JSON.parse(readRawFile()) as { ssh: Record<string, unknown> };
+    assert.equal(parsed.ssh.proxy, undefined);
+    assert.deepEqual(parsed.ssh.env, { KEEP: '1' });
   });
 
   it('写前校验兜底：非法配置直接抛错不落盘', () => {
-    assert.throws(() => writeAdvancedConfig({ env: { 'BAD KEY': 'x' } }, BASE_DIR), /BAD KEY/);
+    assert.throws(() => writeAdvancedConfig('ssh', { env: { 'BAD KEY': 'x' } }, BASE_DIR), /BAD KEY/);
   });
 
-  it('文件缺失时读回全空', () => {
+  it('wsl 域写 proxy/jumpHosts 抛错（调用方程序错误防御）', () => {
+    assert.throws(
+      () => writeAdvancedConfig('wsl', { env: {}, proxy: 'http://127.0.0.1:18890' } as never, BASE_DIR),
+      /WSL/,
+    );
+    assert.throws(
+      () => writeAdvancedConfig('wsl', { env: {}, jumpHosts: [{ target: 'jump1' }] } as never, BASE_DIR),
+      /WSL/,
+    );
+    // 空串 proxy 同样拒绝：域契约是「不传该字段」，而非「传空值」
+    assert.throws(
+      () => writeAdvancedConfig('wsl', { env: {}, proxy: '' } as never, BASE_DIR),
+      /WSL/,
+    );
+  });
+
+  it('文件缺失时读回全空（两域皆然）', () => {
     rmSync(join(BASE_DIR, FILE_NAME), { force: true });
-    assert.deepEqual(readAdvancedConfig(BASE_DIR), { env: {} });
+    assert.deepEqual(readAdvancedConfig('ssh', BASE_DIR), { env: {} });
+    assert.deepEqual(readAdvancedConfig('wsl', BASE_DIR), { env: {} });
+  });
+});
+
+// ─── v1 迁移与清空语义 ─────────────────────────────────────────────────────
+
+describe('v1 迁移与清空语义', () => {
+  it('v1 旧文件读取归一化：顶层字段进 ssh 域、wsl 域空 env', () => {
+    writeRawFile('{"version": 1, "env": {"OLD": "1"},'
+      + ' "proxy": "http://127.0.0.1:18890", "jumpHosts": [{"target": "jump1"}]}');
+    assert.deepEqual(readAdvancedConfig('ssh', BASE_DIR), {
+      env: { OLD: '1' },
+      proxy: 'http://127.0.0.1:18890',
+      jumpHosts: [{ target: 'jump1' }],
+    });
+    assert.deepEqual(readAdvancedConfig('wsl', BASE_DIR), { env: {} });
+  });
+
+  it('无 version 字段的旧文件同样按 v1 归一化', () => {
+    writeRawFile('{"env": {"OLD": "1"}}');
+    assert.deepEqual(readAdvancedConfig('ssh', BASE_DIR), { env: { OLD: '1' } });
+    assert.deepEqual(readAdvancedConfig('wsl', BASE_DIR), { env: {} });
+  });
+
+  it('v1 归一化后在 wsl 域写入：落盘升为 v2，ssh 域原值保留', () => {
+    writeRawFile('{"version": 1, "env": {"OLD": "1"}, "proxy": "http://127.0.0.1:18890"}');
+    writeAdvancedConfig('wsl', { env: { WSL_VAR: '1' } }, BASE_DIR);
+    const parsed = JSON.parse(readRawFile()) as Record<string, unknown>;
+    assert.equal(parsed.version, 2);
+    assert.deepEqual(parsed.ssh, { env: { OLD: '1' }, proxy: 'http://127.0.0.1:18890' });
+    assert.deepEqual(parsed.wsl, { env: { WSL_VAR: '1' } });
+  });
+
+  it('清空一域保留另一域（文件不删）', () => {
+    writeAdvancedConfig('ssh', { env: { SSH_VAR: '1' }, proxy: 'http://127.0.0.1:18890' }, BASE_DIR);
+    writeAdvancedConfig('wsl', { env: { WSL_VAR: '2' } }, BASE_DIR);
+    writeAdvancedConfig('wsl', { env: {} }, BASE_DIR);
+    assert.equal(existsSync(join(BASE_DIR, FILE_NAME)), true);
+    assert.deepEqual(readAdvancedConfig('wsl', BASE_DIR), { env: {} });
+    assert.deepEqual(readAdvancedConfig('ssh', BASE_DIR), {
+      env: { SSH_VAR: '1' },
+      proxy: 'http://127.0.0.1:18890',
+    });
+  });
+
+  it('两域全空删除文件（清空配置不留空壳）', () => {
+    writeAdvancedConfig('ssh', { env: { SSH_VAR: '1' } }, BASE_DIR);
+    writeAdvancedConfig('wsl', { env: { WSL_VAR: '2' } }, BASE_DIR);
+    writeAdvancedConfig('ssh', { env: {} }, BASE_DIR);
+    assert.equal(existsSync(join(BASE_DIR, FILE_NAME)), true);
+    writeAdvancedConfig('wsl', { env: {} }, BASE_DIR);
+    assert.equal(existsSync(join(BASE_DIR, FILE_NAME)), false);
+    assert.deepEqual(readAdvancedConfig('ssh', BASE_DIR), { env: {} });
+    assert.deepEqual(readAdvancedConfig('wsl', BASE_DIR), { env: {} });
   });
 });
 
@@ -199,18 +284,19 @@ describe('read/write 回路', () => {
 describe('损坏文件容错', () => {
   it('JSON 损坏回落空配置', () => {
     writeRawFile('{ not json');
-    assert.deepEqual(readAdvancedConfig(BASE_DIR), { env: {} });
+    assert.deepEqual(readAdvancedConfig('ssh', BASE_DIR), { env: {} });
+    assert.deepEqual(readAdvancedConfig('wsl', BASE_DIR), { env: {} });
   });
 
-  it('env 结构缺失回落空配置', () => {
+  it('v1 env 结构缺失回落空配置', () => {
     writeRawFile('{"version": 1, "proxy": "http://127.0.0.1:18890"}');
-    assert.deepEqual(readAdvancedConfig(BASE_DIR), { env: {} });
+    assert.deepEqual(readAdvancedConfig('ssh', BASE_DIR), { env: {} });
   });
 
   it('坏项逐项过滤、好项照常生效（手工编辑防御）', () => {
     writeRawFile('{"version": 1, "env": {"GOOD": "1", "BAD KEY": "x"},'
       + ' "jumpHosts": [{"target": "jump1"}, {"target": ""}]}');
-    assert.deepEqual(readAdvancedConfig(BASE_DIR), {
+    assert.deepEqual(readAdvancedConfig('ssh', BASE_DIR), {
       env: { GOOD: '1' },
       jumpHosts: [{ target: 'jump1' }],
     });
@@ -218,17 +304,17 @@ describe('损坏文件容错', () => {
 
   it('非法 proxy 读取侧跳过', () => {
     writeRawFile('{"version": 1, "env": {}, "proxy": "http://h/p"}');
-    assert.deepEqual(readAdvancedConfig(BASE_DIR), { env: {} });
+    assert.deepEqual(readAdvancedConfig('ssh', BASE_DIR), { env: {} });
   });
 
   it('jumpHosts 非数组形态跳过', () => {
     writeRawFile('{"version": 1, "env": {}, "jumpHosts": "jump1"}');
-    assert.deepEqual(readAdvancedConfig(BASE_DIR), { env: {} });
+    assert.deepEqual(readAdvancedConfig('ssh', BASE_DIR), { env: {} });
   });
 
   it('手工塞进文件的密码字段读取侧剔除（不落盘约束的读防线）', () => {
     writeRawFile('{"version": 1, "env": {}, "jumpHosts": [{"target": "jump1", "password": "leak"}]}');
-    assert.deepEqual(readAdvancedConfig(BASE_DIR), {
+    assert.deepEqual(readAdvancedConfig('ssh', BASE_DIR), {
       env: {},
       jumpHosts: [{ target: 'jump1' }],
     });
@@ -236,12 +322,30 @@ describe('损坏文件容错', () => {
 
   it('写侧带密码的条目直接抛错不落盘', () => {
     assert.throws(
-      () => writeAdvancedConfig({
+      () => writeAdvancedConfig('ssh', {
         env: {},
         // 运行时形状未知，故意带 password 模拟绕过类型层的调用方
         jumpHosts: [{ target: 'jump1', password: 'secret' } as never],
       }, BASE_DIR),
       /不落盘/,
     );
+  });
+
+  it('v2 的 wsl 域缺 env 或形状不对按空处理（域内 proxy/jumpHosts 忽略）', () => {
+    writeRawFile('{"version": 2, "ssh": {"env": {"SSH_VAR": "1"}}, "wsl": "bad"}');
+    assert.deepEqual(readAdvancedConfig('wsl', BASE_DIR), { env: {} });
+    writeRawFile('{"version": 2, "ssh": {"env": {}}, "wsl": {"proxy": "http://127.0.0.1:18890"}}');
+    assert.deepEqual(readAdvancedConfig('wsl', BASE_DIR), { env: {} });
+    // wsl 域手工塞的坏 env 键跳过、好键生效
+    writeRawFile('{"version": 2, "ssh": {"env": {}}, "wsl": {"env": {"GOOD": "1", "BAD KEY": "x"}}}');
+    assert.deepEqual(readAdvancedConfig('wsl', BASE_DIR), { env: { GOOD: '1' } });
+  });
+
+  it('v2 的 ssh 域缺省或形状不对按空域处理', () => {
+    writeRawFile('{"version": 2, "wsl": {"env": {"WSL_VAR": "1"}}}');
+    assert.deepEqual(readAdvancedConfig('ssh', BASE_DIR), { env: {} });
+    assert.deepEqual(readAdvancedConfig('wsl', BASE_DIR), { env: { WSL_VAR: '1' } });
+    writeRawFile('{"version": 2, "ssh": {"proxy": "http://127.0.0.1:18890"}, "wsl": {"env": {}}}');
+    assert.deepEqual(readAdvancedConfig('ssh', BASE_DIR), { env: {} });
   });
 });

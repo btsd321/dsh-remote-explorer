@@ -1,9 +1,11 @@
 /**
- * @file 代理弹窗（高级选项之一）
- * @description 全局「上一次输入」的代理 URL 编辑器：打开时 GET /advanced 读
- *              回，保存时 POST 部分更新（只提交 proxy 字段，空串 = 清除）。
- *              连接时宿主侧经 collectProxyEnv(explicit) 展开为八个代理键
- *              注入远端 dsh（优先级：用户 env > 本代理 > DSH_REMOTE_PROXY）。
+ * @file 代理弹窗（高级选项之一，SSH 域专属）
+ * @description 代理 URL 编辑器：打开时 GET /advanced?transportType=ssh 读回
+ *              **ssh 域**配置，保存时 POST 部分更新（只提交 proxy 字段，
+ *              空串 = 清除）。本弹窗只在 SSH 连接表单挂载（WSL 无代理概念，
+ *              wsl 域不存 proxy），fetch/post 一律固定传 'ssh'。连接时宿主
+ *              侧经 collectProxyEnv(explicit) 展开为八个代理键注入远端 dsh
+ *              （优先级：用户 env > 本代理 > DSH_REMOTE_PROXY，仅 SSH 连接）。
  *
  * 表单只有一个 URL 输入——形态校验（http(s) origin、无 path/query）在宿主
  * 侧 advanced-store 为准，前端不做重复校验，错误消息直接透传展示。
@@ -44,12 +46,13 @@ export function ProxyDialog(props: ProxyDialogProps): ReactNode {
   /** 重试计数：自增触发加载 effect 重跑 */
   const [reloadTick, setReloadTick] = React.useState(0);
 
-  // 打开时拉既有配置；stopped 防卸载后回写 state
+  // 打开时拉既有配置（弹窗只在 SSH 表单挂载，域键固定 'ssh'）；stopped 防
+  // 卸载后回写 state
   React.useEffect(() => {
     let stopped = false;
     setLoadPhase('loading');
     setLoadError('');
-    void fetchAdvanced()
+    void fetchAdvanced('ssh')
       .then(advanced => {
         if (stopped) return;
         setProxy(advanced.proxy ?? '');
@@ -64,15 +67,16 @@ export function ProxyDialog(props: ProxyDialogProps): ReactNode {
   }, [reloadTick]);
 
   /**
-   * 保存：只提交 proxy 字段（部分更新语义，不清除 env/jumpHosts）。
-   * 空串 = 清除代理配置。形态校验在宿主侧，错误透传展示。
+   * 保存：只提交 proxy 字段（按域部分更新语义，不清除 env/jumpHosts）。
+   * 空串 = 清除代理配置。形态校验在宿主侧，错误透传展示。域键固定 'ssh'
+   * （本弹窗只在 SSH 表单挂载）。
    */
   const onSave = async (): Promise<void> => {
     if (busy || loadPhase !== 'ready') return;
     setSaveError('');
     setBusy(true);
     try {
-      await postAdvanced({ proxy: proxy.trim() });
+      await postAdvanced('ssh', { proxy: proxy.trim() });
       onClose();
     } catch (error) {
       setSaveError(messageOf(error));

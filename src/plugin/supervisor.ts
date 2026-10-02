@@ -419,12 +419,15 @@ export class SessionSupervisor {
   private async runOpen(record: SupervisedSession, request: ConnectRequest): Promise<void> {
     this.push(record, 'info', `runOpen 开始: transportType=${record.transportType}, hostAlias=${request.hostAlias}, distroName=${request.distroName ?? '(无)'}`);
     try {
-      // 全局高级选项（连接表单三弹窗的「上一次输入」，不按主机区分）：
-      // env/proxy 从存储直读；跳板机条目以请求携带的完整快照（含内存态
-      // 密码）优先，无则回落持久化子集（命令/工具入口的连接）。
+      // 高级选项（连接表单弹窗的「上一次输入」，**按传输形态分域**，域内不按
+      // 主机区分）：env/proxy 从对应域直读；跳板机条目以请求携带的完整快照
+      // （含内存态密码）优先，无则回落持久化子集（命令/工具入口的连接）。
+      // WSL 域只有 env（无代理、无跳板机概念），读取形状即保证；下游传参
+      // 再按传输形态显式分流一次，保证代码路径清晰。
       // 坏键已在读取侧过滤。空值不传（避免把 undefined 语义写进可选项）
-      const advanced = readAdvancedConfig();
-      const jumpHosts = request.jumpHosts ?? advanced.jumpHosts;
+      const advanced = readAdvancedConfig(record.transportType);
+      const isSsh = record.transportType === 'ssh';
+      const jumpHosts = isSsh ? (request.jumpHosts ?? advanced.jumpHosts) : undefined;
 
       // 生效值（请求覆盖 > 插件配置默认）：连接日志与 openSession 同源
       const localPort = request.localPort ?? this.defaults.localPort;
@@ -483,8 +486,10 @@ export class SessionSupervisor {
         ...(request.privateKey ? { privateKey: request.privateKey } : {}),
         ...(request.password !== undefined ? { password: request.password } : {}),
         ...(Object.keys(advanced.env).length > 0 ? { extraEnv: advanced.env } : {}),
-        ...(advanced.proxy !== undefined && advanced.proxy !== '' ? { proxy: advanced.proxy } : {}),
-        ...(jumpHosts !== undefined && jumpHosts.length > 0 ? { jumpHosts } : {}),
+        // 代理与跳板机仅 SSH 连接传递：WSL 域读取形状即无这两项，这里再
+        // 显式分流一次——WSL 连接即使请求带了也不会透传（域契约双保险）
+        ...(isSsh && advanced.proxy !== undefined && advanced.proxy !== '' ? { proxy: advanced.proxy } : {}),
+        ...(isSsh && jumpHosts !== undefined && jumpHosts.length > 0 ? { jumpHosts } : {}),
         onStageStart: (stage) => { this.push(record, 'info', `[开始] ${stage}`); },
         onStageDone: (detail) => {
           this.push(record, 'info', `[完成] ${detail ?? ''}`);

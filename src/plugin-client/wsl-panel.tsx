@@ -9,6 +9,9 @@
  * 窗口形态分流逻辑与 SSH 面板一致（桌面端整窗浮层、浏览器端双入口）。
  * 连接时 postConnect 传 transportType='wsl' + distroName + wslUser。
  *
+ * 高级选项按传输形态分域：本面板挂环境变量弹窗（读写 wsl 域，域内只有
+ * env——WSL 无代理、无跳板机概念，不提供这两项入口）。
+ *
  * 样式纪律同 ssh-panel.tsx：inherit/rgba 半透明灰，不猜设计令牌名。
  */
 
@@ -21,6 +24,7 @@ import {
 } from './api.js';
 import { openRemoteWindow, OVERLAY_INTENT_ORIGIN } from './remote-window.js';
 import { renderSessionRow } from './ssh-panel.js';
+import { EnvDialog } from './dialogs/env-dialog.js';
 import { createLogger } from '../util/logger.js';
 import { inputStyle, buttonStyle } from './styles.js';
 import { DESKTOP, HANDOFF_COUNTDOWN_SECONDS } from './constants.js';
@@ -61,6 +65,12 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
   const [distros, setDistros] = React.useState<WslDistroSummary[]>([]);
   const [stopRemote, setStopRemote] = React.useState(true);
   const logBoxRef = React.useRef<HTMLDivElement | null>(null);
+
+  // ---- 高级选项弹窗（null = 关闭；WSL 只挂环境变量弹窗，读写 wsl 域） ----
+  const [openDialog, setOpenDialog] = React.useState<'env' | null>(null);
+  const closeDialog = React.useCallback((): void => {
+    setOpenDialog(null);
+  }, []);
 
   // ---- 会话轮询（提取到共享 Hook，消除与 ssh-panel 的重复） ----
   const {
@@ -230,6 +240,12 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
 
         <details>
           <summary style={{ cursor: 'pointer', fontSize: 13, opacity: 0.75 }}>{t('advanced')}</summary>
+          {/* 高级选项弹窗入口：WSL 只有环境变量（无代理/跳板机概念，不提供
+              这两项入口——域内也不存）；对齐 ssh-connect-form 的按钮样式 */}
+          <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+            <button type="button" style={buttonStyle}
+              onClick={() => { setOpenDialog('env'); }}>{t('advancedEnv')}</button>
+          </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 8, marginTop: 8 }}>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               <span style={{ fontSize: 12, opacity: 0.75 }}>{t('localPort')}</span>
@@ -281,6 +297,9 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
             ? <span style={{ color: '#ef4444', fontSize: 13 }}>{t('connectError')}：{formError}</span>
             : null}
         </div>
+
+        {/* ---- 高级选项弹窗（环境变量，读写 wsl 域；共享 DialogShell 浮层） ---- */}
+        {openDialog === 'env' ? <EnvDialog transportType="wsl" onClose={closeDialog} t={t} /> : null}
       </section>
 
       {/* ---- 会话表 ---- */}

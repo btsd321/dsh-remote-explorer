@@ -1,12 +1,14 @@
 /**
- * @file 跳板机弹窗（高级选项之一，按主机类型分流）
+ * @file 跳板机弹窗（高级选项之一，按主机类型分流，SSH 域专属）
  * @description 连接表单选中的主机决定弹窗形态：
  *              - **config 别名主机**：只读视图——链来自 ssh config 的
  *                ProxyJump（hosts 接口的 jumpChain 字段），附提示行「修改请
  *                编辑 ~/.ssh/config」；面板不提供编辑入口
  *              - **user@host[:port] 直连主机**：可编辑行列表（每条 target +
  *                可选私钥路径 + 可选密码），保存 target/identityFile 子集到
- *                全局存储；**密码不落盘**——只随 onSaved 回调进父组件内存，
+ *                **ssh 域**全局存储（本弹窗只在 SSH 连接表单挂载——WSL 无
+ *                跳板机概念，wsl 域不存 jumpHosts，fetch/post 一律固定传
+ *                'ssh'）；**密码不落盘**——只随 onSaved 回调进父组件内存，
  *                由连接请求携带
  *              - 未选中/无法识别：提示先选主机
  *
@@ -83,13 +85,14 @@ export function JumpHostDialog(props: JumpHostDialogProps): ReactNode {
   /** 重试计数：自增触发加载 effect 重跑 */
   const [reloadTick, setReloadTick] = React.useState(0);
 
-  // 直连模式打开时拉既有配置；config/unknown 模式不拉（无编辑面）
+  // 直连模式打开时拉既有配置（弹窗只在 SSH 表单挂载，域键固定 'ssh'）；
+  // config/unknown 模式不拉（无编辑面）
   React.useEffect(() => {
     if (mode !== 'adHoc') return;
     let stopped = false;
     setLoadPhase('loading');
     setLoadError('');
-    void fetchAdvanced()
+    void fetchAdvanced('ssh')
       .then(advanced => {
         if (stopped) return;
         const stored = advanced.jumpHosts ?? [];
@@ -126,9 +129,10 @@ export function JumpHostDialog(props: JumpHostDialogProps): ReactNode {
   };
 
   /**
-   * 保存（仅直连模式）：target/identityFile 子集 POST 落盘（部分更新语义，
-   * 不动 env/proxy）；完整条目（含密码）经 onSaved 交父组件内存持有。
-   * 空行跳过；全部删光 = 清除跳板配置。
+   * 保存（仅直连模式）：target/identityFile 子集 POST 落盘（按域部分更新
+   * 语义，不动 env/proxy；域键固定 'ssh'——本弹窗只在 SSH 表单挂载）；
+   * 完整条目（含密码）经 onSaved 交父组件内存持有。空行跳过；全部删光 =
+   * 清除跳板配置。
    */
   const onSave = async (): Promise<void> => {
     if (busy || loadPhase !== 'ready') return;
@@ -146,7 +150,7 @@ export function JumpHostDialog(props: JumpHostDialogProps): ReactNode {
     }));
     setBusy(true);
     try {
-      await postAdvanced({ jumpHosts: stored });
+      await postAdvanced('ssh', { jumpHosts: stored });
       // 完整条目（含密码）交父组件内存持有；密码为空的行不带 password 字段
       onSaved(filled.map((row): JumpEntry => ({
         target: row.target.trim(),

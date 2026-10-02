@@ -27,7 +27,7 @@ export type RemoteExplorerLocaleKey =
   | 'missingKeys'
   | 'advancedJump' | 'advancedEnv' | 'advancedProxy'
   | 'dlgSave' | 'dlgSaving' | 'dlgCancel' | 'dlgClose' | 'dlgLoading' | 'dlgLoadError' | 'dlgSaveError'
-  | 'envDialogTitle' | 'envDialogHint' | 'envDialogApplyHint'
+  | 'envDialogTitle' | 'envDialogHint' | 'envDialogDomainHint' | 'envDialogApplyHint'
   | 'envKey' | 'envValue' | 'envAddRow' | 'envRemoveRow' | 'envSkipHint'
   | 'envInvalidKey' | 'envReservedKey' | 'envDuplicateKey' | 'envInvalidValue'
   | 'proxyDialogTitle' | 'proxyDialogHint' | 'proxyDialogApplyHint' | 'proxyPlaceholder'
@@ -116,6 +116,7 @@ export const zh: Record<RemoteExplorerLocaleKey, string> = {
   dlgSaveError: '保存失败：',
   envDialogTitle: '环境变量',
   envDialogHint: '全局保存（记住上一次输入，换主机沿用同一份），仅存宿主侧 ~/.dsh/remote-advanced.json；连接时注入远端 dsh 进程',
+  envDialogDomainHint: '配置按连接形态（SSH / WSL）分开保存，互不影响；此处编辑的是当前表单对应形态的配置',
   envDialogApplyHint: '保存后下一次连接时生效；已运行的会话需断开（勾选「同时停止远端 dsh」）后重连才会注入',
   envKey: '变量名',
   envValue: '值',
@@ -233,6 +234,7 @@ export const en: Record<RemoteExplorerLocaleKey, string> = {
   dlgSaveError: 'Save failed: ',
   envDialogTitle: 'Environment variables',
   envDialogHint: 'Saved globally (remembers your last input, shared across hosts) in the host-side ~/.dsh/remote-advanced.json only; injected into the remote dsh process when connecting',
+  envDialogDomainHint: 'Settings are stored per transport form (SSH / WSL) and never affect each other; this dialog edits the configuration of the form it was opened from',
   envDialogApplyHint: 'Takes effect on the next connection; running sessions must be disconnected (with "Also stop remote dsh" checked) and reconnected to pick it up',
   envKey: 'Variable name',
   envValue: 'Value',

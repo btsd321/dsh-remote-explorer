@@ -140,20 +140,43 @@ function buildRoutes(supervisor: SessionSupervisor): RouteDef[] {
       },
     },
     {
-      // 高级选项全局配置（连接表单三弹窗的「上一次输入」，本机
-      // ~/.dsh/remote-advanced.json，全局单条不按主机区分）：
-      // GET 读回 {env, proxy?, jumpHosts?}；POST 部分更新——**缺省字段保持
-      // 原值**（三个弹窗各管一个字段，互不清除对方），显式空值 = 清除该字段
-      // （env 空对象 / proxy 空串 / jumpHosts 空数组）。
+      // 高级选项配置（连接表单弹窗的「上一次输入」，本机
+      // ~/.dsh/remote-advanced.json，**按传输形态分域**——SSH 域三项
+      // env/proxy/jumpHosts，WSL 域只有 env；域内不按主机区分）：
+      // GET 带 ?transportType=（缺省 'ssh'）读回该域 {env, proxy?, jumpHosts?}
+      // （wsl 域只有 env）；POST body 带 transportType（缺省 'ssh'）部分
+      // 更新对应域——**缺省字段保持域内原值**（弹窗各管一个字段，互不清除
+      // 对方），显式空值 = 清除该字段（env 空对象 / proxy 空串 / jumpHosts
+      // 空数组）。POST 目标为 wsl 域时 body 出现 proxy/jumpHosts → 400
+      // （WSL 不支持这两项，仅环境变量）。
       // 值可能含代理认证信息——读写两侧都只打键名/字段名不打值
       path: `${ROUTE_PREFIX}/advanced`,
       methods: ['GET', 'POST'],
       fetch: async (request) => {
         try {
           if (request.method === 'GET') {
-            return Response.json(readAdvancedConfig());
+            const param = new URL(request.url).searchParams.get('transportType');
+            if (param !== null && param !== 'ssh' && param !== 'wsl') {
+              return Response.json(
+                { code: 'bad_usage', message: `transportType 必须是 'ssh' 或 'wsl'，收到 '${param}'` },
+                { status: 400 },
+              );
+            }
+            return Response.json(readAdvancedConfig(param === 'wsl' ? 'wsl' : 'ssh'));
           }
           const body = await readJsonBody(request);
+          // 传输形态（域键）：缺省 'ssh'；非法值 400
+          const transportTypeRaw: unknown = body.transportType;
+          let transportType: 'ssh' | 'wsl';
+          switch (transportTypeRaw) {
+            case 'wsl': transportType = 'wsl'; break;
+            case 'ssh': case undefined: transportType = 'ssh'; break;
+            default:
+              return Response.json(
+                { code: 'bad_usage', message: `transportType 必须是 'ssh' 或 'wsl'，收到 '${String(transportTypeRaw)}'` },
+                { status: 400 },
+              );
+          }
           // 形状收窄：env 必须是对象且键值都是 string（语义校验交给 validateAdvancedConfig）
           const envRaw: unknown = body.env;
           if (envRaw !== undefined
@@ -188,8 +211,16 @@ function buildRoutes(supervisor: SessionSupervisor): RouteDef[] {
               { status: 400 },
             );
           }
-          // 部分更新合并：缺省字段沿用当前存储值；显式空值（'' / []）按清除
-          const current = readAdvancedConfig();
+          // WSL 域只有 env：body 出现 proxy/jumpHosts 一律 400（域契约，
+          // 存储层写侧还有一道防御性抛错）
+          if (transportType === 'wsl' && (proxyRaw !== undefined || jumpRaw !== undefined)) {
+            return Response.json(
+              { code: 'bad_usage', message: 'WSL 连接不支持代理/跳板机配置，仅支持环境变量' },
+              { status: 400 },
+            );
+          }
+          // 部分更新合并（按域）：缺省字段沿用当前域存储值；显式空值（'' / []）按清除
+          const current = readAdvancedConfig(transportType);
           const merged: AdvancedConfig = {
             env: envRaw !== undefined ? env : current.env,
             ...(proxyRaw !== undefined && proxyRaw !== '' ? { proxy: proxyRaw } : {}),
@@ -199,7 +230,7 @@ function buildRoutes(supervisor: SessionSupervisor): RouteDef[] {
           if (validation !== undefined) {
             return Response.json({ code: 'bad_usage', message: validation }, { status: 400 });
           }
-          writeAdvancedConfig(merged);
+          writeAdvancedConfig(transportType, merged);
           return Response.json({ ok: true });
         } catch (error) {
           return supervisorError(error);
