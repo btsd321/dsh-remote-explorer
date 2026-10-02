@@ -237,16 +237,27 @@ function HandoffPill(props: HandoffPillProps): ReactNode {
     return () => { stopped = true; clearInterval(timer); };
   }, [meta]);
 
-  // 菜单打开时增量拉日志
+  // 菜单打开时增量拉日志。
+  //
+  // 依赖**必须**收敛到 [open, meta]：meta 挂载期只拉一次（稳定引用），而
+  // state 轮询每 2 秒产生新对象——若依赖 state，每轮状态轮询都会重跑本
+  // effect（setLog([]) 清空 + since=0 从头重拉），表现为日志区每两秒
+  // 闪一次（实测踩过）。会话 id 从 meta 取（state 轮询本就用它查询），
+  // state 变化不影响日志流。
   React.useEffect(() => {
-    if (!open || state === null) { setLog([]); lastSeq.current = 0; return; }
+    if (!open || meta === undefined || meta === null) {
+      setLog([]);
+      lastSeq.current = 0;
+      return;
+    }
+    const sessionId = meta.sessionId;
     let stopped = false;
     lastSeq.current = 0;
     setLog([]);
     const tick = async (): Promise<void> => {
       try {
         const response = await fetch(
-          `${HANDOFF_ROUTE_PREFIX}/log?id=${encodeURIComponent(state.sessionId)}&since=${lastSeq.current}`,
+          `${HANDOFF_ROUTE_PREFIX}/log?id=${encodeURIComponent(sessionId)}&since=${lastSeq.current}`,
         );
         if (stopped || !response.ok) return;
         const body = await response.json() as { log: HandoffLogEntry[] };
@@ -259,7 +270,7 @@ function HandoffPill(props: HandoffPillProps): ReactNode {
     void tick();
     const timer = setInterval(() => { void tick(); }, LOG_POLL_MS);
     return () => { stopped = true; clearInterval(timer); };
-  }, [open, state]);
+  }, [open, meta]);
 
   React.useEffect(() => {
     const box = logBoxRef.current;
