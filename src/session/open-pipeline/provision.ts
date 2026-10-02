@@ -88,7 +88,12 @@ export async function provisionAndConfigure(
       [deepseekRoute(), ...providerRoutes],
       options.hostAlias,
       localCredentials,
-      ...(options.manageHandlers ? [options.manageHandlers] : []),
+      // manageHandlers 直接传（undefined 落到可选参数位）——**不能用条件
+      // 展开**：`...(x ? [x] : [])` 在 x 缺席时会把它后面的 accountToken
+      // 挤进 manage 参数位（CLI 形态不传 manageHandlers，曾因此把账号
+      // token 错塞进 manage、accountToken 位落空——代理对账号通道一律
+      // 报「本机未登录 DeepSeek 账号」502）
+      options.manageHandlers,
       accountToken,
     )
     : undefined;
