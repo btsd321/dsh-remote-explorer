@@ -20,7 +20,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { readFile, writeFile, copyFile, chmod } from 'node:fs/promises';
+import { readFile, writeFile, copyFile } from 'node:fs/promises';
 import { Socket } from 'node:net';
 import { Duplex } from 'node:stream';
 import { RemoteError, toErrorMessage } from '../util/errors.js';
@@ -166,6 +166,12 @@ export class WslTransport implements RemoteTransport {
    * 主路径：UNC 路径直接 fs.writeFile（零开销、二进制安全）。
    * 回退：`wsl -d <distro> -e bash -c "cat > <path>"` + stdin 传入内容。
    *
+   * mode 语义（创建权限）统一由 {@link chmodViaExec} 在 WSL 内执行真正的
+   * POSIX chmod 收口：Windows 侧 fs.chmod 在 UNC（9P 协议）路径上是模拟
+   * 实现、不影响 WSL 内的 stat 结果（实测仍 644）；exec 路径的 umask 对
+   * 已存在文件也不生效。mode 校验失败直接抛错——调用方（如凭据文件
+   * 0600）的安全契约比「写入成功」更重要，静默降级会让远端 dsh 拒启。
+   *
    * @param remotePath - 远端绝对路径（POSIX 风格）
    * @param content - 文件内容
    * @param options - 超时、取消信号与文件模式
@@ -178,17 +184,16 @@ export class WslTransport implements RemoteTransport {
     this.requireAlive();
     options.signal?.throwIfAborted();
 
-    const uncPath = this.toUncPath(remotePath);
+    const data = typeof content === 'string' ? Buffer.from(content, 'utf8') : content;
     try {
-      const data = typeof content === 'string' ? Buffer.from(content, 'utf8') : content;
+      const uncPath = this.toUncPath(remotePath);
       await writeFile(uncPath, data);
-      // UNC 路径下设置文件权限
-      if (options.mode !== undefined) {
-        await chmod(uncPath, options.mode);
-      }
     } catch {
       // UNC 不可用时回退到 exec + stdin
-      await this.writeViaExec(remotePath, content, options);
+      await this.writeViaExec(remotePath, data, options);
+    }
+    if (options.mode !== undefined) {
+      await this.chmodViaExec(remotePath, options.mode);
     }
   }
 
@@ -424,17 +429,14 @@ export class WslTransport implements RemoteTransport {
    */
   private async writeViaExec(
     remotePath: string,
-    content: string | Buffer,
+    content: Buffer,
     options: RemoteFileOptions,
   ): Promise<void> {
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const data = typeof content === 'string' ? Buffer.from(content, 'utf8') : content;
 
-    // 用 cat 从 stdin 读取内容写入文件
-    const modeCmd = options.mode !== undefined
-      ? `umask ${quote(String(options.mode))} && `
-      : '';
-    const command = `${modeCmd}cat > ${quote(remotePath)}`;
+    // 用 cat 从 stdin 读取内容写入文件。mode 不在此处理：umask 只对新建
+    // 文件生效（已存在文件 truncate 不改权限），统一走 chmodViaExec
+    const command = `cat > ${quote(remotePath)}`;
     const args = this.buildExecArgs(command);
 
     await new Promise<void>((resolve, reject) => {
@@ -451,8 +453,40 @@ export class WslTransport implements RemoteTransport {
       });
       // 通过 stdin 传入内容
       if (child.stdin) {
-        child.stdin.end(data);
+        child.stdin.end(content);
       }
+    });
+  }
+
+  /**
+   * 在 WSL 内执行真正的 POSIX chmod。
+   *
+   * Windows 侧 fs.chmod 对 UNC（\\wsl.localhost，9P 协议）路径是模拟实现，
+   * 不改变 WSL 内 stat 看到的 mode——凭据类文件（0600 契约）此前因此落盘
+   * 644，远端 dsh 的 credentials-local 启动校验直接拒启。此方法经 wsl.exe
+   * 在发行版内执行 chmod，权限语义与 Linux 一致。
+   *
+   * @param remotePath - 远端绝对路径（POSIX 风格）
+   * @param mode - 目标权限（八进制数值，如 0o600）
+   * @throws RemoteError chmod 执行失败
+   */
+  private async chmodViaExec(remotePath: string, mode: number): Promise<void> {
+    // toString(8) 产出纯八进制数字（600/644…），无需 quote
+    const command = `chmod ${mode.toString(8)} ${quote(remotePath)}`;
+    const args = this.buildExecArgs(command);
+
+    await new Promise<void>((resolve, reject) => {
+      execFile(getWslExePath(), args, { timeout: DEFAULT_TIMEOUT_MS }, (error) => {
+        if (error) {
+          reject(new RemoteError(
+            'EXEC_FAILED',
+            `WSL ${this.options.distroName} 上设置文件权限 ${remotePath} 失败: ${toErrorMessage(error)}`,
+            { cause: error, hostAlias: this.hostAlias },
+          ));
+        } else {
+          resolve();
+        }
+      });
     });
   }
 
