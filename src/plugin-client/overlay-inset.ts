@@ -34,7 +34,7 @@ const CSS_VAR_TOP_CLEARANCE = '--dsh-frame-top-clearance';
  */
 const VAR_CHAIN = 'var(--dsh-frame-chrome-top, var(--dsh-frame-top-clearance, 0px))';
 
-/** macOS 非全屏硬编码回退：dsh 自己发布的 clearance 是 48px，52px 是 ui-sidebar 内部顶条高度 */
+/** macOS 回退值：ui-sidebar 内部顶条高度 52px（dsh 自己发布 48px，此处按用户拍板用 sidebar 顶条高度） */
 const MACOS_FALLBACK = '52px';
 /** Windows 非全屏硬编码回退：等于 dsh 发布的 --dsh-windows-titlebar-height（titleBarOverlay.height） */
 const WINDOWS_FALLBACK = '40px';

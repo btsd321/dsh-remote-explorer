@@ -188,7 +188,9 @@ export class ChannelPool {
     };
   }
 
-  /** 唤醒第一个能被满足的等待者（按 FIFO，跳过配额仍不足的类型） */
+  /** 唤醒第一个能被满足的等待者（按 FIFO，跳过配额仍不足的类型）。
+   *  grant 内部会从 waiters 移除自身（经 cleanup），其后的 return 保证不再继续遍历——
+   *  即便 grant 触发的下游同步调用又操作了 waiters，也不会干扰本次遍历。 */
   private wakeNext(): void {
     for (const waiter of this.waiters) {
       if (this.tryTake(waiter.kind)) {

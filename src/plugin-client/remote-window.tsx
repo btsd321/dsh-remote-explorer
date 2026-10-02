@@ -52,6 +52,12 @@ interface WebViewElement extends HTMLWebViewElement {
   getURL(): string;
 }
 
+/** Electron webview 的 will-navigate 事件（Electron 注入，DOM 标准类型没有） */
+interface WillNavigateEvent extends Event {
+  /** 即将导航到的 URL */
+  url?: string;
+}
+
 /** 浮层目标：打开哪条会话 */
 export interface RemoteWindowTarget {
   /** 会话 id（断开动作的目标） */
@@ -248,7 +254,7 @@ export function RemoteWindowOverlay(props: RemoteWindowOverlayProps): ReactNode 
           });
           // 5. handoff「关闭/停止并返回」经 location.href 触发主框架导航，这里截获
           element.addEventListener('will-navigate', (event) => {
-            const url = (event as unknown as { url?: string }).url ?? element.getURL();
+            const url = (event as WillNavigateEvent).url ?? element.getURL();
             handleIntentUrl(url);
           });
           container.appendChild(element);
