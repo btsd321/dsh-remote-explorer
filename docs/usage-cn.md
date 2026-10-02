@@ -75,7 +75,7 @@ dsh-remote-explorer <命令> [参数]
 | `connect <别名>` | 主命令：引导 → 起远端 dsh → 建隧道 → 开浏览器（常驻） |
 | `status` | 列出本机正在维持的所有会话 |
 | `kill <别名>` | 停止远端 dsh 进程 |
-| `clean <别名>` | 清理远端陈旧资源（旧版本、死会话目录） |
+| `clean <别名>` | 清理远端陈旧资源（旧版本、死会话目录、技能目录） |
 | `list` | 列出 ~/.ssh/config 中的主机 |
 | `doctor <别名>` | 诊断某台主机的引导条件 |
 | `provision <别名>` | 只做引导，不起服务（幂等） |
@@ -163,6 +163,21 @@ pnpm exec tsx src/cli/bin.ts provision <别名> --cwd //home/user
 **为什么单独成命令：** 引导是最慢也最容易失败的一步（全新安装约 75 秒）。独立出来便于单独重试与诊断。
 
 **版本隔离：** 每个 Node 和 dsh 版本装在各自目录（如 `~/.dsh-remote-explorer/btsd321/node/v24.21.0/`、`~/.dsh-remote-explorer/btsd321/versions/dsh-0.1.6-alpha.2/`）。升级从不原地覆盖——这避免了"运行中进程占着文件，写入报 Text file busy"的故障。
+
+**机器级共享 vs 会话私有：** 远端根目录下的资源分两类——
+
+| 类别 | 位置 | 生命周期 |
+|---|---|---|
+| Node / dsh 安装 | `node/<版本>/`、`versions/dsh-<版本>/` | 机器级，多版本并存 |
+| 插件仓库 | `profiles/web/` | 机器级，所有会话经 symlink 共享 |
+| **agent 能力（技能）** | `.agents/` | **机器级，所有会话共享** |
+| 会话实例状态 | `sessions/<会话 id>/` | 每个 (主机, 远端目录) 一份 |
+
+远端 dsh 的 `DSH_AGENTS_HOME` 指向 `.agents`，与本机 `~/.agents` 同形。dsh 把 `<agentsHome>/skills` 当作**用户级**技能根（rank 500），所以**在同一台远端换个工作目录开会话，已装技能依然可用**，不需要重装。项目内 `.dsh/skills`、`.agents/skills` 的技能仍随仓库走，且优先级（rank 100/200）高于机器级。
+
+技能目录的并发写由 `.agents/.lock`（flock）串行化。该锁只覆盖本工具发起的写入——第三方技能安装器不读它，跨会话用外部工具并发装技能仍可能互相覆盖 `.skill-lock.json`。
+
+从早期版本升级时，`sessions/<会话 id>/agents/` 下的既有技能会在该会话首次连接时并入 `.agents`：同名一律保留机器级版本，源目录改名 `agents.migrated-<时间戳>` 留痕（不删除，可人工取回）。迁移失败只记日志，不影响连接。
 
 **输出：** 表格显示远端根目录、Node 版本、dsh 版本、dsh 入口路径和会话 `DSH_HOME`。
 
@@ -269,7 +284,7 @@ pnpm exec tsx src/cli/bin.ts kill <别名> --all
 
 ## clean — 清理陈旧远端资源
 
-删除远端的陈旧会话目录、旧版 Node 和旧版 dsh。这是版本入名 + 每会话目录策略的必要配套——两者都会累积。
+删除远端的陈旧会话目录、旧版 Node 和旧版 dsh，以及机器级 agent 能力目录（`.agents`，含已装技能）。这是版本入名 + 每会话目录策略的必要配套——两者都会累积。
 
 ```bash
 # 默认各保留最新 1 个版本
@@ -296,6 +311,7 @@ pnpm exec tsx src/cli/bin.ts clean <别名> --keep 2
 - **陈旧会话目录** — pid 文件指向的进程已不在的会话；他人指纹的目录默认跳过（`--include-others` 可包含）。
 - **旧版 dsh** — 保留最新 N 个，其余删除（受保护的除外）。
 - **旧版 Node** — 同上。
+- **机器级 agent 能力目录（`.agents`）** — 整个删除，含已装技能。它是单一目录，没有「保留最新 N 个」的概念；技能属可重装资源，下次连接重新安装即可。**不按 owner 指纹 scope，也不按活会话保护**——`.agents` 是全账号共享的，活会话读的是同一目录，删掉只影响它之后**发现**到的技能（技能根缺失属于有效空状态，不会让远端进程崩）。多人共用同一远端账号时请注意这一点。
 
 用户级插件仓库（`plugins/`）是共享数据，**永不被 clean 触碰**。
 
@@ -387,7 +403,7 @@ DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect my-server --cwd //h
 # 停止远端 dsh
 pnpm exec tsx src/cli/bin.ts kill my-server --all
 
-# 清理旧版本和死会话
+# 清理旧版本、死会话与技能目录（技能可重装，下次连接重新安装）
 pnpm exec tsx src/cli/bin.ts clean my-server
 
 # 远端完整卸载（在远端主机上执行）

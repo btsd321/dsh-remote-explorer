@@ -132,11 +132,24 @@ dsh 自身会把代理变量透传给它拉起的 `git`/`pnpm` 子进程，装�
 
 ## 远端落盘隔离
 
-对标 VS Code `~/.vscode-server` 的单根自治模型：本工具在远端的一切落盘都在 `~/.dsh-remote-explorer/btsd321/` 内（安装、每会话状态、npm 缓存、临时文件），**从不写入**远端 `~/.dsh`（官方 dsh 的家）与 `~/.npm`（远端 npm 使用者共享的缓存）。远端 dsh 的 skill 目录也重定向到会话内（`DSH_AGENTS_HOME`），不读机器全局的 `~/.agents`。
+对标 VS Code `~/.vscode-server` 的单根自治模型：本工具在远端的一切落盘都在 `~/.dsh-remote-explorer/btsd321/` 内（安装、每会话状态、技能目录、npm 缓存、临时文件），**从不写入**远端 `~/.dsh`（官方 dsh 的家）与 `~/.npm`（远端 npm 使用者共享的缓存），也不读远端机器全局的 `~/.agents`。
 
 - 同机跑官方 dsh 的其他人不受任何影响；`doctor` 的「隔离检查」段会报告占用。
 - 完全卸载 = `rm -rf ~/.dsh-remote-explorer/btsd321`，一个命令走干净。
 - 已知低风险共享：远端 pnpm store——仅当有人主动在远端跑 `dsh plugin` 才触及，内容寻址并发安全。
+
+## 机器级共享与技能
+
+这个根目录下的资源分两类：
+
+- **机器级共享**（该远程账号一份，所有会话共用）：Node 与 dsh 各版本安装、`profiles/`（插件唯一真源）、`.agents/`（agent 能力，含技能）
+- **会话私有**（每个远端工作目录一份）：`sessions/<会话 id>/` 下的对话历史、storages、附件、缓存、运行时材料
+
+`DSH_AGENTS_HOME` 指向 `btsd321/.agents`，与本机 `~/.agents` 同形。dsh 把 `<agentsHome>/skills` 当作**用户级**技能根（rank 500，低于项目级 rank 100/200），语义是「这台机器的使用者」而非「这一次会话」；因此**在同一台远端换个工作目录开会话，已装的技能依然在**，不需要重装。项目内 `.dsh/skills`、`.agents/skills` 的技能仍按仓库走且优先级更高。
+
+技能目录的并发写由 `.agents/.lock`（flock）串行化。注意该锁只覆盖本工具发起的写入——第三方技能安装器不读它，跨会话并发用外部工具装技能仍有互相覆盖 `.skill-lock.json` 的风险。
+
+升级自早期版本时，`sessions/<会话 id>/agents/` 里的既有技能会在该会话首次连接时并入 `.agents`（同名一律保留机器级版本，源目录改名 `agents.migrated-<时间戳>` 留痕）。
 
 **在 Git Bash 里写远端路径要用双斜杠**（`--cwd //home/xxx`）或先设 `MSYS_NO_PATHCONV=1`。MSYS 会把 `/home/xxx` 改写成 `D:/SoftWare/Git/home/xxx`，这发生在参数到达程序之前，程序只能识别并拒绝。
 
@@ -149,6 +162,7 @@ dsh 自身会把代理变量透传给它拉起的 `git`/`pnpm` 子进程，装�
 - **不同远程 OS 账号**连接同一主机 = 完全隔离（各自的远端根目录、会话与插件）
 - **同一远程账号** = 共享会话根：同 (主机, 远端目录) 即同一个远端会话（多人多视图），会话内容互见、LLM 凭据代理归先到者——这是预期行为（VS Code 同账号共享 server 亦然）。每人独立远程账号可获得完全隔离
 - `kill --all` 与 `clean` 默认只作用于**本机发起的会话**（owner 指纹，会话启动时写入远端 `.runtime/owner`）与无活进程的残留；他人会话跳过并列明，`--include-others` 恢复全量行为
+- **例外：`clean` 对机器级 `.agents` 不做 owner scope**——它是全账号共享的单一目录，`clean` 会整个清除（含已装技能），与你的指纹无关。技能属可重装资源，下次连接重新安装即可
 
 远端插件管理双表面（VS Code「连着就能管」），插件仓库为**用户级**（该远程账号一份，所有会话共享，对标 `~/.vscode-server/extensions/`；会话 profile 经 symlink 接入，零副本）：
 
