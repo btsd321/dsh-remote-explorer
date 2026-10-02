@@ -46,6 +46,14 @@ const POLL_INTERVAL_MS = 500;
 const STOP_TIMEOUT_MS = 15_000;
 
 /**
+ * WSL 路径下 PowerShell Start-Process 启动 wsl.exe 的超时（毫秒）。
+ *
+ * 与 STOP_TIMEOUT_MS 同值但不同义——这边是本机 PowerShell 起进程的时限，
+ * 那边是远端 dsh 收到 TERM 后的停止宽限期，两者各自独立演化。
+ */
+const WSL_LAUNCH_TIMEOUT_MS = 15_000;
+
+/**
  * 从 dsh 启动输出里提取令牌的模式。
  *
  * 只认 43 个 base64url 字符——P0 实测令牌长度恒为 43。
@@ -210,7 +218,7 @@ export async function startRemoteDsh(
     await new Promise<void>((resolve, reject) => {
       execFile('powershell.exe', [
         '-NoProfile', '-NonInteractive', '-Command', psCommand,
-      ], { timeout: 15_000, windowsHide: true }, (error, _stdout, stderr) => {
+      ], { timeout: WSL_LAUNCH_TIMEOUT_MS, windowsHide: true }, (error, _stdout, stderr) => {
         if (error) {
           reject(new RemoteError(
             'EXEC_FAILED',
