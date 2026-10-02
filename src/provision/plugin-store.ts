@@ -75,7 +75,7 @@ export async function ensureHostProfile(
   const profileDir = paths.hostProfileDir(platform);
   const profileNm = paths.hostProfileNodeModules(platform);
   const profileManifest = paths.hostProfileManifest(platform);
-  const dshNm = `${paths.dshDir(dshVersion)}/node_modules`;
+  const dshNm = `${paths.dshDir}/node_modules`;
   const exists = await transport.exec(
     `test -f ${quote(profileManifest)} && echo EXISTS || true`,
     { allowNonZeroExit: true },
@@ -137,38 +137,6 @@ export async function writePluginStoreManifest(
   platform: string = DEFAULT_PLATFORM,
 ): Promise<void> {
   await io.writeFile(paths.hostProfileManifest(platform), `${JSON.stringify(manifest, undefined, 2)}\n`);
-}
-
-/**
- * 会话 profile 接入主机级 profile：整体 symlink（幂等）。
- *
- * 会话 `$DSH_HOME/profiles/<platform>` → `base/profiles/<platform>`。
- * dsh 启动时 `--profile web` 在此找到 symlink，指向主机级共享安装。
- *
- * 老会话遗留的真实 profile 目录直接替换为 symlink。
- *
- * @param ctx - 远端执行上下文
- * @param sessionId - 会话 id
- * @param platform - 平台 profile 名（默认 web）
- */
-export async function attachSessionProfile(
-  ctx: RemoteContext,
-  sessionId: string,
-  platform: string = DEFAULT_PLATFORM,
-): Promise<void> {
-  const { transport, paths } = ctx;
-  const sessionProfileDir = paths.sessionProfile(sessionId);
-  const hostProfileDir = paths.hostProfileDir(platform);
-  // sessionProfile 的父目录可能不存在（首次连接）
-  const parentDir = sessionProfileDir.substring(0, sessionProfileDir.lastIndexOf('/'));
-  const script = [
-    `mkdir -p ${quote(parentDir)}`,
-    `if [ -L ${quote(sessionProfileDir)} ]; then :;`,
-    `elif [ -d ${quote(sessionProfileDir)} ]; then rm -rf ${quote(sessionProfileDir)} && ln -s ${quote(hostProfileDir)} ${quote(sessionProfileDir)};`,
-    `else ln -s ${quote(hostProfileDir)} ${quote(sessionProfileDir)};`,
-    'fi',
-  ].join('\n');
-  await transport.exec(script, { allowNonZeroExit: true });
 }
 
 /**

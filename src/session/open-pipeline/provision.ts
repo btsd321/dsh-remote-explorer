@@ -1,8 +1,8 @@
 /**
  * @file 打开流水线·引导与配置阶段
  * @description open() 流水线的第三阶段：凭据策略实例化、provision（幂等）、
- *              handoff 组件安装、会话接入主机级 plugin store、settings 双写、
- *              新凭据材料落盘。
+ *              handoff 组件安装、会话接入主机级 plugin store、机器级 credentials.yaml
+ *              写入、新凭据材料落盘。
  *
  * 所有序列约束（所有反向端点相关落盘必须先于远端 dsh 启动完成——启动后的
  * 进程消费的就是这批材料）详见 provisionAndConfigure 的函数注释。
@@ -18,28 +18,37 @@
 import { provision } from '../../provision/provisioner.js';
 import { installHandoffBundle } from '../../provision/handoff-installer.js';
 import {
-  attachSessionProfile, syncHostProfileManifest, transportIo,
+  syncHostProfileManifest, transportIo,
 } from '../../provision/plugin-store.js';
-import { readLocalCredentials } from '../../credential/local-credentials.js';
+import { readLocalCredentials, readLocalAccountToken } from '../../credential/local-credentials.js';
 import { TunnelProxyCredential } from '../../credential/tunnel-proxy.js';
 import {
   deepseekRoute, extractProviderRoutes, readLocalSettings,
+  renderProviderTunnelPatch,
 } from '../../credential/provider-routes.js';
-import { writeProxySecret, writeSessionReverseHost } from '../../credential/proxy-secret.js';
-import { writeTunnelCredentialMirrors } from '../wsl-reverse.js';
+import { writeProxySecret, writePlaceholderAccountCredentials, writeSessionReverseHost } from '../../credential/proxy-secret.js';
+import { quote } from '../../util/shell-quote.js';
 import { toErrorMessage } from '../../util/errors.js';
+import { createLogger } from '../../util/logger.js';
+import type { PatchEntry } from '../../provision/profile-writer.js';
 import type { RemoteTransport } from '../../transport/types.js';
 import type { OpenSessionOptions } from '../options.js';
 import type { ProbeStageContext, ProvisionStageContext } from './prepare.js';
 import type { RemoteContext } from '../../provision/remote-context.js';
 
+const log = createLogger('open-pipeline-provision');
+
 /**
  * 引导远端环境、构造凭据策略、同步配置并落盘新凭据材料。
  *
  * 包含：凭据策略实例化、provision（幂等）、handoff 组件安装、
- * 会话接入 store、settings 双写、新凭据材料落盘。所有反向端点相关
- * 落盘（reverse-host、patch、settings 镜像）都在远端 dsh 启动之前
- * 完成——启动后的进程消费的就是这批材料。
+ * 会话接入 store、机器级 credentials.yaml 写入、新凭据材料落盘。
+ * 所有反向端点相关落盘（reverse-host、patch、credentials.yaml）
+ * 都在远端 dsh 启动之前完成——启动后的进程消费的就是这批材料。
+ *
+ * DSH_HOME = base（机器级），所有会话共享。patch 文件在
+ * `sessions/<id>/.runtime/patch.yml`（会话隔离），通过 `--patch` 参数传入。
+ * credentials.yaml 在 `base/.credentials.yaml`（机器级共享）。
  *
  * @param transport - 已连接的传输实例
  * @param sessionId - 会话 id
@@ -58,14 +67,21 @@ export async function provisionAndConfigure(
   const isWsl = options.transportType === 'wsl';
 
   // 4. 凭据策略实例。构造便宜（不起监听），放在引导之前——
-  //    环境注入、patch 条目与 settings 镜像都从它取，编排层不重复拼细节。
+  //    环境注入、patch 条目都从它取，编排层不重复拼细节。
   //    路由表 = DeepSeek 原生通道 + 本机 settings.yaml 里的 pi-ai 供应商
   //    （用户的默认模型可能配置在后者）
   //    本机凭据从 .credentials.yaml 读取，作为 process.env 的回退源——
   //    对齐 dsh 自身的凭据解析优先级（文件存储 > 环境变量缺失时兜底）
+  //    accountToken 同样从 .credentials.yaml 的 records 段读取——它是
+  //    DeepSeek 账号的 OAuth grant token，与 refs 段的 DEEPSEEK_API_KEY
+  //    在安全层面等价（都是模型调用认证密钥），走同一隧道代理替换，不出本机
   const localSettings = readLocalSettings();
   const providerRoutes = localSettings ? extractProviderRoutes(localSettings) : [];
   const localCredentials = readLocalCredentials();
+  const accountToken = readLocalAccountToken();
+  if (accountToken !== undefined) {
+    log.info('本机已登录 DeepSeek 账号，account token 通道可用', { hostAlias: options.hostAlias });
+  }
   const credential = secret
     ? new TunnelProxyCredential(
       secret.token, secret.reversePort, secret.reverseHost,
@@ -73,15 +89,19 @@ export async function provisionAndConfigure(
       options.hostAlias,
       localCredentials,
       ...(options.manageHandlers ? [options.manageHandlers] : []),
+      accountToken,
     )
     : undefined;
 
-  // 5. 引导（幂等）。patch 让 DeepSeek 原生通道的 baseURL 指向反向端口——
-  //    secret 存在就写，复用与新建 alike：prepareSessionProfile 每次重写
-  //    patch，反向端口来自同一份落盘材料，值保持一致
+  // 5. 引导（幂等）。标量 patch 条目（llm-deepseek / llm-deepseek-account 的
+  //    baseURL 重定向）合并写入 sessions/<id>/.runtime/patch.yml，通过 --patch 参数传入。
+  //    pi-ai 供应商路由（含 providers 嵌套结构）走独立追加路径（下方第 6 步），
+  //    因为 provisioner 的 renderPatchYaml 只支持标量 config 字段。
+  const patches: PatchEntry[] = credential?.remotePatches() ?? [];
+
   const provisioned = await provision(transport, {
     sessionId,
-    patches: credential?.remotePatches() ?? [],
+    patches,
     ...(options.nodeVersion ? { nodeVersion: options.nodeVersion } : {}),
     ...(options.dshVersion ? { dshVersion: options.dshVersion } : {}),
     ...(options.refreshMirrors ? { refreshMirrors: true } : {}),
@@ -102,25 +122,47 @@ export async function provisionAndConfigure(
     options.onStageSkip?.(`交接组件安装失败（不影响会话）：${toErrorMessage(error)}`);
   }
 
-  // 5.6 会话接入主机级 profile（必须在远端启动前）：session profile 整体
-  //     symlink 到 host profile + manifest 自愈。dsh 启动时 --profile web
-  //     在 $DSH_HOME/profiles/web/ 找到 symlink，指向主机级共享安装
-  await attachSessionProfile(ctx, sessionId);
+  // 5.6 profile manifest 自愈（必须在远端启动前）。DSH_HOME = base，
+  //     dsh 启动时 --profile web 直接读 base/profiles/web/，
+  //     不再需要会话级 symlink。
   await syncHostProfileManifest(transportIo(transport), paths);
 
-  // 6. settings 双写：本机 settings 整体复制到会话 DSH_HOME + pi-ai 供应商
-  //    路由写进 home patch 层（`$DSH_HOME/cordis.patch.yml`）。文件语义与
-  //    容忍语义（失败不阻断）收口在 wsl-reverse 的 writeTunnelCredentialMirrors
-  //    ——与重连路径（refreshWslReverseOnReconnect）共用同一实现，本处只
-  //    决定「何时写、写哪个端点」。baseURL 的 host 用 secret.reverseHost
-  //    （SSH 恒 127.0.0.1 不变；WSL NAT 为网关 IP）
+  // 6. pi-ai 供应商路由 patch：追加到会话 patch 文件（.runtime/patch.yml）末尾。
+  //    pi-ai 的 patch 结构含 providers 嵌套对象，provisioner 的 renderPatchYaml
+  //    只支持标量 config 字段——所以 pi-ai patch 走独立追加路径，追加到
+  //    provisioner 已写的标量 patch（llm-deepseek/llm-deepseek-account）之后。
+  //    **必须用 >> 追加，不能用 writeRemoteTextFile（覆盖写入）**——后者会
+  //    把 provisioner 写的标量 patch 全部覆盖掉。
+  //    baseURL 的 host 用 secret.reverseHost（SSH 恒 127.0.0.1；WSL NAT 为网关 IP）
   if (secret && localSettings) {
-    await writeTunnelCredentialMirrors(ctx, {
-      sessionId,
-      reversePort: secret.reversePort,
-      reverseHost: secret.reverseHost,
-      localSettings,
-    });
+    const piAiPatch = renderProviderTunnelPatch(localSettings, secret.reversePort, secret.reverseHost);
+    if (piAiPatch !== undefined) {
+      try {
+        const patchFile = paths.sessionPatchFile(sessionId);
+        // 用 printf 追加（>> 重定向），不覆盖 provisioner 已写的标量 patch
+        await transport.exec(`printf '\\n%s' ${quote(piAiPatch)} >> ${quote(patchFile)}`, { allowNonZeroExit: true });
+      } catch (error) {
+        options.onStageSkip?.(`pi-ai 供应商路由写入失败（不影响其他通道）：${toErrorMessage(error)}`);
+      }
+    }
+  }
+
+  // 6.1 机器级 credentials.yaml（`base/.credentials.yaml`，仅本机已登录 DeepSeek 账号时写入）。
+  //     DSH_HOME = base，dsh 的 credentials-local 包从 $DSH_HOME/.credentials.yaml 读取。
+  //     写入占位 grant record 让远端插件认为已登录（契约与幂等语义见
+  //     writePlaceholderAccountCredentials 的函数注释）；真实 token 不出本机。
+  //     机器级共享：所有会话共用同一份，每次连接都重写（同值幂等）。
+  if (secret && accountToken !== undefined) {
+    // issuer 必须与 remotePatches() 中 platform patch 的 platformOrigin 一致——
+    // 隧道代理地址（http://<reverseHost>:<reversePort>，不含路径）
+    const issuer = `http://${secret.reverseHost}:${secret.reversePort}`;
+    try {
+      await writePlaceholderAccountCredentials(ctx, secret.token, issuer);
+      log.info('机器级占位 credentials.yaml 已写入', { hostAlias: options.hostAlias });
+    } catch (error) {
+      // 写失败不阻断会话——account 通道不可用，但 API key 通道不受影响
+      options.onStageSkip?.(`远端占位凭据写入失败（account 通道不可用）：${toErrorMessage(error)}`);
+    }
   }
 
   // 6.5 WSL：反向端点 host 每次连接都重写（NAT 网关随 WSL 重启变化；

@@ -1,10 +1,8 @@
 /**
  * @file provision/remote-paths.ts 单元测试
  * @description 覆盖 createRemotePaths() 的家目录校验、POSIX 拼接不变量，
- *              以及机器级 `.agents`（DSH_AGENTS_HOME 指向）与会话级路径的
- *              归属划分——后者是「agent 能力按机器共享」这一决策的回归护栏：
- *              `.agents` 必须挂在 base 下而非 `sessions/<id>/` 下，否则换个
- *              会话技能就得重装一遍。
+ *              以及机器级 .agents（DSH_AGENTS_HOME 指向）与机器级 DSH_HOME
+ *              和会话级 .runtime 的归属划分。
  *
  * 不覆盖远端读写动作（本模块是纯字符串拼接，无 IO）。
  */
@@ -37,7 +35,27 @@ describe('createRemotePaths', () => {
     });
   });
 
-  // ─── 机器级 .agents（本次决策的核心）───────────────────────
+  // ─── 机器级 DSH_HOME（本次决策的核心）─────────────────────
+  describe('机器级 DSH_HOME', () => {
+    it('dshHome = base（机器级，所有会话共享）', () => {
+      const paths = createRemotePaths(HOME);
+      assert.equal(paths.dshHome, BASE);
+      assert.equal(paths.dshHome, paths.base);
+    });
+
+    it('credentialsFile 在 base 下（机器级共享）', () => {
+      const paths = createRemotePaths(HOME);
+      assert.equal(paths.credentialsFile, `${BASE}/.credentials.yaml`);
+    });
+
+    it('dsh 装在 base/node_modules 下（不按版本分目录）', () => {
+      const paths = createRemotePaths(HOME);
+      assert.equal(paths.dshDir, BASE);
+      assert.equal(paths.dshBin, `${BASE}/node_modules/.bin/dsh`);
+    });
+  });
+
+  // ─── 机器级 .agents ────────────────────────────────────────
   describe('机器级 agent 能力根目录', () => {
     it('agentsHome 落在 base 下，与本机 ~/.agents 同形', () => {
       const paths = createRemotePaths(HOME);
@@ -46,7 +64,6 @@ describe('createRemotePaths', () => {
 
     it('agentsSkills 是 agentsHome 的 skills 子目录', () => {
       const paths = createRemotePaths(HOME);
-      // dsh 的 skill-filesystem 扫 `<agentsHome>/skills`，这层关系不能错
       assert.equal(paths.agentsSkills, `${paths.agentsHome}/skills`);
     });
 
@@ -61,13 +78,6 @@ describe('createRemotePaths', () => {
         assert.ok(!path.includes('/sessions/'), `${path} 不应落在 sessions/ 下`);
       }
     });
-
-    it('agents 路径与任何 sessionId 无关（机器级共享的判据）', () => {
-      const paths = createRemotePaths(HOME);
-      // 同一 paths 实例对不同会话给出同一个 agents 根：共享语义的直接断言
-      assert.equal(paths.sessionHome('aaa') === paths.sessionHome('bbb'), false);
-      assert.equal(paths.agentsHome, `${BASE}/.agents`);
-    });
   });
 
   // ─── 机器级与会话级的归属划分 ───────────────────────────────
@@ -78,16 +88,10 @@ describe('createRemotePaths', () => {
       assert.ok(!paths.hostProfileDir('web').includes('/sessions/'));
     });
 
-    it('会话实例状态仍按会话隔离', () => {
+    it('会话 runtime 状态按会话隔离', () => {
       const paths = createRemotePaths(HOME);
-      assert.equal(paths.sessionHome('s1'), `${BASE}/sessions/s1`);
       assert.equal(paths.sessionRuntime('s1'), `${BASE}/sessions/s1/.runtime`);
-      assert.notEqual(paths.sessionHome('s1'), paths.sessionHome('s2'));
-    });
-
-    it('会话 profile 仍指向会话内路径（其内容是指向 host profile 的 symlink）', () => {
-      const paths = createRemotePaths(HOME);
-      assert.equal(paths.sessionProfile('s1'), `${BASE}/sessions/s1/profiles/web`);
+      assert.notEqual(paths.sessionRuntime('s1'), paths.sessionRuntime('s2'));
     });
   });
 
@@ -96,15 +100,15 @@ describe('createRemotePaths', () => {
     it('所有路径一律用正斜杠（本机可能是 Windows）', () => {
       const paths = createRemotePaths(HOME);
       const all = [
-        paths.base, paths.mirrorCache, paths.npmCache, paths.tmpRoot,
+        paths.base, paths.dshHome, paths.credentialsFile,
+        paths.mirrorCache, paths.npmCache, paths.tmpRoot,
         paths.installLockFile, paths.agentsHome, paths.agentsSkills, paths.agentsLockFile,
         paths.hostProfileDir('web'), paths.hostProfileManifest('web'),
         paths.hostProfileNodeModules('web'),
         paths.nodeDir('v24.21.0'), paths.nodeBin('v24.21.0'), paths.nodeBinDir('v24.21.0'),
-        paths.dshDir('0.2.0'), paths.dshBin('0.2.0'),
-        paths.sessionHome('s1'), paths.sessionProfile('s1'), paths.sessionRuntime('s1'),
+        paths.dshDir, paths.dshBin,
+        paths.sessionRuntime('s1'),
         paths.sessionPidFile('s1'), paths.sessionLogFile('s1'), paths.sessionPatchFile('s1'),
-        paths.sessionSettingsFile('s1'), paths.sessionHomePatchFile('s1'),
         paths.sessionProxyTokenFile('s1'), paths.sessionReversePortFile('s1'),
         paths.sessionReverseHostFile('s1'), paths.sessionOwnerFile('s1'),
         paths.tmpDir(1234, 'node'),
@@ -121,10 +125,13 @@ describe('createRemotePaths', () => {
       for (const path of [
         paths.agentsHome, paths.agentsSkills, paths.agentsLockFile,
         paths.hostProfileDir('web'), paths.nodeDir('v24.21.0'),
-        paths.dshDir('0.2.0'), paths.sessionHome('s1'), paths.tmpDir(1, 'x'),
+        paths.dshBin, paths.credentialsFile,
+        paths.sessionRuntime('s1'), paths.tmpDir(1, 'x'),
       ]) {
         assert.ok(path.startsWith(`${paths.base}/`), `${path} 应在 base 之下`);
       }
+      // dshDir === base 本身（dsh 装在 base/node_modules 下，dshDir 就是 base）
+      assert.equal(paths.dshDir, paths.base);
     });
   });
 });

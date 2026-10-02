@@ -63,8 +63,8 @@ export interface PatchEntry {
 /**
  * 准备会话的 DSH_HOME 与 profile。
  *
- * 幂等：profile 已存在则跳过初始化，但 patch 文件每次都重写——
- * 端口与令牌每次会话都可能变。
+ * DSH_HOME = base（机器级），所有会话共享。profile 在 `base/profiles/web/`，
+ * 不再需要会话级 symlink。patch 文件每次都重写——端口与令牌每次会话都可能变。
  *
  * @param ctx - 远端执行上下文
  * @param options - 选项
@@ -90,19 +90,19 @@ export async function prepareSessionProfile(
 ): Promise<ProfileResult> {
   const { sessionId, dshBin, nodeBinDir, signal } = options;
   const { transport, paths } = ctx;
-  const dshHome = paths.sessionHome(sessionId);
-  const profileDir = paths.sessionProfile(sessionId);
+  const dshHome = paths.dshHome;
+  const profileDir = paths.hostProfileDir(SESSION_PROFILE_NAME);
   const runtimeDir = paths.sessionRuntime(sessionId);
 
-  // 1. 建目录骨架
+  // 1. 建 .runtime 目录骨架（会话级）
   await transport.exec(`mkdir -p ${quote(runtimeDir)}`, {
     ...(signal ? { signal } : {}),
   });
 
-  // 2. 确保 host profile 已初始化（首次连接时用 dsh --dump-config 初始化），
-  //    然后创建 session profile → host profile 的 symlink。
-  const hostProfileDir = paths.hostProfileDir(SESSION_PROFILE_NAME);
-  const hostMarker = `${hostProfileDir}/package.json`;
+  // 2. 确保 host profile 已初始化（首次连接时用 dsh --dump-config 初始化）。
+  //    DSH_HOME = base，dsh 在 base/profiles/web/ 下创建 profile。
+  //    所有会话共享同一份 profile——不再需要会话级 symlink。
+  const hostMarker = paths.hostProfileManifest(SESSION_PROFILE_NAME);
   const hostCheck = await transport.exec(
     `test -f ${quote(hostMarker)} && echo EXISTS || true`,
     { allowNonZeroExit: true, ...(signal ? { signal } : {}) },
@@ -113,10 +113,6 @@ export async function prepareSessionProfile(
     options.onProgress?.('初始化主机级 profile');
     // 用 --dump-config 触发初始化而不真正启动：它会建好 profile 目录后打印
     // 组合结果并退出，是最轻的初始化手段。
-    // DSH_HOME 指向 base（不是 session），让 dsh 在 base/profiles/web/ 下创建 profile。
-    // 不带 --from-default-profile：dsh 0.1.5-rc.3 起内置 profile 禁止作为
-    // from-default-profile 目标（"shipped and cannot be a custom profile
-    // target"），纯 --profile web 即按内置模板初始化（0.1.7-rc.1/rc.2 实测）
     const init = [
       quote(dshBin),
       '--profile', quote(SESSION_PROFILE_NAME),
@@ -151,27 +147,8 @@ export async function prepareSessionProfile(
     }
   }
 
-  // 3. session profile → host profile 的 symlink（幂等）
-  //    dsh 启动时 --profile web 在 $DSH_HOME/profiles/web/ 找到此 symlink
-  const sessionMarker = `${profileDir}/package.json`;
-  const sessionCheck = await transport.exec(
-    `test -L ${quote(profileDir)} && echo SYMLINK || test -f ${quote(sessionMarker)} && echo EXISTS || true`,
-    { allowNonZeroExit: true, ...(signal ? { signal } : {}) },
-  );
-  const reused = sessionCheck.stdout.includes('SYMLINK') || sessionCheck.stdout.includes('EXISTS');
-
-  if (!sessionCheck.stdout.includes('SYMLINK')) {
-    // 老会话遗留的真实 profile 目录或不存在 → 替换为 symlink
-    const parentDir = profileDir.substring(0, profileDir.lastIndexOf('/'));
-    const linkScript = [
-      `mkdir -p ${quote(parentDir)}`,
-      `[ -d ${quote(profileDir)} ] && rm -rf ${quote(profileDir)}`,
-      `ln -sfn ${quote(hostProfileDir)} ${quote(profileDir)}`,
-    ].join('\n');
-    await transport.exec(linkScript, { allowNonZeroExit: true, ...(signal ? { signal } : {}) });
-  }
-
   // 3. 写 patch 文件（每次重写：端口与令牌每次会话都可能变）。
+  //    patch 文件在 sessions/<id>/.runtime/patch.yml，通过 --patch 参数传入。
   //    SFTP 主路径（远端未开 sftp 子系统时自动回退 printf-over-exec）；
   //    严格模式——patch 承载凭据 baseURL 重定向，写失败必须立刻暴露
   let patchFile: string | undefined;
@@ -185,7 +162,7 @@ export async function prepareSessionProfile(
     dshHome,
     profileName: SESSION_PROFILE_NAME,
     ...(patchFile ? { patchFile } : {}),
-    reused,
+    reused: hostExists,
   };
 }
 

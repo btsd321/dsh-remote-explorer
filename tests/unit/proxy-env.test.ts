@@ -37,15 +37,21 @@ after(() => {
 
 describe('collectProxyEnv', () => {
   describe('显式传入', () => {
-    it('六个代理键齐全且值相同', () => {
+    it('八个代理键齐全，NO_PROXY 排除回环', () => {
       setLocalProxy(undefined);
       const env = collectProxyEnv('http://127.0.0.1:18890');
       // sort() 按 ASCII：大写在前；'S'(0x53) < '_'(0x5F) 故 HTTPS_PROXY 排在 HTTP_PROXY 前
       assert.deepEqual(Object.keys(env).sort(), [
-        'ALL_PROXY', 'HTTPS_PROXY', 'HTTP_PROXY', 'all_proxy', 'http_proxy', 'https_proxy',
+        'ALL_PROXY', 'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY',
+        'all_proxy', 'http_proxy', 'https_proxy', 'no_proxy',
       ]);
-      for (const value of Object.values(env)) {
-        assert.equal(value, 'http://127.0.0.1:18890');
+      for (const [key, value] of Object.entries(env)) {
+        // NO_PROXY 是回环排除清单不是代理地址；其余六键值相同
+        if (key === 'NO_PROXY' || key === 'no_proxy') {
+          assert.equal(value, '127.0.0.1,localhost,::1');
+        } else {
+          assert.equal(value, 'http://127.0.0.1:18890');
+        }
       }
     });
 

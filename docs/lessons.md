@@ -101,6 +101,13 @@
 
 **8e. 本机 Node v24.14.0 的 fetch 拒绝一切流式请求体。** ReadableStream / 异步生成器 / `new Request` 实测全抛 `expected non-null body source`（字符串与 Buffer 正常）。所以代理的请求体整体缓冲后转发；流式要紧的响应侧（SSE）保持 pipe 直传。另：ssh2 的通道**不能**直接 `emit('connection')` 喂给 http.Server（缺 `setTimeout` 等 Socket 接口），代理走本机回环 TCP 对接。
 
+**23. DeepSeek 账号通道是三道契约门的串联，缺一道都表现为「没登录」——但各有不同的症状。** dsh 侧（`deepseek-account-platform` 插件）对账号凭据的校验全在**请求侧**而非登录流程，本工具的占位 grant 方案（远端存代理令牌 + 本机代理换真 token）必须同时过三道门：
+
+- **issuer 门**：`Service.init` 校验占位 grant 的 `issuer === platformOrigin`（patch 后即隧道代理地址），不匹配直接删 record。所以占位凭据的 issuer、patch 的 `platformOrigin`、patch 的 `inferenceOrigin` 三者必须同为 `http://<reverseHost>:<reversePort>`（[src/session/open-pipeline/provision.ts](../src/session/open-pipeline/provision.ts) 与 [src/credential/tunnel-proxy.ts](../src/credential/tunnel-proxy.ts) 的 remotePatches）。
+- **inferenceOrigin 门**：`llm-deepseek-account` 适配器每次请求调 `resolveToken(connection.baseURL)`，要求「请求目标 origin === 插件配置的 inferenceOrigin」（默认 `https://api.deepseek.com`）。baseURL 被 patch 指向隧道而不 patch inferenceOrigin 时 origin 不匹配 → resolveToken 返回 undefined → **账号模型从远端模型选择器整组消失**（discoverModels 把 sign-in-required 折叠为空列表）。
+- **认证头门**：账号通道与平台路由**只**带 `x-dsh-auth-token` 头（不带 `authorization`/`x-api-key`）。代理的 extractToken 漏认这个头 → 401 → dsh 把「带 x-dsh-auth-token 却收到 401」判定为账号认证被拒 → 删 record、发退出登录事件 → **运行中任务报「已因退出 DeepSeek 登录而停止」**。三种头（`authorization: Bearer`/`x-api-key`/`x-dsh-auth-token`）都必须认。
+- 附带两条边界事实：① dsh 的账号 UI（头像 pill/登录对话框）只在官方桌面端渲染器注册（`ui-settings-account` 检测 `dshDesktop` 桥），**web 前端一律不渲染**——远端界面没有登录入口是常态不是故障；② dsh 原生支持「SSH `-L` 转发下在远端直接登录」（`loginOrigin` 接受任意转发回环端口），但那是「真实 token 落远端」的路线，与本工具「凭据不出本机」冲突，隧道代理对登录流程的未认证请求（auth_init 无认证头）一律 401——远端登录就该不可达，账号过期在本机重登再重连（重连会重写占位凭据自动恢复登录态）。
+
 ## dsh 插件形态
 
 **12. dsh 插件形态的硬约束（全部实测踩过，改 src/plugin*/ 前必读）。**

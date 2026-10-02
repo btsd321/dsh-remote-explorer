@@ -48,8 +48,12 @@ export interface ProxyRoute {
   upstreamOrigin: string;
   /** 上游路径（prefix 之外的替换目标，可为空串） */
   upstreamPath: string;
-  /** 真实 key 的本机环境变量名 */
-  keyEnv: string;
+  /**
+   * 真实 key 的本机环境变量名。
+   * platform 路由（account token 通道）无 keyEnv——它不走 API key 替换路径，
+   * 而是通过 x-dsh-auth-token 头替换（与 llm-deepseek-account 同款）。
+   */
+  keyEnv?: string;
   /** 展示名 */
   label: string;
 }

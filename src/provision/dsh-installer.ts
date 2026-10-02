@@ -62,7 +62,11 @@ export interface DshInstallResult {
 /**
  * 确保远端有可用的指定版本 dsh。
  *
- * 已装则复用（执行 `dsh --version` 比对，对标 Zed 的做法），未装则安装。
+ * 已装则复用（执行 `dsh --version` 比对），未装则安装。
+ *
+ * dsh 装在 `DSH_HOME`（= base）下的 `node_modules`——参考 dsh 官方安装方式：
+ * 在 `DSH_HOME` 下 `npm install @deepseek-ai/dsh@<version>`，dsh 入口在
+ * `base/node_modules/.bin/dsh`。不再按版本分目录（`versions/dsh-<ver>/`）。
  *
  * @param ctx - 远端执行上下文
  * @param options - 安装选项
@@ -86,8 +90,8 @@ export async function ensureDsh(
 ): Promise<DshInstallResult> {
   const { transport, paths } = ctx;
   const { version, registryUrl, nodeBinDir, signal } = options;
-  const installDir = paths.dshDir(version);
-  const dshBin = paths.dshBin(version);
+  const installDir = paths.dshDir;
+  const dshBin = paths.dshBin;
 
   // 1. 检查是否已装。用 `dsh --version` 而非文件存在性——
   //    半成品安装（node_modules 不完整）会让文件检查误判为可用
@@ -101,12 +105,11 @@ export async function ensureDsh(
     return { version, dshBin, installDir, reused: true };
   }
 
-  // 2. 安装。目录里放一个占位 package.json，让 npm 把依赖装进本目录而不是向上找
+  // 2. 安装。在 DSH_HOME（base）下放一个占位 package.json，让 npm 把依赖装进本目录
   options.onProgress?.(`安装 dsh ${version}（首次约需 1 分钟）`);
   const placeholder = JSON.stringify({ name: 'dsh-remote-explorer-install', private: true });
-  // 整段套 flock：npm 写版本目录是临界区，多人同远端账号并发引导会写竞态
+  // 整段套 flock：npm 写 base 目录是临界区，多人同远端账号并发引导会写竞态
   const install = lockInstallCommand(paths, [
-    `rm -rf ${quote(installDir)}`,
     `mkdir -p ${quote(installDir)}`,
     `cd ${quote(installDir)}`,
     `printf '%s' ${quote(placeholder)} > package.json`,

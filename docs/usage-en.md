@@ -32,7 +32,7 @@ This document provides a detailed walkthrough of every `dsh-remote-explorer` com
 - **Node.js** v20.19+ or v22+ on the local machine (for running tsx).
 - A reachable remote host: either a `Host` entry in `~/.ssh/config`, or an ad-hoc `user@host[:port]` target (IPv6 must go through the config). Authentication supports private keys (`IdentityFile`, overridable with `--private-key`); with no key configured and an interactive terminal, you will be prompted for a password (no echo; kept in memory only, never written to disk). You can also pass `--password <password>` — **this leaks**: the plaintext is visible in the process list and shell history. The CLI prints a warning; treat it as a stopgap.
 - The remote host must be **Linux or macOS** (POSIX). The local client supports Windows, Linux, and macOS.
-- **API keys** for whichever LLM providers you use (e.g. `DEEPSEEK_API_KEY`), set as environment variables in the shell where you run `dsh-remote-explorer connect`.
+- **API keys** for whichever LLM providers you use (e.g. `DEEPSEEK_API_KEY`), set as environment variables in the shell where you run `dsh-remote-explorer connect`; alternatively export nothing and let the **DeepSeek account signed in to your local dsh** supply model credentials (see [DeepSeek account sign-in](#deepseek-account-sign-in-no-api-key) under `connect`).
 
 ## Authentication and host targeting
 
@@ -220,8 +220,18 @@ DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect <alias> --cwd //hom
 **Environment variables:**
 
 - `DEEPSEEK_API_KEY` and other LLM keys: export them in the shell that launches `connect` (export the ones for the providers you use; the list comes from `~/.dsh/settings.yaml`).
-- `DSH_REMOTE_PROXY`: proxy fallback for hosts without direct internet. Installing a GitHub plugin in remote dsh goes over HTTPS (`git ls-remote https://github.com/...`) — **SSH (port 22) working does not mean HTTPS (port 443) works**. When set, the launcher injects `http_proxy`/`https_proxy`/`ALL_PROXY` (both letter cases, six keys) into the remote dsh process, pointing at the proxy port your SSH reverse tunnel exposes on the remote loopback (e.g. `http://127.0.0.1:18890`); dsh passes these through to the `git`/`pnpm` child processes it spawns. Unset injects nothing — machines with direct internet are unaffected.
+- `DSH_REMOTE_PROXY`: proxy fallback for hosts without direct internet. Installing a GitHub plugin in remote dsh goes over HTTPS (`git ls-remote https://github.com/...`) — **SSH (port 22) working does not mean HTTPS (port 443) works**. When set, the launcher injects `http_proxy`/`https_proxy`/`ALL_PROXY` (both letter cases, six keys) plus `no_proxy`/`NO_PROXY` (a loopback exclusion list, so requests to the tunnel proxy never go through the HTTP proxy) — eight keys total — into the remote dsh process, pointing at the proxy port your SSH reverse tunnel exposes on the remote loopback (e.g. `http://127.0.0.1:18890`); dsh passes these through to the `git`/`pnpm` child processes it spawns. Unset injects nothing — machines with direct internet are unaffected.
 - Injection happens **when the remote process starts**: reusing an already-running session does not re-inject; use `--force-restart`. In plugin form, per-host gear-button config takes precedence over this variable (see [Using as a dsh plugin](#using-as-a-dsh-plugin)).
+
+### DeepSeek account sign-in (no API key)
+
+When your local dsh (Desktop or CLI) is signed in to a DeepSeek account, the remote session can use the account models (the "DeepSeek Account" provider in the model picker) **with no extra configuration**:
+
+- **Credential chain**: at connect time the local grant token is read from `$DSH_HOME/.credentials.yaml` (memory only) and a **placeholder** grant record (token = proxy token, issuer = tunnel proxy address) is written to the remote, making the remote dsh consider itself signed in. Model requests travel the reverse tunnel back to the local proxy, which swaps in the real token before forwarding to `api.deepseek.com`. The real token never leaves this machine; the remote disk only ever holds the placeholder.
+- **Account patches**: the session patch redirects both the `llm-deepseek-account` `baseURL` and the `deepseek-account` platform plugin's `platformOrigin`/`inferenceOrigin` into the tunnel — the latter is what makes account models appear in the remote model picker at all.
+- **No avatar or sign-in button in the remote web UI is expected**: dsh's account UI (bottom-left avatar pill, sign-in dialog) only registers in the official Desktop renderer (it detects the `dshDesktop` bridge); web frontends never render it. Judge the account by the model picker and actual conversations — do not look for a login entry in the remote UI. Signing in remotely would store the real token on the remote disk, violating this tool's credentials-never-leave-the-host design, and the tunnel proxy rejects the login flow's unauthenticated requests anyway.
+- **Account expiry**: when the upstream answers 401, the remote signs out (tasks stop with "stopped because DeepSeek sign-in was exited"). Fix: **sign in again in the local dsh, then reconnect** — reconnecting rewrites the placeholder record and restores the signed-in state.
+- Without a local sign-in this channel closes silently: no placeholder record, no account patches, the API-key channel is unaffected.
 
 **Session reuse:** If you run `connect` again with the same alias and `--cwd`, it detects the existing remote dsh process and reuses it. The new CLI gets its own local tunnel port. Multiple CLIs can share one remote session.
 
