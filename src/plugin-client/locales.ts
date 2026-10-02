@@ -26,7 +26,7 @@ export type RemoteExplorerLocaleKey =
   | 'log' | 'logEmpty' | 'connectError' | 'loadError' | 'retry'
   | 'missingKeys'
   | 'advancedJump' | 'advancedEnv' | 'advancedProxy'
-  | 'dlgSave' | 'dlgSaving' | 'dlgCancel' | 'dlgLoading' | 'dlgLoadError' | 'dlgSaveError'
+  | 'dlgSave' | 'dlgSaving' | 'dlgCancel' | 'dlgClose' | 'dlgLoading' | 'dlgLoadError' | 'dlgSaveError'
   | 'envDialogTitle' | 'envDialogHint' | 'envDialogApplyHint'
   | 'envKey' | 'envValue' | 'envAddRow' | 'envRemoveRow' | 'envSkipHint'
   | 'envInvalidKey' | 'envReservedKey' | 'envDuplicateKey' | 'envInvalidValue'
@@ -110,6 +110,7 @@ export const zh: Record<RemoteExplorerLocaleKey, string> = {
   dlgSave: '保存',
   dlgSaving: '保存中…',
   dlgCancel: '取消',
+  dlgClose: '关闭',
   dlgLoading: '加载中…',
   dlgLoadError: '加载失败：',
   dlgSaveError: '保存失败：',
@@ -226,6 +227,7 @@ export const en: Record<RemoteExplorerLocaleKey, string> = {
   dlgSave: 'Save',
   dlgSaving: 'Saving…',
   dlgCancel: 'Cancel',
+  dlgClose: 'Close',
   dlgLoading: 'Loading…',
   dlgLoadError: 'Load failed: ',
   dlgSaveError: 'Save failed: ',

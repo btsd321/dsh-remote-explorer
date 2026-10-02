@@ -161,11 +161,19 @@ export function JumpHostDialog(props: JumpHostDialogProps): ReactNode {
     }
   };
 
-  // ─── config 别名主机：只读视图 ───
+  // ─── config 别名主机：只读视图（无编辑面，关闭是唯一动作——Esc 之外
+  //     必须给显式按钮，否则只读弹窗成了「死胡同」） ───
   if (mode === 'config') {
     const chain = configHost?.jumpChain;
     return (
-      <DialogShell title={`${t('jumpDialogTitle')}：${configHost?.alias ?? ''}`} onClose={onClose}>
+      <DialogShell
+        title={`${t('jumpDialogTitle')}：${configHost?.alias ?? ''}`} onClose={onClose}
+        footer={(
+          <button type="button" style={buttonStyle} onClick={onClose}>
+            {t('dlgClose')}
+          </button>
+        )}
+      >
         <div style={{ fontSize: 12, opacity: 0.7, lineHeight: 1.5 }}>{t('jumpConfigHint')}</div>
         {configHost?.hasProxyJump !== true
           ? <div style={{ opacity: 0.7 }}>{t('jumpNoChain')}</div>
@@ -189,10 +197,17 @@ export function JumpHostDialog(props: JumpHostDialogProps): ReactNode {
     );
   }
 
-  // ─── 未识别主机：提示先选 ───
+  // ─── 未识别主机：提示先选（同样给显式关闭按钮） ───
   if (mode === 'unknown') {
     return (
-      <DialogShell title={t('jumpDialogTitle')} onClose={onClose}>
+      <DialogShell
+        title={t('jumpDialogTitle')} onClose={onClose}
+        footer={(
+          <button type="button" style={buttonStyle} onClick={onClose}>
+            {t('dlgClose')}
+          </button>
+        )}
+      >
         <div style={{ opacity: 0.7 }}>{t('jumpUnknownHost')}</div>
       </DialogShell>
     );
