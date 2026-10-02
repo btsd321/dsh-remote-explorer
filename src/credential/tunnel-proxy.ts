@@ -57,23 +57,26 @@ const PROXY_LOG_PATH = join(homedir(), '.dsh', 'remote-proxy.log');
 const PROXY_LOG_MAX_BYTES = 5 * 1024 * 1024;
 
 /**
- * 把代理的关键事件追加落盘到 `~/.dsh/remote-proxy.log`。
+ * 把代理的失败事件追加落盘到 `~/.dsh/remote-proxy.log`。
  *
  * 动机：console 输出在插件形态跑进 dsh 桌面进程（GUI 无 stdout），CLI 形态
  * 混在会话日志里——代理的失败细节（上游 4xx/5xx、令牌校验失败、本机凭据
  * 缺失）此前对用户完全不可见，远端 dsh 界面只报「(502)」不透传响应体。
  * 文件是第二落点：console 照打（logProxy），失败事件再加一行落盘。
  *
+ * **只记失败分支**（直接导致对话失败且界面看不到原因的场景）：令牌校验
+ * 失败、本机凭据缺失、上游 4xx/5xx、转发异常。成功路径与非失败事件
+ * （代理启动、路由 404 等）不落盘——失败日志才有信号密度。
+ *
  * 纪律与 {@link createLogger} 一致：不落任何凭据值（令牌、key、account
- * token 的内容一律不进 data——只打种类/长度/状态码/路径）。
+ * token 的内容一律不进 data——只打种类/状态码/路径）。
  *
  * 容错：落盘失败静默（诊断手段不能反过来打断代理主流程）。
  *
- * @param level - 级别标签（与 logger 的级别语义一致）
  * @param message - 消息
  * @param data - 附加数据（须只含非敏感字段）
  */
-function proxyDiary(level: 'INFO' | 'WARN' | 'ERROR', message: string, data?: unknown): void {
+function proxyDiary(message: string, data?: unknown): void {
   try {
     try {
       if (statSync(PROXY_LOG_PATH).size > PROXY_LOG_MAX_BYTES) {
@@ -81,7 +84,7 @@ function proxyDiary(level: 'INFO' | 'WARN' | 'ERROR', message: string, data?: un
         rmSync(PROXY_LOG_PATH);
       }
     } catch { /* 文件不存在：首写，无需轮转 */ }
-    const line = `[${new Date().toISOString()}] [${level}] [tunnel-proxy] ${message}`
+    const line = `[${new Date().toISOString()}] [WARN] [tunnel-proxy] ${message}`
       + (data === undefined ? '' : ` ${JSON.stringify(data)}`) + '\n';
     appendFileSync(PROXY_LOG_PATH, line, 'utf8');
   } catch { /* 落盘失败不影响代理 */ }
@@ -342,14 +345,6 @@ export class TunnelProxyCredential implements CredentialStrategy {
       this.server.listen(0, '127.0.0.1');
     });
     this.started = true;
-    // 启动事件落盘：时间轴锚点（后续失败行要能对上「哪次会话的代理」）
-    proxyDiary('INFO', '代理启动', {
-      hostAlias: this.hostAlias,
-      reversePort: this.reversePort,
-      localPort: this.localPort,
-      routes: this.allRoutes.length,
-      accountTokenAvailable: this.accountToken !== undefined,
-    });
   }
 
   /** 停止监听并断开全部对接；幂等 */
@@ -415,7 +410,7 @@ export class TunnelProxyCredential implements CredentialStrategy {
         // 401 时它是否在场直接指向 extractToken 的覆盖面问题
         const headerKinds = AUTH_HEADER_KINDS.filter(kind => req.headers[kind] !== undefined);
         logProxy.warn('令牌校验失败', { path: reqPath, headerKinds });
-        proxyDiary('WARN', '令牌校验失败', { path: reqPath, headerKinds });
+        proxyDiary('令牌校验失败', { path: reqPath, headerKinds });
         res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' });
         res.end('dsh-remote-explorer proxy: invalid proxy token');
         return;
@@ -437,7 +432,6 @@ export class TunnelProxyCredential implements CredentialStrategy {
 
       const route = matchRoute(this.allRoutes, path);
       if (!route) {
-        proxyDiary('WARN', '无匹配的供应商路由', { path, hostAlias: this.hostAlias });
         res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
         res.end(`dsh-remote-explorer proxy: 无匹配的供应商路由（${path}）。`
           + `可用前缀：${this.allRoutes.map(r => r.prefix).join('、')}`);
@@ -457,7 +451,7 @@ export class TunnelProxyCredential implements CredentialStrategy {
       const hasAccountToken = req.headers['x-dsh-auth-token'] !== undefined;
 
       if (hasApiKey && apiKey === undefined) {
-        proxyDiary('WARN', '本机缺少 API key，无法代理该供应商调用', {
+        proxyDiary('本机缺少 API key，无法代理该供应商调用', {
           path: reqPath, route: route.label, keyEnv: route.keyEnv, hostAlias: this.hostAlias,
         });
         res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
@@ -466,7 +460,7 @@ export class TunnelProxyCredential implements CredentialStrategy {
         return;
       }
       if (hasAccountToken && accountToken === undefined) {
-        proxyDiary('WARN', '本机未登录 DeepSeek 账号，账号通道 502', {
+        proxyDiary('本机未登录 DeepSeek 账号，账号通道 502', {
           path: reqPath, hostAlias: this.hostAlias,
         });
         res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
@@ -526,7 +520,7 @@ export class TunnelProxyCredential implements CredentialStrategy {
       if (upstream.status >= 400) {
         logProxy.warn('上游返回错误状态', { path: reqPath, route: route.label, status: upstream.status });
         // 失败细节落盘（401 = 真实凭据被上游拒绝的第一手证据，如账号 token 过期）
-        proxyDiary('WARN', '上游返回错误状态', {
+        proxyDiary('上游返回错误状态', {
           path: reqPath, route: route.label, status: upstream.status, hostAlias: this.hostAlias,
         });
       }
@@ -540,7 +534,7 @@ export class TunnelProxyCredential implements CredentialStrategy {
       }
     } catch (error) {
       // 上游不可达、请求体损坏等都归为网关错误，带上原因链方便诊断
-      proxyDiary('ERROR', '转发失败', {
+      proxyDiary('转发失败', {
         path: (req.url ?? '/').split('?')[0], hostAlias: this.hostAlias,
         reason: describeError(error),
       });
