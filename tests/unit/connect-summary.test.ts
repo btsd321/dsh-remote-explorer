@@ -2,7 +2,8 @@
  * @file plugin/connect-summary.ts 单元测试
  * @description 覆盖 renderConnectSummary() 的行序与渲染纪律：环境变量只打
  *              键名、代理 userinfo 打码、跳板机只打 user@host:port 与认证
- *              途径（不打密码/私钥路径）、私钥覆盖只打有无。
+ *              途径（不打密码/私钥路径）、私钥覆盖只打有无；代理/私钥/跳板
+ *              机三行 SSH 专属（WSL 不渲染占位行）。
  */
 
 import { describe, it } from 'node:test';
@@ -27,10 +28,20 @@ describe('renderConnectSummary', () => {
     assert.ok(lines[0] !== undefined && lines[0].includes('SSH'));
   });
 
-  it('WSL 首行带发行版名，且无跳板机行', () => {
+  it('WSL 首行带发行版名，且无跳板机/代理/私钥覆盖行', () => {
     const lines = renderConnectSummary({ ...BASE, transportType: 'wsl', distroName: 'Ubuntu' });
     assert.ok(lines[0] !== undefined && lines[0].includes('WSL Ubuntu'));
     assert.ok(!lines.some(line => line.includes('跳板机')));
+    // WSL 不支持代理与私钥覆盖：连「未配置/无」占位也不渲染（打了会误导）
+    assert.ok(!lines.some(line => line.includes('代理:')));
+    assert.ok(!lines.some(line => line.includes('私钥覆盖')));
+    // 即使调用方误传了 proxy/privateKey，WSL 下同样不渲染（形态约束兜底）
+    const polluted = renderConnectSummary({
+      ...BASE, transportType: 'wsl', distroName: 'Ubuntu',
+      proxy: 'http://127.0.0.1:18890', privateKey: true,
+    });
+    assert.ok(!polluted.some(line => line.includes('代理:')));
+    assert.ok(!polluted.some(line => line.includes('私钥覆盖')));
   });
 
   it('无跳板机计划时显示「无（直连）」', () => {
@@ -89,10 +100,12 @@ describe('renderConnectSummary', () => {
     assert.ok(plain.some(line => line.includes('代理: http://127.0.0.1:18890')));
   });
 
-  it('未配置的字段有明确占位行', () => {
+  it('未配置的字段有明确占位行（SSH）', () => {
     const lines = renderConnectSummary(BASE);
     assert.ok(lines.some(line => line.includes('环境变量: 未配置')));
     assert.ok(lines.some(line => line.includes('代理: 未配置')));
+    const optionsLine = lines.find(line => line.includes('本地端口:'));
+    assert.ok(optionsLine !== undefined && optionsLine.includes('私钥覆盖: 无'));
   });
 
   it('端口 0 显示 OS 分配，其余选项渲染生效值', () => {
