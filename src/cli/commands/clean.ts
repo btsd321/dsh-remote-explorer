@@ -1,6 +1,7 @@
 /**
  * @file clean 命令
- * @description 清理远端的陈旧资源：无运行进程的会话目录、旧版本 Node 与 dsh。
+ * @description 清理远端的陈旧资源：无运行进程的会话目录、旧版本 Node 与 dsh、
+ *              机器级 agent 能力目录（`.agents`，含已装技能）。
  *
  * 这是「版本入名 + 每会话目录」策略的必要配套——两者都会累积：
  * 每次客户端升级换版本，远端就多一份几百 MB 的安装；每次换工作目录，
@@ -11,12 +12,16 @@
  * 路径，被引用的版本即使旧于保留线也不删——删掉正在运行的安装，
  * 进程下次重启就找不到了。
  *
+ * `.agents` 不参与版本保留（它是单一目录，没有"最新 N 个"），也不按活会话
+ * 保护：技能是可重装资源，且 skill-filesystem 的根缺失属于有效空状态，
+ * 删掉只影响后续发现到的技能，不会打断运行中的会话。
+ *
  * 默认各保留最新 1 个版本；`--keep <N>` 调整。
  */
 
 import { SshTransport } from '../../transport/ssh-transport.js';
 import { probeRemote } from '../../provision/probe.js';
-import { createRemotePaths, BASE_DIR_NAME } from '../../provision/remote-paths.js';
+import { createRemotePaths, BASE_DIR_NAME, type RemotePaths } from '../../provision/remote-paths.js';
 import { ownerFingerprint } from '../../util/owner-fingerprint.js';
 import { formatBytes } from '../../util/format.js';
 import { quote } from '../../util/shell-quote.js';
@@ -57,6 +62,8 @@ interface CleanReport {
   protectedVersions: string[];
   /** 他人指纹的陈旧会话目录（默认跳过） */
   skippedOthers: string[];
+  /** 是否删除了机器级 `.agents` 目录（不存在时 false） */
+  agentsRemoved: boolean;
 }
 
 /**
@@ -70,6 +77,7 @@ export async function runClean(options: CleanCommandOptions): Promise<number> {
 
   println(bold(`清理主机 ${cyan(options.alias)} 的远端资源`));
   println(dim(`保留最新 ${options.keep} 个版本；运行中会话使用的版本受保护`));
+  println(dim('机器级 agent 能力目录（.agents，含已装技能）一并清除'));
   println();
 
   const progress = new ProgressReporter();
@@ -88,7 +96,7 @@ export async function runClean(options: CleanCommandOptions): Promise<number> {
     progress.done();
 
     progress.start('收集保护清单与陈旧资源');
-    const report = await collectAndClean(transport, paths.base, options.keep, options.includeOthers === true);
+    const report = await collectAndClean(transport, paths, options.keep, options.includeOthers === true);
     progress.done();
 
     println();
@@ -109,6 +117,9 @@ export async function runClean(options: CleanCommandOptions): Promise<number> {
     if (report.protectedVersions.length > 0) {
       println(yellow(`受运行中会话保护未删：${report.protectedVersions.join('、')}`));
     }
+    if (report.agentsRemoved) {
+      println(dim('已清除机器级 agent 能力目录（.agents，含已装技能；下次连接重新安装）'));
+    }
     if (report.skippedOthers.length > 0) {
       println(yellow(`跳过 ${report.skippedOthers.length} 个他人会话目录（--include-others 可一并删除）：`
         + `${report.skippedOthers.join('、')}`));
@@ -125,16 +136,18 @@ export async function runClean(options: CleanCommandOptions): Promise<number> {
  * 收集并执行清理。
  *
  * @param transport - 已连接的传输
- * @param baseDir - 远端根目录绝对路径
+ * @param paths - 远端路径集合（唯一真源，含机器级 `.agents`）
  * @param keep - 每个类别保留的版本数
+ * @param includeOthers - 是否连他人的陈旧会话目录一起删
  * @returns 清理报告
  */
 async function collectAndClean(
   transport: SshTransport,
-  baseDir: string,
+  paths: RemotePaths,
   keep: number,
   includeOthers: boolean,
 ): Promise<CleanReport> {
+  const { base: baseDir, agentsHome } = paths;
   const base = quote(baseDir);
   // 会话目录里 pid 文件指向的进程仍在 → 是活会话；其 start.sh 记录着在用的
   // dsh 与 Node 路径，被引用的版本受保护。死会话输出「目录名\t owner 指纹」
@@ -183,6 +196,7 @@ async function collectAndClean(
     freedBytes: 0,
     protectedVersions: [...new Set(protectedVersions)],
     skippedOthers,
+    agentsRemoved: false,
   };
   if (staleSessions.length > 0) {
     const targets = staleSessions.map(name => `${base}/sessions/${quote(name)}`).join(' ');
@@ -199,7 +213,63 @@ async function collectAndClean(
   report.dshVersions = await pruneVersions(transport, `${base}/versions`, 'dsh-', keep, report.protectedVersions, (freed) => { report.freedBytes += freed; });
   report.nodeVersions = await pruneVersions(transport, `${base}/node`, '', keep, report.protectedVersions, (freed) => { report.freedBytes += freed; });
 
+  // 清机器级 agent 能力目录（技能等）。
+  //
+  // 与版本目录不同，这里**没有"保留最新 N 个"的概念**：`.agents` 是单一
+  // 目录，要么留要么删。clean 的契约是「清理远端资源」，用户装的技能属于
+  // 可重装资源，所以一并清除。
+  //
+  // 不按活会话保护：活会话读的是同一个目录，删掉只影响它接下来**发现**
+  // 到的技能（skill-filesystem 的根缺失属于有效空状态，不会让进程崩），
+  // 不会打断运行中的会话。
+  report.agentsRemoved = await removeAgentsHome(transport, agentsHome, (freed) => { report.freedBytes += freed; });
+
   return report;
+}
+
+/**
+ * 机器级 agent 能力目录的清理命令三件套（纯函数，便于单测断言目标路径）。
+ *
+ * 提成纯函数的理由很直接：这里有一条 `rm -rf`。目标路径必须可被测试钉住，
+ * 不能只靠读代码确认它删的是 `.agents` 而不是别的什么。
+ *
+ * @param agentsHome - `.agents` 目录绝对路径
+ * @returns 探测、统计、删除三条命令
+ */
+export function buildAgentsCleanCommands(agentsHome: string): {
+  probe: string;
+  size: string;
+  remove: string;
+} {
+  const target = quote(agentsHome);
+  return {
+    probe: `test -d ${target} && echo EXISTS || true`,
+    size: `du -sk ${target} 2>/dev/null | awk '{print $1+0}'`,
+    remove: `rm -rf ${target}`,
+  };
+}
+
+/**
+ * 删除机器级 agent 能力目录。
+ *
+ * @param transport - 已连接的传输
+ * @param agentsHome - `.agents` 目录绝对路径
+ * @param onFreed - 释放字节数回调
+ * @returns 是否确实删除了目录（不存在时 false）
+ */
+async function removeAgentsHome(
+  transport: SshTransport,
+  agentsHome: string,
+  onFreed: (bytes: number) => void,
+): Promise<boolean> {
+  const commands = buildAgentsCleanCommands(agentsHome);
+  const probe = await transport.exec(commands.probe, { allowNonZeroExit: true });
+  if (!probe.stdout.includes('EXISTS')) return false;
+
+  const size = await transport.exec(commands.size, { allowNonZeroExit: true });
+  onFreed((Number.parseInt(size.stdout.trim(), 10) || 0) * 1024);
+  await transport.exec(commands.remove, { allowNonZeroExit: true });
+  return true;
 }
 
 /**
