@@ -58,7 +58,7 @@ import { allocateRemotePorts } from '../tunnel/port-allocator.js';
 import type { ReverseListener } from '../tunnel/reverse-listener.js';
 import type { LocalForward } from '../tunnel/forward-local.js';
 import { computeSessionId } from '../util/session-id.js';
-import { toErrorMessage } from '../util/errors.js';
+import { RemoteError, toErrorMessage } from '../util/errors.js';
 import type { PasswordProvider } from '../util/password-prompt.js';
 import { probeExistingSession, stopRemoteDsh, type RemoteProcessInfo } from './remote-process.js';
 import { Heartbeat, type HeartbeatResult } from './heartbeat.js';
@@ -501,6 +501,13 @@ export class RemoteSession {
         // 凭据材料保持不变（落盘的令牌与反向端口），占位凭据继续生效
         const exclude = this.credential ? [this.credential.reversePort] : [];
         const [port] = await allocateRemotePorts(next, 1, { exclude });
+        if (port === undefined) {
+          throw new RemoteError(
+            'CONNECT_FAILED',
+            `重连时为主机 ${this.options.hostAlias} 分配远端端口失败`,
+            { hostAlias: this.options.hostAlias },
+          );
+        }
         // 重连重启远端进程时同样注入用户 env（代理等，open() 的同一合并语义）
         // 与 WSL 用户名；不传 stage 回调——重连是后台行为，不向前端重复报
         // 阶段进度（既有语义）
@@ -510,7 +517,7 @@ export class RemoteSession {
             ...(this.options.extraEnv !== undefined ? { extraEnv: this.options.extraEnv } : {}),
             ...(this.options.wslUser !== undefined ? { wslUser: this.options.wslUser } : {}),
           },
-          port!, this.credential,
+          port, this.credential,
         );
       }
 

@@ -28,6 +28,7 @@
 import * as React from 'react';
 import type { ReactNode } from 'react';
 import { desktopBrowser } from './desktop-bridge.js';
+import { overlayTopInset, adaptOverlayRoot } from './overlay-inset.js';
 import { createLogger } from '../util/logger.js';
 
 const log = createLogger('remote-window');
@@ -49,6 +50,12 @@ interface WebViewElement extends HTMLWebViewElement {
   loadURL(url: string): Promise<void>;
   /** 当前 URL */
   getURL(): string;
+}
+
+/** Electron webview 的 will-navigate 事件（Electron 注入，DOM 标准类型没有） */
+interface WillNavigateEvent extends Event {
+  /** 即将导航到的 URL */
+  url?: string;
 }
 
 /** 浮层目标：打开哪条会话 */
@@ -134,8 +141,23 @@ export function RemoteWindowOverlay(props: RemoteWindowOverlayProps): ReactNode 
     let offOpenRequested: (() => void) | undefined;
 
     // ---- body 级容器：最高 z-index 盖住主窗口一切网页内容 ----
+    // 顶部留出宿主 caption 行的带宽：Windows 上是原生窗口按钮（最小化/最大化/关闭，
+    // 由 Electron 画在网页之上）+ 侧栏开关 + 应用/编辑菜单 + 可拖拽区；macOS 上是红绿灯。
+    // 不留这条带的话，浮层从 y=0 铺满整窗，会压住远端页面右上角（Windows）/ 左上角
+    // （macOS）控件，也整条盖住宿主自己的 caption 行导致窗口无法拖动。
+    //
+    // 顶部让位值来自 overlayTopInset：优先吃 dsh 本体发布在根元素上的 CSS 变量
+    // --dsh-frame-chrome-top（语义即 chrome 顶部带宽，且全屏归零）→ 回退 --dsh-frame-top-clearance
+    // → 平台标记硬编码。写成 CSS var() 链而非读 JS 计算值：var() 会随全屏切换自动重算，
+    // JS 读到的是挂载瞬间的快照，用户切全屏就失效。
+    //
+    // **必须用 top 让位，不能用 padding-top**：容器内 webview 与状态层都是
+    // position:absolute;inset:0，绝对定位子元素的包含块是容器的**内边距盒**，padding
+    // 移不动 inset:0 的子元素——加了 padding 顶带，子元素照样顶到 y=0，等于白写。
+    // 移 top 才能把包含盒（含绝对子元素）整体下移。
+    const topInset = overlayTopInset(adaptOverlayRoot(document.documentElement));
     const container = document.createElement('div');
-    container.style.cssText = 'position:fixed;inset:0;z-index:2147483647;'
+    container.style.cssText = `position:fixed;left:0;right:0;bottom:0;top:${topInset};z-index:2147483647;`
       + 'background:var(--dsw-alias-bg-base,#101014);';
     // 状态层（加载/错误/断开中）：不透明、压在 webview 之上（z-index:1），
     // 居中文字；就绪后隐藏让位给 webview。webview 本身全程可见——Electron 的
@@ -232,7 +254,7 @@ export function RemoteWindowOverlay(props: RemoteWindowOverlayProps): ReactNode 
           });
           // 5. handoff「关闭/停止并返回」经 location.href 触发主框架导航，这里截获
           element.addEventListener('will-navigate', (event) => {
-            const url = (event as unknown as { url?: string }).url ?? element.getURL();
+            const url = (event as WillNavigateEvent).url ?? element.getURL();
             handleIntentUrl(url);
           });
           container.appendChild(element);

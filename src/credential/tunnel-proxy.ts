@@ -336,6 +336,8 @@ export class TunnelProxyCredential implements CredentialStrategy {
         // Buffer/字符串可行。代价是大体积请求（如 dsh 文件上传）会整份落在
         // 本机内存——而模型调用的请求体是 KB 级 JSON，不受影响。
         // 流式真正要紧的是响应侧（SSE），那边保持 pipe 直传。
+        // ⚠ 若未来 dsh 经此代理路径传大附件（图片/文档），需评估改为流式
+        // 转发或加体积上限，避免大请求撑爆本机内存。
         const chunks: Buffer[] = [];
         for await (const chunk of req) chunks.push(chunk as Buffer);
         init.body = Buffer.concat(chunks);
@@ -404,8 +406,15 @@ export class TunnelProxyCredential implements CredentialStrategy {
       }
       send(404, { code: 'bad_usage', message: `未知管理操作 ${op}` });
     } catch (error) {
-      // 监督器错误（not_found 等）归 404；其余归 500，消息不含凭据
-      send(404, { code: 'not_found', message: describeError(error) });
+      // 监督器的 not_found 归 404（远端组件按「会话已消失」收敛选中态）；
+      // 其余运行时错误归 500——原来一律 404 会让远端误判非 not_found 错误为会话消失。
+      // 不跨层 import SupervisorError（credential 层不依赖 plugin 层），
+      // 按结构化特征判定：监督器错误带 code 属性且值为 'not_found'
+      if (error instanceof Error && (error as { code?: string }).code === 'not_found') {
+        send(404, { code: 'not_found', message: describeError(error) });
+      } else {
+        send(500, { code: 'internal', message: describeError(error) });
+      }
     }
   }
 
