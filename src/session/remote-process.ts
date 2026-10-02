@@ -136,6 +136,9 @@ export async function startRemoteDsh(
 
   const envAssignments = [
     `DSH_HOME=${quote(options.dshHome)}`,
+    // 会话级 .runtime 目录路径——handoff 宿主半从这里读反向隧道材料
+    // （DSH_HOME = base 是机器级，.runtime 在 sessions/<id>/.runtime/）
+    `DSH_SESSION_RUNTIME=${quote(paths.sessionRuntime(sessionId))}`,
     // agent 能力目录按**机器**共享，不按会话：dsh 的 skill-filesystem 把
     // `<agentsHome>/skills` 当用户级根（rank 500），语义是"这台机器的使用者"，
     // 不是"这一次会话"。早期版本指向 sessions/<id>/agents 换取隔离，代价是

@@ -58,7 +58,7 @@ pnpm run build:plugin && dsh plugin --profile web add /path/to/repo
 
 Restart `dsh web` after installing. The plugin provides three surfaces:
 
-- **"Remote SSH Sessions" global panel in the left navigation**: pick a host, connect in two window modes (enter current tab / open new tab), disconnect, live progress log; the remote window carries a status pill for returning to the manager or closing/stopping the connection
+- **"Remote SSH Sessions" global panel in the left navigation**: pick a host, connect in two window modes (enter current tab / open new tab), disconnect, live progress log; the advanced-options area carries three config dialogs (jump hosts — read-only for ssh-config aliases, editable for user@host direct hosts; environment variables; proxy), all remembered as your last global input and echoed in the per-connection log; the remote window carries a status pill for returning to the manager or closing/stopping the connection
 - **Slash command** `/remote-explorer`: `hosts | connect <alias> [remote-dir] | status | disconnect <alias|session-id> [--keep-remote]`
 - **Agent tools** `remote_hosts_list / remote_connect / remote_status / remote_kill` (behind dsh's regular tool-approval gate)
 
@@ -113,6 +113,7 @@ Remote dsh ──(placeholder token)──▶ Remote 127.0.0.1:<reverse-port>/r/
 ```
 
 - Each provider's real key (`DEEPSEEK_API_KEY`, etc.) **exists only in the local process** — never written to remote disk, never placed in the remote environment. The remote process environment contains proxy tokens (random values).
+- **DeepSeek account sign-in works too**: with a DeepSeek account signed in on your local dsh, the remote session can use the account models with no API key at all. A placeholder grant record (the proxy token) makes the remote dsh consider itself signed in; the real account token stays local and is swapped in by the tunnel proxy per request (`x-dsh-auth-token`). The remote web UI shows no avatar or sign-in button — dsh's account UI is Desktop-renderer-only — judge by the model picker instead; on expiry, sign in again locally and reconnect.
 - **Real key resolution**: reads `process.env` first, falls back to `$DSH_HOME/.credentials.yaml` refs — aligned with dsh's own credential resolution priority. Keys stored via the dsh Models page work automatically without exporting to environment variables.
 - **Provider configuration source**: read precisely per runtime form — Desktop dsh reads `profiles/desktop/cordis.patch.yml`, Web dsh reads `profiles/web/cordis.patch.yml`, CLI reads `$DSH_HOME/settings.yaml`. Configuration is **mirrored** into the remote session (keys like `agent-default-model` are mirrored so the remote default model matches local). Only provider `baseURL` is redirected into the tunnel. **Only configuration is mirrored (credential references, no secrets); `.credentials.yaml` is never mirrored** (it may contain real keys).
 - Missing a provider's key only affects that provider (502 with clear guidance); others continue normally.
@@ -128,7 +129,7 @@ The remote dsh is launched by this tool, so its environment carries no proxy var
 DSH_REMOTE_PROXY=http://127.0.0.1:18890 DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect myhost
 ```
 
-dsh itself passes proxy variables through to the `git`/`pnpm` child processes it spawns, so plugin installs and dependency fetches go through the same proxy. Leaving `DSH_REMOTE_PROXY` unset injects nothing — machines with direct internet are unaffected. In plugin form, per-host custom variables (the gear button on the panel, persisted in `~/.dsh/remote-host-env.json`) take precedence over this fallback.
+dsh itself passes proxy variables through to the `git`/`pnpm` child processes it spawns, so plugin installs and dependency fetches go through the same proxy. Leaving `DSH_REMOTE_PROXY` unset injects nothing — machines with direct internet are unaffected. In plugin form, the advanced-options **Proxy dialog** takes precedence over this fallback (globally remembered last input, persisted in `~/.dsh/remote-advanced.json`).
 
 ## Remote disk isolation
 
@@ -208,7 +209,7 @@ Foundation   hosts/   util/
 | Module | Responsibility |
 |---|---|
 | [src/util/](src/util/) | Shell escaping, error types, interactive password prompt (no echo) |
-| [src/hosts/ssh-config-parser.ts](src/hosts/ssh-config-parser.ts) | **Sole** source of host config: parses ssh config (plus ad-hoc `user@host[:port]`), recursively resolves ProxyJump, applies auth overrides |
+| [src/hosts/ssh-config-parser.ts](src/hosts/ssh-config-parser.ts) | **Sole** source of host config: parses ssh config (plus ad-hoc `user@host[:port]`), recursively resolves ProxyJump, applies auth overrides; also resolves panel-configured jump chains (`resolveJumpChain`) and tells config hosts from direct hosts (`isConfigHost`) |
 | [src/transport/types.ts](src/transport/types.ts) | Transport abstraction (SSH and WSL implementations) |
 | [src/transport/ssh-transport.ts](src/transport/ssh-transport.ts) | ssh2 implementation: jump host chains, command execution, SFTP, forward/reverse forwarding, password auth (retries on rejection, up to 3) |
 | [src/transport/wsl-transport.ts](src/transport/wsl-transport.ts) | WSL distro transport: command execution and detached launch via wsl.exe |
@@ -230,6 +231,8 @@ Foundation   hosts/   util/
 | [src/tunnel/forward-local.ts](src/tunnel/forward-local.ts) | Forward tunneling, **listener survives reconnection** |
 | [src/tunnel/reverse-listener.ts](src/tunnel/reverse-listener.ts) | Windows-side reverse listener: **bind-first allocation**, ghost-port candidate retry, OS-assigned port when the whole range is silently held |
 | [src/session/remote-process.ts](src/session/remote-process.ts) | Remote dsh detach launch, token capture, safe shutdown |
+| [src/session/transport/factory.ts](src/session/transport/factory.ts) | Transport instantiation + **jump-host plan** (`planJumpHosts`: config alias → config ProxyJump, direct host → panel entries) — the single routing rule shared by open/reconnect and the connect log |
+| [src/session/options.ts](src/session/options.ts) | Open/close option contract (auth overrides, extra env, proxy, jump entries — passwords memory-only) |
 | [src/session/lifecycle-state.ts](src/session/lifecycle-state.ts) | Session state machine, pure functions |
 | [src/session/heartbeat.ts](src/session/heartbeat.ts) | Heartbeat: process + port + HTTP application-level, single command |
 | [src/session/reconnect.ts](src/session/reconnect.ts) | Bounded exponential backoff |
@@ -237,12 +240,14 @@ Foundation   hosts/   util/
 | [src/session/session-manager.ts](src/session/session-manager.ts) | Session orchestration: lifecycle, heartbeat, reconnect, close; open flow split into open-pipeline |
 | [src/session/open-pipeline/](src/session/open-pipeline/) | Open flow in four stages: prepare / probe / provision / tunnels (with the transport factory) |
 | [src/session/wsl-reverse.ts](src/session/wsl-reverse.ts) | WSL reverse-channel orchestration: networking-mode detection, gateway refresh on reconnect, reverse-link self-check |
-| [src/credential/tunnel-proxy.ts](src/credential/tunnel-proxy.ts) | Reverse tunnel LLM proxy (multi-provider routing), injects real keys |
+| [src/credential/tunnel-proxy.ts](src/credential/tunnel-proxy.ts) | Reverse tunnel LLM proxy (multi-provider routing), injects real keys; account channel swaps the `x-dsh-auth-token` header for the real DeepSeek account token |
 | [src/credential/provider-routes.ts](src/credential/provider-routes.ts) | Extract provider routes from local config (settings.yaml / profile patch), produce remote mirror |
-| [src/credential/local-credentials.ts](src/credential/local-credentials.ts) | Read local `.credentials.yaml` refs as env-var credential fallback |
+| [src/credential/local-credentials.ts](src/credential/local-credentials.ts) | Read local `.credentials.yaml` refs as env-var credential fallback, plus the DeepSeek account grant token (account channel) |
 | [src/credential/token.ts](src/credential/token.ts) | Proxy token: generation and constant-time comparison |
-| [src/credential/proxy-secret.ts](src/credential/proxy-secret.ts) | Credential material I/O: session-scoped token and reverse port persisted on remote |
+| [src/credential/proxy-secret.ts](src/credential/proxy-secret.ts) | Credential material I/O: session-scoped token, reverse port, machine-level placeholder account credentials |
 | [src/handoff/](src/handoff/) | Remote-window handoff: host half (bundle inside remote dsh) + browser half (status pill and management menu) |
+| [src/plugin/](src/plugin/) | Plugin host half: session supervisor (booking + bounded log buffer), `/api` routes, advanced-options global store (last input, 0600), connect-option summary log |
+| [src/plugin-client/](src/plugin-client/) | Browser half: SSH/WSL panels, connect form with the three advanced-option dialogs (jump hosts / env vars / proxy), session polling, desktop floating window |
 | [src/cli/](src/cli/) | Command dispatch, argument parsing, terminal output, per-command auth wiring |
 
 ## Development

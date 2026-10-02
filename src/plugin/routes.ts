@@ -20,11 +20,13 @@
 import type { Context } from '@deepseek-ai/cordis';
 // 仅为激活 ctx.connection 的模块类型增广（HostConnectionHandle），不产生运行时代码
 import type {} from '@deepseek-ai/dsh-client-connection';
-import { listHosts, refreshConfig } from '../hosts/ssh-config-parser.js';
+import { listHosts, refreshConfig, type JumpEntry } from '../hosts/ssh-config-parser.js';
 import { listWslDistros, refreshWslCache } from '../hosts/wsl-distro-parser.js';
 import { toErrorMessage } from '../util/errors.js';
 import { SessionSupervisor, SupervisorError, type ConnectRequest, type SessionSnapshot } from './supervisor.js';
-import { readHostEnv, validateHostEnv, writeHostEnv } from './host-env-store.js';
+import {
+  readAdvancedConfig, validateAdvancedConfig, writeAdvancedConfig, type AdvancedConfig,
+} from './advanced-store.js';
 
 /**
  * 构建期注入的包版本号（scripts/build-plugin.ts 的 esbuild define）。
@@ -134,45 +136,66 @@ function buildRoutes(supervisor: SessionSupervisor): RouteDef[] {
       },
     },
     {
-      // per-host 环境变量（面板齿轮配置，本机 ~/.dsh/remote-host-env.json）：
-      // GET ?hostAlias=X 读回；POST {hostAlias, env} 整组保存。
-      // 值可能含代理认证信息——读写两侧都只打键名不打值
-      path: `${ROUTE_PREFIX}/host-env`,
+      // 高级选项全局配置（连接表单三弹窗的「上一次输入」，本机
+      // ~/.dsh/remote-advanced.json，全局单条不按主机区分）：
+      // GET 读回 {env, proxy?, jumpHosts?}；POST 部分更新——**缺省字段保持
+      // 原值**（三个弹窗各管一个字段，互不清除对方），显式空值 = 清除该字段
+      // （env 空对象 / proxy 空串 / jumpHosts 空数组）。
+      // 值可能含代理认证信息——读写两侧都只打键名/字段名不打值
+      path: `${ROUTE_PREFIX}/advanced`,
       methods: ['GET', 'POST'],
       fetch: async (request) => {
         try {
           if (request.method === 'GET') {
-            const hostAlias = new URL(request.url).searchParams.get('hostAlias') ?? '';
-            if (hostAlias === '') {
-              return Response.json({ code: 'bad_usage', message: '缺少 hostAlias 参数' }, { status: 400 });
-            }
-            return Response.json({ env: readHostEnv(hostAlias) });
+            return Response.json(readAdvancedConfig());
           }
           const body = await readJsonBody(request);
-          const hostAlias = stringField(body, 'hostAlias');
-          if (hostAlias === undefined) {
-            return Response.json({ code: 'bad_usage', message: '缺少 hostAlias 字段' }, { status: 400 });
-          }
-          // 形状收窄：env 必须是对象且键值都是 string（语义校验交给 validateHostEnv）
+          // 形状收窄：env 必须是对象且键值都是 string（语义校验交给 validateAdvancedConfig）
           const envRaw: unknown = body.env;
-          if (typeof envRaw !== 'object' || envRaw === null || Array.isArray(envRaw)) {
+          if (envRaw !== undefined
+            && (typeof envRaw !== 'object' || envRaw === null || Array.isArray(envRaw))) {
             return Response.json({ code: 'bad_usage', message: 'env 必须是对象' }, { status: 400 });
           }
           const env: Record<string, string> = {};
-          for (const [key, value] of Object.entries(envRaw)) {
-            if (typeof value !== 'string') {
-              return Response.json(
-                { code: 'bad_usage', message: `env['${key}'] 的值必须是字符串` },
-                { status: 400 },
-              );
+          if (envRaw !== undefined) {
+            for (const [key, value] of Object.entries(envRaw as Record<string, unknown>)) {
+              if (typeof value !== 'string') {
+                return Response.json(
+                  { code: 'bad_usage', message: `env['${key}'] 的值必须是字符串` },
+                  { status: 400 },
+                );
+              }
+              env[key] = value;
             }
-            env[key] = value;
           }
-          const validation = validateHostEnv(env);
+          // proxy/jumpHosts 可选；类型不对返回 400。jumpHosts 是落盘子集
+          // （target + identityFile），带 password 字段的条目会被
+          // validateAdvancedConfig 拒绝——密码只经连接请求内存传递
+          const proxyRaw: unknown = body.proxy;
+          if (proxyRaw !== undefined && typeof proxyRaw !== 'string') {
+            return Response.json({ code: 'bad_usage', message: 'proxy 必须是字符串' }, { status: 400 });
+          }
+          const jumpRaw: unknown = body.jumpHosts;
+          if (jumpRaw !== undefined
+            && (!Array.isArray(jumpRaw)
+              || jumpRaw.some(item => typeof item !== 'object' || item === null || Array.isArray(item)))) {
+            return Response.json(
+              { code: 'bad_usage', message: 'jumpHosts 必须是对象数组（每条含 target 字段）' },
+              { status: 400 },
+            );
+          }
+          // 部分更新合并：缺省字段沿用当前存储值；显式空值（'' / []）按清除
+          const current = readAdvancedConfig();
+          const merged: AdvancedConfig = {
+            env: envRaw !== undefined ? env : current.env,
+            ...(proxyRaw !== undefined && proxyRaw !== '' ? { proxy: proxyRaw } : {}),
+            ...(jumpRaw !== undefined && jumpRaw.length > 0 ? { jumpHosts: jumpRaw } : {}),
+          };
+          const validation = validateAdvancedConfig(merged);
           if (validation !== undefined) {
             return Response.json({ code: 'bad_usage', message: validation }, { status: 400 });
           }
-          writeHostEnv(hostAlias, env);
+          writeAdvancedConfig(merged);
           return Response.json({ ok: true });
         } catch (error) {
           return supervisorError(error);
@@ -222,6 +245,12 @@ function buildRoutes(supervisor: SessionSupervisor): RouteDef[] {
             ...(booleanField(body, 'refreshMirrors') !== undefined ? { refreshMirrors: booleanField(body, 'refreshMirrors') } : {}),
             ...(stringField(body, 'nodeVersion') !== undefined ? { nodeVersion: stringField(body, 'nodeVersion') } : {}),
             ...(stringField(body, 'dshVersion') !== undefined ? { dshVersion: stringField(body, 'dshVersion') } : {}),
+            // 跳板机条目（面板跳板机弹窗保存后的完整快照；含内存态密码，
+            // 绝不落盘——advanced store 只持久化 target/identityFile 子集）。
+            // 深校验（条目可解析性）由连接时的 resolveJumpChain 负责
+            ...(parseJumpEntries(body.jumpHosts) !== undefined
+              ? { jumpHosts: parseJumpEntries(body.jumpHosts) }
+              : {}),
             // 管理页 origin：面板带 location.origin，供远端 handoff 组件
             // 渲染「返回/关闭并返回」动作；CLI/命令发起不带，远端菜单只读
             ...(stringField(body, 'managerUrl') !== undefined ? { managerUrl: stringField(body, 'managerUrl') } : {}),
@@ -317,6 +346,35 @@ function numberField(body: Record<string, unknown>, key: string): number | undef
 function booleanField(body: Record<string, unknown>, key: string): boolean | undefined {
   const value = body[key];
   return typeof value === 'boolean' ? value : undefined;
+}
+
+/**
+ * 解析 /connect 请求的跳板机条目（完整快照：target + 可选认证覆盖，含
+ * 内存态密码）。形状不对返回 undefined（视为未携带，不报错——面板之外
+ * 的入口本就不带）；深校验（条目可解析性）由连接时的 resolveJumpChain
+ * 负责，坏条目以带定位的连接错误暴露。
+ *
+ * @param raw - 请求体的 jumpHosts 字段（unknown）
+ * @returns 合法形状的条目数组；字段缺失或形状不对时 undefined
+ */
+function parseJumpEntries(raw: unknown): JumpEntry[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const entries: JumpEntry[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) return undefined;
+    const record = item as Record<string, unknown>;
+    if (typeof record.target !== 'string' || record.target === '') return undefined;
+    if (record.identityFile !== undefined && typeof record.identityFile !== 'string') return undefined;
+    if (record.password !== undefined && typeof record.password !== 'string') return undefined;
+    entries.push({
+      target: record.target,
+      ...(record.identityFile !== undefined && record.identityFile !== ''
+        ? { identityFile: record.identityFile } : {}),
+      ...(record.password !== undefined && record.password !== ''
+        ? { password: record.password } : {}),
+    });
+  }
+  return entries;
 }
 
 /**

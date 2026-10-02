@@ -81,11 +81,11 @@
 
 ## 环境变量注入
 
-**16. 远端 dsh 的代理与用户 env 是三层合并，env 键名是命令注入面。** SSH(22) 通 ≠ HTTPS(443) 通：dsh 装 `github:` 插件前用 `git ls-remote https://github.com/...` 探测连通性（探测默认 5 秒超时），无公网主机裸连必超时；dsh 的 `scrubbedParentEnv` 会保留代理变量并注入 `NODE_USE_ENV_PROXY=1`，链路本身完好，缺的只是「dsh 进程自己的环境里有代理变量」——由 `startRemoteDsh` 的 extraEnv 口注入，合并优先级**凭据占位 > per-host 用户 env > `DSH_REMOTE_PROXY` 兜底**（[src/session/proxy-env.ts](../src/session/proxy-env.ts)）。凭据键（`DEEPSEEK_API_KEY` 等）必须最后合并，被用户 env 挤掉会导致远端报 `MISSING_CREDENTIAL`、代理根本收不到请求。三条硬约束：
+**16. 远端 dsh 的代理与用户 env 是四层合并，env 键名是命令注入面。** SSH(22) 通 ≠ HTTPS(443) 通：dsh 装 `github:` 插件前用 `git ls-remote https://github.com/...` 探测连通性（探测默认 5 秒超时），无公网主机裸连必超时；dsh 的 `scrubbedParentEnv` 会保留代理变量并注入 `NODE_USE_ENV_PROXY=1`，链路本身完好，缺的只是「dsh 进程自己的环境里有代理变量」——由 `startRemoteDsh` 的 extraEnv 口注入，合并优先级**凭据占位 > 用户 env（环境变量弹窗）> 面板代理（代理弹窗，`collectProxyEnv(explicit)`）> `DSH_REMOTE_PROXY` 兜底**（[src/session/proxy-env.ts](../src/session/proxy-env.ts)）。凭据键（`DEEPSEEK_API_KEY` 等）必须最后合并，被用户 env 挤掉会导致远端报 `MISSING_CREDENTIAL`、代理根本收不到请求。三条硬约束：
 
 - **env 键名不经 `quote()` 直接插值进启动命令**（remote-process.ts 的 `envAssignments` 是 `${key}=${quote(value)}`，只有值有转义）——用户 env 键名必须过 `/^[A-Za-z_][A-Za-z0-9_]*$/`，写入（路由+store 双拦截）、读取（防手工编辑文件）、launch（session 层最后防线）三处校验（`assertSafeEnvKeys`）；保留键 `DSH_HOME`/`DSH_AGENTS_HOME`/`PATH` 禁止用户配置——前两个在 envAssignments 里**先于** extraEnv 赋值，用户值会覆盖远端落盘隔离契约（见第 11 条），PATH 由启动器管理。校验集合单一来源在 session 层（plugin 层向下 import，不许反向）
 - **注入只发生在启动远端进程时**：`probeExistingSession` 命中复用不补注入（与凭据占位同语义），要生效用 forceRestart；重连重启路径（reconnectOnce → launch）同样透传 extraEnv
-- per-host 配置（面板齿轮）落盘 `~/.dsh/remote-host-env.json`（原子写、0o600——值可能含代理认证信息，Windows 上 mode 位无效靠目录 ACL）；日志与错误消息**只打键名不打值**；路由 `GET/POST /api/dsh-remote-explorer/host-env` 走 connection 已鉴权通道
+- 全局高级选项（三弹窗的「上一次输入」）落盘 `~/.dsh/remote-advanced.json`（原子写、0o600——值可能含代理认证信息，Windows 上 mode 位无效靠目录 ACL）；日志与错误消息**只打键名/字段名不打值**；路由 `GET/POST /api/dsh-remote-explorer/advanced` 走 connection 已鉴权通道，POST 是部分更新语义（缺省字段保持原值——三个弹窗各管一个字段互不清除对方，教训见第 24 条）
 
 ## 凭据与安全
 
@@ -100,6 +100,21 @@
 - 代理实例（本机回环 http.Server）与正向监听器一样**跨重连存活**，重连只重挂 `forwardIn`。多视图共享会话时反向端口先到先得，挂不上是警告不是错误。
 
 **8e. 本机 Node v24.14.0 的 fetch 拒绝一切流式请求体。** ReadableStream / 异步生成器 / `new Request` 实测全抛 `expected non-null body source`（字符串与 Buffer 正常）。所以代理的请求体整体缓冲后转发；流式要紧的响应侧（SSE）保持 pipe 直传。另：ssh2 的通道**不能**直接 `emit('connection')` 喂给 http.Server（缺 `setTimeout` 等 Socket 接口），代理走本机回环 TCP 对接。
+
+**23. DeepSeek 账号通道是三道契约门的串联，缺一道都表现为「没登录」——但各有不同的症状。** dsh 侧（`deepseek-account-platform` 插件）对账号凭据的校验全在**请求侧**而非登录流程，本工具的占位 grant 方案（远端存代理令牌 + 本机代理换真 token）必须同时过三道门：
+
+- **issuer 门**：`Service.init` 校验占位 grant 的 `issuer === platformOrigin`（patch 后即隧道代理地址），不匹配直接删 record。所以占位凭据的 issuer、patch 的 `platformOrigin`、patch 的 `inferenceOrigin` 三者必须同为 `http://<reverseHost>:<reversePort>`（[src/session/open-pipeline/provision.ts](../src/session/open-pipeline/provision.ts) 与 [src/credential/tunnel-proxy.ts](../src/credential/tunnel-proxy.ts) 的 remotePatches）。
+- **inferenceOrigin 门**：`llm-deepseek-account` 适配器每次请求调 `resolveToken(connection.baseURL)`，要求「请求目标 origin === 插件配置的 inferenceOrigin」（默认 `https://api.deepseek.com`）。baseURL 被 patch 指向隧道而不 patch inferenceOrigin 时 origin 不匹配 → resolveToken 返回 undefined → **账号模型从远端模型选择器整组消失**（discoverModels 把 sign-in-required 折叠为空列表）。
+- **认证头门**：账号通道与平台路由**只**带 `x-dsh-auth-token` 头（不带 `authorization`/`x-api-key`）。代理的 extractToken 漏认这个头 → 401 → dsh 把「带 x-dsh-auth-token 却收到 401」判定为账号认证被拒 → 删 record、发退出登录事件 → **运行中任务报「已因退出 DeepSeek 登录而停止」**。三种头（`authorization: Bearer`/`x-api-key`/`x-dsh-auth-token`）都必须认。
+- 附带两条边界事实：① dsh 的账号 UI（头像 pill/登录对话框）只在官方桌面端渲染器注册（`ui-settings-account` 检测 `dshDesktop` 桥），**web 前端一律不渲染**——远端界面没有登录入口是常态不是故障；② dsh 原生支持「SSH `-L` 转发下在远端直接登录」（`loginOrigin` 接受任意转发回环端口），但那是「真实 token 落远端」的路线，与本工具「凭据不出本机」冲突，隧道代理对登录流程的未认证请求（auth_init 无认证头）一律 401——远端登录就该不可达，账号过期在本机重登再重连（重连会重写占位凭据自动恢复登录态）。
+
+**24. 高级选项的持久化语义从 per-host 改为全局「上一次输入」，密码绝不落盘；三弹窗共写一份存储必须用部分更新。** 0.9.0 的设计拍板与依据：
+
+- **全局单条取代 per-host**（`~/.dsh/remote-advanced.json`，取代 `remote-host-env.json` 的按主机索引）：用户诉求是「换主机沿用同一份」，per-host 索引反而要求逐主机重配。代价是丢了按主机隔离——但 env/代理这类注入项本就是用户级偏好，与主机绑定的收益撑不起维护成本。旧文件**不读不迁不删**（留置由用户处置）。
+- **连接密码与跳板机密码一律不落盘**：密码只随 /connect 请求存在于进程内存（ConnectRequest → ResolvedHost.password → 传输层认证），界面掩码输入、连接尝试后清引用、日志只打「密码：有」。跳板条目的持久化子集只有 target+identityFile（私钥路径不是秘密本体）；advanced-store 写侧对带 password 的条目**显式拒绝**（程序性错误要在 400 暴露，静默剔除会掩盖 bug），读侧先剥再验（手工编辑塞进文件的密码丢弃但保留条目）。
+- **部分更新是必须的，不是优化**：三弹窗（env/proxy/jump）共写一份单条存储，POST 若按「缺省=清除」语义，任一弹窗保存都会清掉另两个弹窗的字段（实现期真实踩到，env 弹窗保存即清空代理）。改为路由层合并：缺省字段沿用当前存储值，显式空值（`env:{}` / `proxy:''` / `jumpHosts:[]`）才是清除。
+- **跳板机分流唯一落点在 `session/transport/factory.ts` 的 `planJumpHosts`**：config 别名主机 → config 的 ProxyJump（面板只读 + 提示改 config）；user@host 直连 → 面板条目链（`resolveJumpChain` 逐条 resolveHost 递归展平，条目级 identityFile/password 只落到该条目的链尾）。连接日志（connect-summary）也调它做只读展示，两个消费面共享同一份规则不漂移。
+- **连接日志的渲染纪律**收口在纯函数 [connect-summary.ts](../src/plugin/connect-summary.ts)（可单测）：env 只打键名、代理 userinfo 打码、跳板机只打 `user@host:port` 与认证途径（私钥/密码/交互）、私钥覆盖只打有无——双落到面板日志缓冲与宿主进程日志。
 
 ## dsh 插件形态
 

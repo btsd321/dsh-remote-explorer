@@ -2,26 +2,33 @@
  * @file 远端路径规则
  * @description 本工具在远端创建的所有路径的**唯一真源**。任何模块都不得自己拼远端路径。
  *
- * 布局设计依据（Zed 与 VS Code 一致的做法）：
+ * 布局设计依据（参考 dsh 官方 `~/.dsh` 结构 + Zed/VS Code 的远端隔离模型）：
  *
- * - **安装按版本入名，多版本并存。** Zed 的远端二进制名形如
- *   `zed-remote-server-<通道>-<版本>`，存在性检查是直接执行 `<binary> version`
- *   成功即复用；VS Code 按 commit 分目录（`~/.vscode-server/bin/<commit>/`）。
- *   这样客户端升级时新旧版本自然隔离，不需要原地覆盖——而原地覆盖正是
- *   "运行中的进程占着文件，写入报 Text file busy" 这类故障的根因。
+ * - **DSH_HOME = base（机器级）。** 参考 dsh 官方：`DSH_HOME` 默认 `~/.dsh`，所有
+ *   用户数据（profiles、sessions、storages、credentials.yaml）在一个根下。本工具
+ *   把 `DSH_HOME` 设为 `base`（`~/.dsh-remote-explorer/btsd321/`），所有会话共享
+ *   同一个 `DSH_HOME`。会话隔离通过 `--patch` 参数（每个会话独立的 patch 文件）和
+ *   `sessions/<id>/.runtime/`（pid/log/token 等运行时状态）实现，不靠拆 `DSH_HOME`。
  *
- * - **会话状态与安装分离。** 安装在 `versions/` 下共享，每个会话有独立的
- *   `DSH_HOME`。这条之所以成立，是因为 dsh 的模块解析是双锚的——bundle 名先从
- *   dsh 安装位置解析、再从 profile 目录解析，所以"装在哪"与"DSH_HOME 指向哪"
- *   彼此解耦（P0 已实测）。
+ * - **dsh 装到 DSH_HOME 下的 node_modules。** 不再按版本分目录（`versions/dsh-<ver>/`），
+ *   而是直接在 `base/` 下 `npm install @deepseek-ai/dsh@<version>`——dsh 入口在
+ *   `base/node_modules/.bin/dsh`。升级时 npm 自己处理覆盖，版本检查仍用
+ *   `dsh --version` 比对（与之前一致）。
  *
- * - **能力与实例分离。** 插件（`profiles/`）与 agent 能力（`.agents/`）是
- *   机器级共享的，只有会话实例（历史、storages、cache、.runtime）落在
- *   `sessions/<id>/` 下。判据是 dsh 对该目录的语义：`<agentsHome>/skills` 是
- *   **用户级**源（rank 500），代表"这台机器的使用者"，不是"这一次会话"。
- *   会话级的 DSH_HOME 只用来承载实例状态，不用来承载配置。
+ * - **credentials.yaml 机器级共享。** 在 `base/.credentials.yaml`，所有会话共享
+ *   同一份占位 grant record。dsh 的 `credentials-local` 包从 `$DSH_HOME/.credentials.yaml`
+ *   读取——`DSH_HOME` 是 `base`，所以 credentials.yaml 天然在机器级。
  *
- * - **临时目录带 pid。** 同样来自 Zed（`download-<pid>-<文件名>`），避免并发安装撞车。
+ * - **runtime 状态会话隔离。** pid/log/token/reverse-port/reverse-host/owner 仍在
+ *   `sessions/<id>/.runtime/` 下——每个会话有独立的端口和进程，必须隔离。
+ *
+ * - **patch 文件会话隔离。** 每个会话的 patch（含凭据 baseURL 重定向 + pi-ai 供应商
+ *   路由）在 `sessions/<id>/.runtime/patch.yml`，通过 `--patch` 参数传入。
+ *
+ * - **能力与实例分离。** 插件（`profiles/`）与 agent 能力（`.agents/`）是机器级共享，
+ *   只有会话实例（.runtime）落在 `sessions/<id>/` 下。
+ *
+ * - **临时目录带 pid。** 来自 Zed（`download-<pid>-<文件名>`），避免并发安装撞车。
  *
  * 跨平台约束：远端一定是 POSIX，本机可能是 Windows。所以远端路径**一律用 `/`
  * 字符串拼接**，绝不能用 `node:path` 的 `join`——那在 Windows 上会产出反斜杠。
@@ -59,8 +66,24 @@ export const BASE_DIR_NAME = '.dsh-remote-explorer/btsd321';
  * 因为 `~` 在非交互 shell 下的展开行为不可依赖。
  */
 export interface RemotePaths {
-  /** 根目录绝对路径，如 `/home/user/.dsh-remote-explorer/btsd321` */
+  /** 根目录绝对路径，如 `/home/user/.dsh-remote-explorer/btsd321`。同时也是 DSH_HOME */
   readonly base: string;
+  /**
+   * DSH_HOME 目录（= base）。远端 dsh 进程的 `DSH_HOME` 环境变量指向此目录。
+   *
+   * 参考 dsh 官方 `~/.dsh` 结构：所有用户数据在一个根下。所有会话共享同一
+   * `DSH_HOME`——profile、credentials.yaml 机器级共享，会话隔离靠 `--patch`
+   * 参数和 `sessions/<id>/.runtime/`。
+   */
+  readonly dshHome: string;
+  /**
+   * 机器级 credentials.yaml（`base/.credentials.yaml`）。
+   *
+   * dsh 的 `credentials-local` 包从 `$DSH_HOME/.credentials.yaml` 读取——
+   * `DSH_HOME` 是 `base`，所以此文件天然在机器级。所有会话共享同一份占位
+   * grant record。
+   */
+  readonly credentialsFile: string;
   /** 镜像测速缓存文件 */
   readonly mirrorCache: string;
   /**
@@ -75,7 +98,7 @@ export interface RemotePaths {
   /**
    * 引导安装临界区锁文件（flock）。
    *
-   * 多人同远端账号并发引导时串起版本目录的写临界区，见 install-lock.ts。
+   * 多人同远端账号并发引导时串起 base 目录的写临界区，见 install-lock.ts。
    */
   readonly installLockFile: string;
   /**
@@ -83,10 +106,7 @@ export interface RemotePaths {
    *
    * 与本机 `~/.agents` 同形，刻意不放在会话目录下：dsh 的
    * skill-filesystem 把 `<agentsHome>/skills` 当作**用户级**根（rank 500），
-   * 语义上属于「这台机器的使用者」而非「这一次会话」。早期版本指向
-   * `sessions/<id>/agents` 换取隔离，代价是同一台远端换个会话就要重装一遍
-   * 技能——与 opencode / Claude Code 的单一用户级根模型相悖，也与本目录下
-   * node、dsh、host profile 早已全账号共享的粒度不一致。
+   * 语义上属于「这台机器的使用者」而非「这一次会话」。
    *
    * 共享边界 = 远端账号：本工具的根目录就在该账号家目录下，持有该账号者
    * 本就共享这棵树里的一切。不按本机指纹分桶。
@@ -111,8 +131,8 @@ export interface RemotePaths {
   /**
    * 主机级共享 profile 目录（dsh 官方 `$DSH_HOME/profiles/<name>/` 结构）。
    *
-   * 插件安装/卸载的唯一真源。所有会话通过 symlink 共享同一份安装，
-   * 与 dsh 官方 plugin-manager 的操作目录完全一致。
+   * 插件安装/卸载的唯一真源。所有会话共享同一份安装——`DSH_HOME` 是 `base`，
+   * dsh 启动时 `--profile web` 直接读 `base/profiles/web/`，不再需要会话级 symlink。
    *
    * @param platform - 平台 profile 名（如 `web`、`cli`、`desktop`）
    */
@@ -152,32 +172,20 @@ export interface RemotePaths {
   nodeBinDir(version: string): string;
 
   /**
-   * 某 dsh 版本的安装目录。
-   * @param version - dsh 版本号，如 `0.1.7-rc.2`
-   */
-  dshDir(version: string): string;
-
-  /**
-   * 某 dsh 版本的可执行入口。
-   * @param version - dsh 版本号
-   */
-  dshBin(version: string): string;
-
-  /**
-   * 某会话的 `DSH_HOME` 目录。
-   * @param sessionId - 会话 id
-   */
-  sessionHome(sessionId: string): string;
-
-  /**
-   * 某会话的 profile 目录（symlink 到主机级 host profile）。
+   * dsh 安装目录（= base）。dsh 装在 `base/node_modules` 下，不再按版本分目录。
    *
-   * dsh 启动时 `--profile web` 在 `$DSH_HOME/profiles/web/` 找到此 symlink，
-   * 指向 `base/profiles/web/`，所有会话共享同一份安装。
-   *
-   * @param sessionId - 会话 id
+   * 参考 dsh 官方安装方式：`npm install @deepseek-ai/dsh@<version>` 在 `DSH_HOME`
+   * 下安装。dsh 入口在 `base/node_modules/.bin/dsh`。升级时 npm 自己处理覆盖，
+   * 版本检查用 `dsh --version` 比对。
    */
-  sessionProfile(sessionId: string): string;
+  readonly dshDir: string;
+
+  /**
+   * dsh 可执行入口（`base/node_modules/.bin/dsh`）。
+   *
+   * 不再按版本分目录——dsh 装在 `base/node_modules` 下，入口固定在此路径。
+   */
+  readonly dshBin: string;
 
   /**
    * 某会话的运行时状态目录（pid、端口、日志）。
@@ -190,7 +198,7 @@ export interface RemotePaths {
    *
    * 停进程必须靠这个文件或监听端口定位——**绝不能用 `pkill -f <模式>`**：
    * P0 清理时用 `pkill -f "dsh --profile remote"`，把执行该命令的 SSH 会话
-   * 自己杀掉了，因为承载命令的 shell 其命令行也含这个模式串。
+   * 自己杀掉了，因为承载命令的 shell 命令行也含这个模式串。
    * @param sessionId - 会话 id
    */
   sessionPidFile(sessionId: string): string;
@@ -205,36 +213,14 @@ export interface RemotePaths {
   sessionLogFile(sessionId: string): string;
 
   /**
-   * 某会话的 patch 覆盖文件。
+   * 某会话的 patch 覆盖文件（含所有 patch 条目：llm-deepseek、llm-deepseek-account、llm-pi-ai）。
+   *
+   * 通过 `--patch` 参数传给 dsh。每个会话的 patch 独立——因为 baseURL 指向
+   * 各会话独立的反向端口。所有 patch 条目合并写入此文件，不再分散到
+   * settings.yaml 和 cordis.patch.yml。
    * @param sessionId - 会话 id
    */
   sessionPatchFile(sessionId: string): string;
-
-  /**
-   * 某会话的 settings.yaml（本机 settings 的远端镜像，provider baseURL 已重定向）。
-   *
-   * dsh ≤0.1.6 的用户设置文档放在 `$DSH_HOME/settings.yaml` 且热重载——
-   * 会话的 DSH_HOME 即会话目录，所以这份镜像落在这里会被旧版远端 dsh 直接读取。
-   * dsh 0.1.7 起 settings.yaml 改为**启动时一次性导入**进 profile 的
-   * cordis.patch.yml（导入后改名 `.imported`，运行中不再读）——镜像对新版
-   * 只在每次进程启动时生效一次，供应商配置的持续热生效由
-   * {@link RemotePaths.sessionHomePatchFile} 承接。
-   * 注意**只镜像 settings**（凭据引用，不含密钥），绝不镜像
-   * `$DSH_HOME/.credentials.yaml`（可能含真实密钥）。
-   * @param sessionId - 会话 id
-   */
-  sessionSettingsFile(sessionId: string): string;
-
-  /**
-   * 某会话的 `$DSH_HOME/cordis.patch.yml`（dsh 的 home patch 层）。
-   *
-   * dsh 0.1.6 与 0.1.7 都把它列为 patch 层叠之一（profile 的
-   * cordis.patch.yml 之上、`--patch` overlay 之下）且**受 hmr 热监听**——
-   * pi-ai 供应商路由写进这一层，重写即热生效，不受 0.1.7 移除
-   * settings.yaml 运行时读取的影响。
-   * @param sessionId - 会话 id
-   */
-  sessionHomePatchFile(sessionId: string): string;
 
   /**
    * 某会话的代理令牌文件（权限 600）。
@@ -301,6 +287,8 @@ export function createRemotePaths(homeDir: string): RemotePaths {
 
   return {
     base,
+    dshHome: base,
+    credentialsFile: `${base}/.credentials.yaml`,
     mirrorCache: `${base}/mirror-cache.json`,
     npmCache: `${base}/npm-cache`,
     tmpRoot: `${base}/tmp`,
@@ -316,17 +304,15 @@ export function createRemotePaths(homeDir: string): RemotePaths {
     nodeBin: (version) => `${base}/node/${version}/bin/node`,
     nodeBinDir: (version) => `${base}/node/${version}/bin`,
 
-    dshDir: (version) => `${base}/versions/dsh-${version}`,
-    dshBin: (version) => `${base}/versions/dsh-${version}/node_modules/.bin/dsh`,
+    // dsh 装在 base/node_modules 下，不再按版本分目录
+    dshDir: base,
+    dshBin: `${base}/node_modules/.bin/dsh`,
 
-    sessionHome: (sessionId) => `${base}/sessions/${sessionId}`,
-    sessionProfile: (sessionId) => `${base}/sessions/${sessionId}/profiles/web`,
+    // 会话级路径：只有 .runtime 系列需要会话隔离
     sessionRuntime: (sessionId) => `${base}/sessions/${sessionId}/.runtime`,
     sessionPidFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/pid`,
     sessionLogFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/dsh.log`,
     sessionPatchFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/patch.yml`,
-    sessionSettingsFile: (sessionId) => `${base}/sessions/${sessionId}/settings.yaml`,
-    sessionHomePatchFile: (sessionId) => `${base}/sessions/${sessionId}/cordis.patch.yml`,
     sessionProxyTokenFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/proxy-token`,
     sessionReversePortFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/reverse-port`,
     sessionReverseHostFile: (sessionId) => `${base}/sessions/${sessionId}/.runtime/reverse-host`,

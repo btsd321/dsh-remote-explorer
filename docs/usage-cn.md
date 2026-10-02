@@ -32,7 +32,7 @@
 - **Node.js** v20.19+ 或 v22+（本机运行 tsx 用）。
 - 一台可 SSH 登录的远端主机：写进 `~/.ssh/config` 的 `Host` 条目，或用 `user@host[:port]` 直连（IPv6 需写进 config）。认证支持私钥（`IdentityFile`，可用 `--private-key` 覆盖）；未配置私钥且在交互式终端时，会提示输入密码（不回显，只存内存不落盘）；也可用 `--password <密码>` 明文传入——**有泄露风险**（命令行、进程列表与 shell 历史都能看到），CLI 会打印警告，建议仅作临时手段。
 - 远端主机必须是 **Linux 或 macOS**（POSIX）。本机客户端支持 Windows、Linux 和 macOS。
-- 使用哪个 LLM 供应商，就将其 **API key** 作为环境变量导出（如 `DEEPSEEK_API_KEY`），在运行 `dsh-remote-explorer connect` 的 shell 中设置。
+- 使用哪个 LLM 供应商，就将其 **API key** 作为环境变量导出（如 `DEEPSEEK_API_KEY`），在运行 `dsh-remote-explorer connect` 的 shell 中设置；也可以什么都不设，靠**本机 dsh 登录的 DeepSeek 账号**提供模型凭据（见 [connect 一节的「DeepSeek 账号登录」](#deepseek-账号登录非-api-key)）。
 
 ## 认证与主机指定
 
@@ -220,8 +220,18 @@ DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect <别名> --cwd //ho
 **环境变量：**
 
 - `DEEPSEEK_API_KEY` 等 LLM key：在启动 `connect` 的 shell 中导出（用哪个供应商导哪个，清单来自 `~/.dsh/settings.yaml`）。
-- `DSH_REMOTE_PROXY`：无公网主机的代理兜底。远端 dsh 装 GitHub 插件走 HTTPS（`git ls-remote https://github.com/...`），**SSH(22) 能通不代表 HTTPS(443) 能通**。设了它，启动器把 `http_proxy`/`https_proxy`/`ALL_PROXY`（大小写共六个键）注入远端 dsh 进程，值指向 SSH 反向隧道在远端回环暴露的代理端口（如 `http://127.0.0.1:18890`）；dsh 会把这些变量透传给它拉起的 `git`/`pnpm` 子进程。不设则不注入任何变量，直连主机零影响。
-- 注入发生在**启动远端进程时**：复用已运行的会话不会补注入，需 `--force-restart`。插件形态的 per-host 齿轮配置优先于本变量（见[以 dsh 插件形式使用](#以-dsh-插件形式使用)）。
+- `DSH_REMOTE_PROXY`：无公网主机的代理兜底。远端 dsh 装 GitHub 插件走 HTTPS（`git ls-remote https://github.com/...`），**SSH(22) 能通不代表 HTTPS(443) 能通**。设了它，启动器把 `http_proxy`/`https_proxy`/`ALL_PROXY`（大小写共六键）与 `no_proxy`/`NO_PROXY`（回环排除清单，防止隧道代理请求被导向 HTTP 代理）共八个键注入远端 dsh 进程，代理值指向 SSH 反向隧道在远端回环暴露的代理端口（如 `http://127.0.0.1:18890`）；dsh 会把这些变量透传给它拉起的 `git`/`pnpm` 子进程。不设则不注入任何变量，直连主机零影响。
+- 注入发生在**启动远端进程时**：复用已运行的会话不会补注入，需 `--force-restart`。插件形态的高级选项「代理」弹窗优先于本变量（见[以 dsh 插件形式使用](#以-dsh-插件形式使用)）。
+
+### DeepSeek 账号登录（非 API key）
+
+本机 dsh（桌面版或 CLI）登录了 DeepSeek 账号时，远端会话**无需任何额外配置**即可使用账号模型（模型选择器里的「DeepSeek Account」供应商）：
+
+- **凭据链路**：连接时读取本机 `$DSH_HOME/.credentials.yaml` 的 grant token（只在内存），向远端写一条**占位** grant record（token = 代理令牌，issuer = 隧道代理地址）让远端 dsh 认为已登录；远端的模型请求经反向隧道回到本机代理，替换为真实 token 转发 `api.deepseek.com`。真实 token 从不离开本机，远端磁盘上只有占位令牌。
+- **账号 patch**：会话 patch 同时重定向 `llm-deepseek-account` 的 `baseURL` 与 `deepseek-account` 平台插件的 `platformOrigin`/`inferenceOrigin` 进隧道——后者是账号模型能出现在远端模型选择器里的成立条件。
+- **远端 web 界面没有头像/登录按钮是正常现象**：dsh 的账号 UI（左下角头像 pill、登录对话框）只在官方桌面端渲染器注册（检测 `dshDesktop` 桥），web 前端一律不渲染。账号是否生效看模型选择器与实际对话，不要在远端界面找登录入口——远端登录会把真实 token 落到远端磁盘，违背本工具「凭据不出本机」的设计，隧道代理也会拦截登录流程的未认证请求。
+- **账号过期**：上游返回 401 时远端会退出登录态（任务提示「已因退出 DeepSeek 登录而停止」）。修复方式：**在本机 dsh 重新登录账号，再重连远端会话**——重连会自动重写占位凭据恢复登录态。
+- 未在本机登录账号时此通道静默关闭：不写占位凭据、不打账号 patch，API key 通道不受影响。
 
 **会话复用：** 用相同别名和 `--cwd` 再次 `connect`，会探到已运行的远端 dsh 并复用。新 CLI 获得自己的本机隧道端口。多个 CLI 可共享一个远端会话。
 
@@ -386,7 +396,7 @@ DSH_REMOTE_PROXY=http://127.0.0.1:18890 DEEPSEEK_API_KEY=sk-xxx \
   pnpm exec tsx src/cli/bin.ts connect my-server --cwd //home/user
 ```
 
-验证方法：连接输出里的远端 pid，在远端跑 `cat /proc/<pid>/environ | tr '\0' '\n' | grep -i proxy` 应看到代理变量；`https_proxy=http://127.0.0.1:18890 git ls-remote https://github.com/<仓库> HEAD` 应返回 commit hash（这就是 dsh 装插件前的探测命令）。插件形态改用面板的每主机 ⚙ 齿轮按钮配置（代理快捷项一键填入，下次连接生效）。
+验证方法：连接输出里的远端 pid，在远端跑 `cat /proc/<pid>/environ | tr '\0' '\n' | grep -i proxy` 应看到代理变量；`https_proxy=http://127.0.0.1:18890 git ls-remote https://github.com/<仓库> HEAD` 应返回 commit hash（这就是 dsh 装插件前的探测命令）。插件形态改用高级选项的「代理」弹窗配置（下次连接生效）。
 
 ### 重连到已有会话
 
@@ -522,7 +532,15 @@ pnpm exec tsx scripts/dev-plugin.ts --sync   # 只同步产物进沙箱
 
 **左导航「远程 SSH 会话」**（全局面板，与「插件」按钮平级；0.6.x 起从 Settings 迁出——设置页只放偏好，工作流面板独立成面）：
 
-- 连接表单：主机（下拉来自 `~/.ssh/config`，也可直填 `user@host[:port]`）、远端目录（按主机记忆上次值）、高级选项（本机端口 / 强制重启 / 重测镜像 / Node 与 dsh 版本 / 私钥路径）、SSH 密码框、**⚙ 环境变量按钮**（按主机配置自定义环境变量：key-value 行编辑 + 代理快捷项，存宿主侧 `~/.dsh/remote-host-env.json`，不写 ssh config；连接时注入远端 dsh 进程，`DSH_HOME`/`DSH_AGENTS_HOME`/`PATH` 为保留键禁配）。会话行也有同款齿轮（「外部」会话除外）。**窗口形态按钮按环境分流**：
+- 连接表单：主机（下拉来自 `~/.ssh/config`，也可直填 `user@host[:port]`）、远端目录（按主机记忆上次值）、高级选项（本机端口 / 强制重启 / 重测镜像 / Node 与 dsh 版本 / 私钥路径 + **三个配置弹窗按钮**）、SSH 密码框。**窗口形态按钮按环境分流**：
+
+  高级选项的三个弹窗（连接前即可配置，全局记忆——**不按主机保存**，记住上一次的输入，换主机连接沿用同一份；存宿主侧 `~/.dsh/remote-advanced.json`，权限 600）：
+
+  - **跳板机**：按主机类型分流——config 别名主机为**只读**视图（链自动来自 ssh config 的 `ProxyJump`，附「修改请编辑 `~/.ssh/config`」提示）；`user@host[:port]` 直连主机**可配置**跳板链（每条一个别名或 `user@host[:port]` + 可选私钥路径 + 可选密码）。跳板机密码与连接密码一样**绝不落盘**：仅随连接请求内存传递、界面掩码输入，每次连接需重新输入（私钥优先于密码）。
+  - **环境变量**：key-value 行编辑，连接时注入远端 dsh 进程；`DSH_HOME`/`DSH_AGENTS_HOME`/`PATH` 为保留键禁配。
+  - **代理**：单个代理 URL（如 `http://127.0.0.1:18890`，SSH 反向隧道的远端端口），连接时展开为八个代理键注入远端（优先级：环境变量弹窗 > 代理弹窗 > `DSH_REMOTE_PROXY` 环境变量兜底）。留空保存 = 清除。
+
+  **连接日志**：每次连接发起时，进度日志会打印全部生效的高级选项（主机与传输类型、跳板机链及来源、环境变量键名清单、代理地址（userinfo 打码）、端口/版本/开关/私钥有无），排查「连的是什么」一眼可见。
   - **桌面端（DeepSeek Harness）**：单按钮「在新窗口连接」——就绪后弹**整窗浮动桌面**（桌面壳是单 OS 窗口，http/https 弹窗与跨 origin 导航全被甩给系统浏览器，应用内唯一通道是 webview；浮层不透明铺满窗口 = 打开即隐藏主桌面及其标题栏按钮，收起即还原，窗口最小化/全屏整体一起动）。**不叠加自建顶栏**：远程 dsh 的 web 界面铺满整窗，它没有桌面壳标题栏（web 形态本就不渲染「应用/编辑」菜单条），返回/关闭/停止一律走远程侧栏底部那枚状态 pill（见[远端窗口交接](#远端窗口交接handoff)）；加载阶段（webview 未夺焦）Esc 也可收起。应用重载后浮层不自动恢复，从面板重开即可
   - **浏览器端**：双入口（对标 VS Code）——「在当前标签页连接」= 就绪后 3 秒倒计时同标签切入远端窗口（可取消）；「在新标签页连接」= 本页留守管理，会话行按钮开远端新标签
 - 会话表：状态点、本机端口、行内入口（桌面端「新窗口打开」= 整窗浮动桌面；浏览器端「进入（当前标签）」与「新标签打开 ↗」，新页 = **隧道转发后的远端 dsh 界面**）、「断开」按钮（默认勾选「同时停止远端 dsh」）；其他本机进程维持的会话标「外部」只读
@@ -606,4 +624,4 @@ pnpm exec tsx scripts/dev-plugin.ts --sync   # 只同步产物进沙箱
   4. WSL NAT 模式下自检不通时：在 WSL 内执行 `wslinfo --networking-mode` 确认模式、`ip route show default` 核对 `via` 网关地址；企业 GPO 防火墙策略可能拦截 WSL 子网入站（Hyper-V 防火墙默认放行 WSL 子网，组策略可收紧），需管理员放行。
   最后可带 Cookie 访问远端 `/api/dsh-remote-handoff/meta` 验证：应得 200。
 - **远端插件安装失败**：在远端窗口的 Settings 插件 UI 内看 pnpm 报错（安装由远端 dsh 执行）；registry 由远端 pnpm 自身配置决定；同一远端账号并发引导/安装时后者等 flock，超时 15 分钟报「另一引导正在进行」
-- **远端装 GitHub 插件报「连接 GitHub 超时」**：dsh 装 `github:` 插件走 HTTPS（`git ls-remote`），SSH(22) 通不代表 HTTPS(443) 通。给启动器配代理：CLI 设 `DSH_REMOTE_PROXY`（见[常见工作流](#常见工作流)），插件面板用主机输入框旁或会话行的 ⚙ 齿轮按主机配置（代理快捷项可一键填入）。配置在**下一次连接**生效——已运行的会话需断开（勾选「同时停止远端 dsh」）后重连才会注入
+- **远端装 GitHub 插件报「连接 GitHub 超时」**：dsh 装 `github:` 插件走 HTTPS（`git ls-remote`），SSH(22) 通不代表 HTTPS(443) 通。给启动器配代理：CLI 设 `DSH_REMOTE_PROXY`（见[常见工作流](#常见工作流)），插件面板用高级选项的「代理」弹窗配置。配置在**下一次连接**生效——已运行的会话需断开（勾选「同时停止远端 dsh」）后重连才会注入

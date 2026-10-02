@@ -37,17 +37,17 @@ import {
   parseReverseHttpProbeResult,
   type WslNetworkingMode,
 } from '../transport/wsl-network.js';
-import { writeRemoteTextFile } from '../transport/write-text.js';
 import type { RemoteTransport } from '../transport/types.js';
 import type { RemoteContext } from '../provision/remote-context.js';
 import type { ProvisionResult } from '../provision/provisioner.js';
 import { prepareSessionProfile } from '../provision/profile-writer.js';
 import { ReverseListener } from '../tunnel/reverse-listener.js';
-import { writeSessionReverseHost, type ProxySecret } from '../credential/proxy-secret.js';
+import { writeSessionReverseHost, writePlaceholderAccountCredentials, type ProxySecret } from '../credential/proxy-secret.js';
 import type { TunnelProxyCredential } from '../credential/tunnel-proxy.js';
 import {
-  mirrorSettingsForTunnel, readLocalSettings, renderProviderTunnelPatch,
+  readLocalSettings, renderProviderTunnelPatch,
 } from '../credential/provider-routes.js';
+import { quote } from '../util/shell-quote.js';
 import { toErrorMessage } from '../util/errors.js';
 import { createLogger } from '../util/logger.js';
 import type { OpenSessionOptions } from './options.js';
@@ -326,7 +326,9 @@ export async function refreshWslReverseOnReconnect(
     // 3a. reverse-host（消费方按文件值回连）
     await writeSessionReverseHost(ctx, sessionId, plan.reverseHost);
     // 3b. profile patch：prepareSessionProfile 幂等且每次重写 patch——
-    //     复用引导产出的 dshBin/binDir，不重跑整个 provision
+    //     复用引导产出的 dshBin/binDir，不重跑整个 provision。
+    //     DSH_HOME = base，patch 文件在 sessions/<id>/.runtime/patch.yml（会话级）。
+    //     pi-ai 供应商路由也合并进 patch 文件（与 open 流程同一机制）。
     const patches = credential?.remotePatches() ?? [];
     await prepareSessionProfile(ctx, {
       sessionId,
@@ -334,16 +336,28 @@ export async function refreshWslReverseOnReconnect(
       nodeBinDir: provisioned.node.binDir,
       ...(patches.length > 0 ? { patches } : {}),
     });
-    // 3c. settings 镜像与 home patch（与 provisionAndConfigure 的双写同款，
-    //     容忍语义不变：失败不阻断重连，链路自检兜底告警）
+    // 3c. pi-ai 供应商路由 patch：追加到 patch 文件（>> 追加，不覆盖标量 patch）
     const localSettings = readLocalSettings();
     if (localSettings) {
-      await writeTunnelCredentialMirrors(ctx, {
-        sessionId,
-        reversePort: secret.reversePort,
-        reverseHost: plan.reverseHost,
-        localSettings,
-      });
+      const piAiPatch = renderProviderTunnelPatch(localSettings, secret.reversePort, plan.reverseHost);
+      if (piAiPatch !== undefined) {
+        try {
+          const patchFile = provisioned.paths.sessionPatchFile(sessionId);
+          await transport.exec(`printf '\\n%s' ${quote(piAiPatch)} >> ${quote(patchFile)}`, { allowNonZeroExit: true });
+        } catch { /* 容忍：pi-ai patch 失败不阻断重连 */ }
+      }
+    }
+    // 3d. 机器级 credentials.yaml（占位 grant record，同值幂等重写；契约与
+    //     幂等语义见 writePlaceholderAccountCredentials 的函数注释）
+    if (credential !== undefined && credential.accountTokenAvailable) {
+      // issuer 与 platformOrigin 一致——用本次探测的 reverseHost（NAT 网关
+      // 可能已随 WSL 重启变化），端口仍是随会话固定的反向端口
+      const issuer = `http://${plan.reverseHost}:${secret.reversePort}`;
+      try {
+        await writePlaceholderAccountCredentials(
+          { transport, paths: provisioned.paths }, secret.token, issuer,
+        );
+      } catch { /* 容忍：占位凭据写失败不阻断重连，下次连接再恢复 */ }
     }
     return updated;
   }
@@ -354,59 +368,6 @@ export async function refreshWslReverseOnReconnect(
     sessionId, secret.reverseHost,
   );
   return secret;
-}
-
-/**
- * 凭据镜像双写：settings 镜像 + home patch（唯一实现）。
- *
- * 同一份知识原先在 provisionAndConfigure（open 流程）与
- * refreshWslReverseOnReconnect（重连流程）各维护一份，现收口于此：
- * 两处消费的写入目标与容忍语义完全一致，仅 reverseHost 可能不同
- * （NAT 网关重探测）。
- *
- * - 镜像（`$DSH_HOME/settings.yaml`）：dsh ≤0.1.6 运行时热读它；0.1.7 起
- *   只在每次进程启动时一次性导入（导入后改名 `.imported`），承载其余
- *   section 的传递
- * - home patch（`$DSH_HOME/cordis.patch.yml`）：0.1.6/0.1.7 都存在且受
- *   hmr 热监听，供应商路由的持续热生效靠它——不受 0.1.7 移除
- *   settings.yaml 运行时读取的影响
- * - 两份都只做 baseURL 重定向（凭据引用不含密钥）；绝不镜像
- *   .credentials.yaml（可能含真实密钥）。复用会话时同值重写无副作用
- *
- * @param ctx - 远端执行上下文（传输与路径集合）
- * @param params - 写入参数（会话 id、反向端点、本机 settings 文本）
- */
-export async function writeTunnelCredentialMirrors(
-  ctx: RemoteContext,
-  params: {
-    /** 会话 id */
-    sessionId: string;
-    /** 反向隧道端口（baseURL 的端口部分） */
-    reversePort: number;
-    /** 反向端点主机（baseURL 的 host 部分；WSL NAT 为网关 IP） */
-    reverseHost: string;
-    /** 本机 settings.yaml 文本（由调用方读取并判空） */
-    localSettings: string;
-  },
-): Promise<void> {
-  const { transport, paths } = ctx;
-  const { sessionId, reversePort, reverseHost, localSettings } = params;
-  const mirrored = mirrorSettingsForTunnel(localSettings, reversePort, reverseHost);
-  if (mirrored) {
-    // SFTP 主路径落盘（远端未开 sftp 子系统时自动回退 printf-over-exec）。
-    // 容忍模式与旧实现的 allowNonZeroExit 语义一致：镜像失败不阻断会话
-    await writeRemoteTextFile(transport, paths.sessionSettingsFile(sessionId), mirrored, {
-      tolerant: true,
-    });
-  }
-  const providerPatch = renderProviderTunnelPatch(localSettings, reversePort, reverseHost);
-  if (providerPatch) {
-    // 同为容忍模式：home patch 失败时 0.1.6 仍有镜像兜底，0.1.7 首启
-    // 导入也还能承接（.imported 语义），会话不因此阻断
-    await writeRemoteTextFile(
-      transport, paths.sessionHomePatchFile(sessionId), providerPatch, { tolerant: true },
-    );
-  }
 }
 
 /**

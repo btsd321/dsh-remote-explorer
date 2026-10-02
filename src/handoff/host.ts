@@ -161,7 +161,11 @@ async function callManage(op: string, query: URLSearchParams): Promise<Response>
 }
 
 /**
- * 读会话运行时材料（DSH_HOME 即会话目录；材料启动前已落盘）。
+ * 读会话运行时材料（从 `.runtime/` 目录；材料启动前已落盘）。
+ *
+ * `.runtime/` 目录路径优先取 `DSH_SESSION_RUNTIME` 环境变量（DSH_HOME = base
+ * 机器级时由 remote-process.ts 传入会话级 .runtime 路径）；回退到
+ * `DSH_HOME/.runtime/`（旧架构 DSH_HOME 即会话目录的兼容路径）。
  *
  * 每次现读、不缓存：`reverse-host` 会被本机在每次连接时重写，缓存会让
  * 复用会话（远端 dsh 存活、本机重连）拿到过期的 NAT 网关地址。
@@ -170,13 +174,20 @@ async function callManage(op: string, query: URLSearchParams): Promise<Response>
  *          判缺——它有 127.0.0.1 回落，见 {@link readReverseHost}）
  */
 function readMaterials(): ReverseMaterials | undefined {
+  const runtimeDir = process.env.DSH_SESSION_RUNTIME;
   const home = process.env.DSH_HOME;
-  if (home === undefined || home === '') return undefined;
+  // 优先 DSH_SESSION_RUNTIME（会话级 .runtime 路径），回退 DSH_HOME/.runtime（旧路径）
+  const dir = runtimeDir !== undefined && runtimeDir !== ''
+    ? runtimeDir
+    : home !== undefined && home !== ''
+      ? `${home}/.runtime`
+      : undefined;
+  if (dir === undefined) return undefined;
   try {
-    const port = Number.parseInt(readFileSync(`${home}/.runtime/reverse-port`, 'utf8').trim(), 10);
-    const token = readFileSync(`${home}/.runtime/proxy-token`, 'utf8').trim();
+    const port = Number.parseInt(readFileSync(`${dir}/reverse-port`, 'utf8').trim(), 10);
+    const token = readFileSync(`${dir}/proxy-token`, 'utf8').trim();
     if (!Number.isFinite(port) || port <= 0 || token === '') return undefined;
-    return { reverseHost: readReverseHost(home), reversePort: port, proxyToken: token };
+    return { reverseHost: readReverseHost(dir), reversePort: port, proxyToken: token };
   } catch {
     return undefined;
   }
@@ -196,12 +207,12 @@ function readMaterials(): ReverseMaterials | undefined {
  * （与 reverse-port/proxy-token 同款写法）：本文件被打成独立自包含 bundle
  * （构建期内联进宿主半），不能 import 仓库其他模块取常量。
  *
- * @param home - 会话 DSH_HOME 目录（已判非空）
+ * @param dir - .runtime 目录路径（已判非空）
  * @returns 回调主机地址；缺省回落 127.0.0.1
  */
-function readReverseHost(home: string): string {
+function readReverseHost(dir: string): string {
   try {
-    const host = readFileSync(`${home}/.runtime/reverse-host`, 'utf8').trim();
+    const host = readFileSync(`${dir}/reverse-host`, 'utf8').trim();
     return host === '' ? DEFAULT_REVERSE_HOST : host;
   } catch {
     // 文件不存在（旧远端材料/SSH 会话）或读取异常：回落回环——硬性兼容契约，

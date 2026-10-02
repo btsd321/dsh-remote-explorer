@@ -48,9 +48,11 @@ export const RESERVED_REMOTE_ENV_KEYS: readonly string[] = ['DSH_HOME', 'DSH_AGE
  * 收集要注入远端 dsh 的代理环境变量。
  *
  * 来源优先级：显式传入 > 本机环境变量 `DSH_REMOTE_PROXY` > 不设（有网机器
- * 零影响的回归语义）。命中时同时设六个键（大小写各半 + ALL_PROXY），值相同
- * ——git 认小写、npm/curl 认大小写皆可、Node 的 undici 认大写，全设是为了
- * 覆盖各自的读取习惯，不指望消费方统一。
+ * 零影响的回归语义）。命中时同时设八个键：六个代理键（大小写各半 +
+ * ALL_PROXY，值相同——git 认小写、npm/curl 认大小写皆可、Node 的 undici
+ * 认大写，全设是为了覆盖各自的读取习惯，不指望消费方统一）加一对
+ * `no_proxy`/`NO_PROXY` 排除回环地址——隧道代理的 baseURL 指向
+ * `127.0.0.1:<反向端口>`，走 HTTP 代理会把隧道请求导向别处。
  *
  * dsh 的 `scrubbedParentEnv` 会保留这些变量并注入 `NODE_USE_ENV_PROXY=1`，
  * 使远端 dsh 拉起的 git/pnpm 子进程走同一代理（见 deepseek-harness
@@ -70,6 +72,10 @@ export function collectProxyEnv(explicit?: string): Record<string, string> {
     HTTPS_PROXY: proxy,
     ALL_PROXY: proxy,
     all_proxy: proxy,
+    // 排除回环地址——隧道代理的 baseURL 指向 127.0.0.1:<反向端口>，
+    // 这些请求不能走 HTTP 代理（会被导向 dsh webserver 端口而非隧道代理）
+    no_proxy: '127.0.0.1,localhost,::1',
+    NO_PROXY: '127.0.0.1,localhost,::1',
   };
 }
 
