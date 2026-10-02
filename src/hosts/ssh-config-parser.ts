@@ -112,6 +112,8 @@ export interface SshHostSummary {
   hasProxyJump: boolean;
   /** 跳板机别名列表原文（如有） */
   proxyJump?: string;
+  /** 解析后的跳板机链（按连接顺序；有 ProxyJump 但解析失败时缺省） */
+  jumpChain?: JumpChainHop[];
 }
 
 /** 解析后的完整主机配置（单台主机） */
@@ -124,8 +126,32 @@ export interface ResolvedHost {
   username: string;
   /** 私钥文件路径（已展开 `~`，取第一个 IdentityFile） */
   identityFile?: string;
+  /**
+   * 固定密码（面板跳板机条目携带；仅直连跳板条目会有值）。
+   *
+   * 只存本进程内存与宿主侧 0600 存储，绝不进任何日志；传输层首选用它
+   * 认证，被拒后回落交互途径（getPassword provider）。与 IdentityFile
+   * 的优先级：私钥优先（同 --private-key > --password 的既定语义）
+   */
+  password?: string;
   /** ProxyJump 原始值（逗号分隔的别名列表） */
   proxyJump?: string;
+}
+
+/**
+ * 面板配置的跳板机条目（高级选项存储的原文形状）。
+ *
+ * `target` 是 ssh config 别名或 user@host[:port] 直连语法；`identityFile` 与
+ * `password` 是**条目级认证覆盖**，只作用于该条目对应的最终跳板（条目自身
+ * 的 ProxyJump 展开链维持 config 原样）。两者同给时私钥优先。
+ */
+export interface JumpEntry {
+  /** 跳板机标识（别名或 user@host[:port]） */
+  target: string;
+  /** 私钥路径覆盖（别名条目可省——config 的 IdentityFile 兜底） */
+  identityFile?: string;
+  /** 固定密码（无私钥时的认证途径；不进任何日志） */
+  password?: string;
 }
 
 /** 解析结果（含递归解析的跳板机链） */
@@ -208,8 +234,23 @@ function toResolvedHost(computed: ComputedHostOptions): ResolvedHost {
   };
 }
 
+/** 跳板机链的单级摘要（面板只读展示用，不含认证细节） */
+export interface JumpChainHop {
+  /** 登录用户名（config 未配时为空串） */
+  username: string;
+  /** 主机地址 */
+  host: string;
+  /** SSH 端口 */
+  port: number;
+}
+
 /**
  * 列出 SSH config 中的所有 Host（排除 `*` 通配符与 Match 块）。
+ *
+ * 每个条目附带解析后的跳板机链（jumpChain）——面板跳板机弹窗的只读视图
+ * 数据源。解析复用 resolveHost（缓存 config，条目数有限，成本可忽略）；
+ * 解析失败的条目（坏引用等）链留空并保留 hasProxyJump/proxyJump 原文，
+ * 供 UI 提示用户查 config。
  *
  * @returns Host 摘要列表，按 config 中出现顺序
  */
@@ -223,6 +264,13 @@ export function listHosts(): SshHostSummary[] {
       if (alias === '*') continue;
       const computed = config.compute(alias, { ignoreCase: true });
       const proxyJump = directiveValues(computed.proxyjump).join(',');
+      let jumpChain: JumpChainHop[] | undefined;
+      if (proxyJump) {
+        try {
+          jumpChain = resolveHost(alias).jumpHosts
+            .map(jump => ({ username: jump.username, host: jump.host, port: jump.port }));
+        } catch { /* 坏引用：链留空，UI 依据 proxyJump 原文提示查 config */ }
+      }
       result.push({
         alias,
         hostName: computed.hostname ?? alias,
@@ -230,6 +278,7 @@ export function listHosts(): SshHostSummary[] {
         port: computed.port ? Number.parseInt(computed.port, 10) : DEFAULT_SSH_PORT,
         hasProxyJump: proxyJump.length > 0,
         ...(proxyJump ? { proxyJump } : {}),
+        ...(jumpChain !== undefined ? { jumpChain } : {}),
       });
     }
   }
@@ -365,6 +414,70 @@ export interface AssertConnectableOptions {
 }
 
 /**
+ * 判断一个主机标识是否被 ssh config 的具体 Host 条目覆盖。
+ *
+ * 面板跳板机分流判据：config 主机的跳板机来自 ProxyJump（不可在面板编辑），
+ * 直连主机（user@host[:port]）无 config 条目、跳板机可由面板配置。
+ * 与 resolveHost 用同一判据（hasMatchingHostEntry），不会出现两边判定漂移。
+ *
+ * @param alias - 主机标识（别名或 user@host[:port]）
+ * @returns 是 config 主机返回 true；直连语法或未知标识返回 false
+ */
+export function isConfigHost(alias: string): boolean {
+  return hasMatchingHostEntry(loadConfig(), alias);
+}
+
+/**
+ * 解析面板配置的跳板机条目链（直连主机专用）。
+ *
+ * 每个条目按 {@link JumpEntry} 携带标识与可选的认证覆盖：条目 target 经
+ * resolveHost 递归展平（条目自身带 ProxyJump 时其链一并展开，与目标主机
+ * ProxyJump 的 collectJumpHosts 同语义）；条目级覆盖只作用于该条目对应的
+ * 最终跳板，前置跳板维持 config 原样。identityFile 与 password 同给时私钥
+ * 优先（同 --private-key > --password 语义；显式密码意图下删除 config 私钥）。
+ * 连接顺序 = 数组顺序。
+ *
+ * @param entries - 跳板机条目列表（面板高级选项存储的原文）
+ * @returns 展平后的跳板机链（按连接顺序，含条目级认证覆盖）
+ * @throws RemoteError('HOST_NOT_FOUND') 条目既不在 config 也不匹配直连语法
+ * @throws RemoteError('HOST_CONFIG_INVALID') 条目为直连语法但端口非法
+ */
+export function resolveJumpChain(entries: readonly JumpEntry[]): ResolvedHost[] {
+  const chain: ResolvedHost[] = [];
+  const seen = new Set(chain.map(item => `${item.username}@${item.host}:${item.port}`));
+  for (const entry of entries) {
+    const resolved = resolveHost(entry.target);
+    const items = [...resolved.jumpHosts, resolved.target];
+    // 面板条目之间可能出现重复（用户手填同一台跳板两次）：
+    // 按「重复即同一台跳板机」去重跳过
+    let pushed = 0;
+    for (const item of items) {
+      const key = `${item.username}@${item.host}:${item.port}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      chain.push(item);
+      pushed += 1;
+    }
+    // 条目级认证覆盖只落到该条目的最终跳板（链尾）；重复去重没推进时跳过
+    const tailIndex = chain.length - 1;
+    if (pushed > 0 && tailIndex >= 0) {
+      const tail = { ...chain[tailIndex] };
+      if (entry.identityFile !== undefined && entry.identityFile !== '') {
+        tail.identityFile = expandTilde(entry.identityFile);
+        delete tail.password;
+      } else if (entry.password !== undefined && entry.password !== '') {
+        // 显式密码意图：删 config 私钥，让传输层走密码认证
+        delete tail.identityFile;
+        tail.password = entry.password;
+      }
+      chain[tailIndex] = tail;
+    }
+  }
+  return chain;
+}
+
+
+/**
  * 校验主机配置含连接所必需的字段。
  *
  * 认证途径：IdentityFile（私钥），或「无 IdentityFile + 交互式终端」（连接时
@@ -398,14 +511,15 @@ export function assertConnectable(
       { hostAlias: alias },
     );
   }
-  // 跳板机不走 --password（覆盖只作用于目标主机）：无 IdentityFile 时
-  // 只有交互式终端能救——连接时逐级提示输密码
+  // 跳板机不走目标主机的 --password：认证途径 = IdentityFile、条目携带的
+  // 固定密码（面板跳板机条目，见 resolveJumpChain）或交互式终端（连接时
+  // 逐级提示输密码），三者皆无才视为缺配置
   for (const [index, jump] of resolved.jumpHosts.entries()) {
-    if (!jump.identityFile && !isInteractiveTerminal()) {
+    if (!jump.identityFile && !jump.password && !isInteractiveTerminal()) {
       throw new RemoteError(
         'HOST_CONFIG_INVALID',
-        `主机 ${alias} 的跳板机 ${index + 1}（${jump.host}:${jump.port}）缺少 IdentityFile`
-          + '（跳板机不走 --password，需配置私钥或交互式终端）',
+        `主机 ${alias} 的跳板机 ${index + 1}（${jump.host}:${jump.port}）缺少认证途径`
+          + '（需配置私钥、面板跳板机条目的密码，或交互式终端）',
         { hostAlias: alias },
       );
     }

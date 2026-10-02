@@ -115,14 +115,14 @@ export async function setupTunnels(
  * 所以失败后换端口重试一次。
  *
  * 环境注入三层合并（后者覆盖前者同名键）：
- * `collectProxyEnv()`（本机 DSH_REMOTE_PROXY 兜底）< `options.extraEnv`
- * （per-host 用户配置）< `credential.remoteEnv()`（凭据占位键最高优先，
- * 防被用户 env 覆盖导致远端报 MISSING_CREDENTIAL）。
+ * `collectProxyEnv(options.proxy)`（面板代理显式值，`DSH_REMOTE_PROXY`
+ * 环境变量兜底）< `options.extraEnv`（面板环境变量）< `credential.remoteEnv()`
+ * （凭据占位键最高优先，防被用户 env 覆盖导致远端报 MISSING_CREDENTIAL）。
  *
  * @param transport - 传输实例
  * @param provisioned - 引导结果
  * @param sessionId - 会话 id
- * @param options - 打开选项（进度回调、用户自定义 env 与 WSL 用户名）
+ * @param options - 打开选项（进度回调、代理、用户自定义 env 与 WSL 用户名）
  * @param port - 预分配的 web 端口
  * @param credential - 凭据策略；存在则占位凭据进环境
  * @returns 远端进程信息
@@ -132,7 +132,7 @@ export async function launch(
   transport: RemoteTransport,
   provisioned: ProvisionResult,
   sessionId: string,
-  options: Pick<OpenSessionOptions, 'onStageStart' | 'onStageDone' | 'extraEnv' | 'wslUser'>,
+  options: Pick<OpenSessionOptions, 'onStageStart' | 'onStageDone' | 'proxy' | 'extraEnv' | 'wslUser'>,
   port: number,
   credential: TunnelProxyCredential | undefined,
 ): Promise<RemoteProcessInfo> {
@@ -141,7 +141,7 @@ export async function launch(
   // （DSH_HOME/DSH_AGENTS_HOME/PATH）被用户值覆盖会破坏会话隔离与技能共享契约
   assertSafeEnvKeys(options.extraEnv ?? {}, `主机 ${transport.hostAlias}`);
   const extraEnv: Record<string, string> = {
-    ...collectProxyEnv(),
+    ...collectProxyEnv(options.proxy),
     ...(options.extraEnv ?? {}),
     ...(credential ? credential.remoteEnv() : {}),
   };

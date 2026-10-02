@@ -12,12 +12,18 @@
  * （hosts 主机解析）与传输层（SSH/WSL 传输实现）。
  */
 
-import { assertConnectable, resolveHostWithAuth, type AuthOverrides } from '../../hosts/ssh-config-parser.js';
+import {
+  assertConnectable, isConfigHost, resolveHostWithAuth, resolveJumpChain,
+  type AuthOverrides, type JumpEntry, type ResolvedHost, type ResolvedHostWithJump,
+} from '../../hosts/ssh-config-parser.js';
 import { SshTransport } from '../../transport/ssh-transport.js';
 import { WslTransport } from '../../transport/wsl-transport.js';
 import { RemoteError } from '../../util/errors.js';
+import { createLogger } from '../../util/logger.js';
 import type { RemoteTransport } from '../../transport/types.js';
 import type { OpenSessionOptions, TransportType } from '../options.js';
+
+const log = createLogger('transport-factory');
 
 /**
  * 合法 WSL 用户名判据。
@@ -32,7 +38,7 @@ const WSL_USER_PATTERN = /^[A-Za-z_][A-Za-z0-9._-]*$/;
 /** SSH 传输准备上下文（仅 SSH 路径需要） */
 export interface SshPrepareContext {
   /** SSH 主机解析结果（含跳板机链、认证配置） */
-  resolved: ReturnType<typeof resolveHostWithAuth>;
+  resolved: ResolvedHostWithJump;
   /** 密码获取回调 */
   getPassword: (hostKey: string, label: string, attempt: number) => Promise<string | undefined>;
 }
@@ -55,22 +61,72 @@ export function authOverridesOf(options: OpenSessionOptions): AuthOverrides {
   };
 }
 
+/** 跳板机生效计划（分流规则的唯一真源） */
+export interface JumpPlan {
+  /** 链的来源：config = ssh config 的 ProxyJump；panel = 面板配置（直连主机）；none = 无跳板机 */
+  source: 'config' | 'panel' | 'none';
+  /** 生效跳板机链（按连接顺序；none 时空数组） */
+  chain: ResolvedHost[];
+  /** 覆盖被忽略的说明（config 主机带面板覆盖时给出，连接日志展示用） */
+  ignoredOverride?: string;
+}
+
+/**
+ * 计算某主机的生效跳板机链。
+ *
+ * 分流规则（用户拍板）：config 别名主机 → ssh config 的 ProxyJump 为准，
+ * 面板覆盖被忽略（UI 不提供编辑入口，此处为防御性兜底）；user@host[:port]
+ * 直连主机 → 面板配置的条目链；直连主机未配置 → 无跳板机。
+ *
+ * open 与重连共用（resolveSshHost 调用），插件层的连接日志（connect-summary）
+ * 也调用它做只读展示——两边共享同一份分流规则，不会漂移。
+ *
+ * @param hostAlias - 主机标识（别名或 user@host[:port]）
+ * @param panelJumps - 面板配置的跳板机条目（OpenSessionOptions.jumpHosts，
+ *                    含连接请求携带的内存态密码）
+ * @returns 生效计划
+ * @throws RemoteError 面板条目无法解析（HOST_NOT_FOUND 等）——连接路径上
+ *         应当失败（配置了坏条目）；只读展示路径由调用方 try/catch
+ */
+export function planJumpHosts(hostAlias: string, panelJumps?: JumpEntry[]): JumpPlan {
+  const configHost = isConfigHost(hostAlias);
+  if (configHost) {
+    const resolved = resolveHostWithAuth(hostAlias, {});
+    const plan: JumpPlan = { source: 'config', chain: resolved.jumpHosts };
+    if (panelJumps !== undefined && panelJumps.length > 0) {
+      plan.ignoredOverride = `主机 ${hostAlias} 在 ssh config 中已有定义，跳板机以 config 的 ProxyJump 为准（面板配置的跳板机被忽略）`;
+      log.warn(plan.ignoredOverride);
+    }
+    return plan;
+  }
+  if (panelJumps !== undefined && panelJumps.length > 0) {
+    return { source: 'panel', chain: resolveJumpChain(panelJumps) };
+  }
+  return { source: 'none', chain: [] };
+}
+
 /**
  * 解析 SSH 主机配置并校验可连接性。
  *
  * 只做主机解析，不涉及密码提供器的生命周期管理（密码提供器由调用方持有，
- * 需要在会话关闭时清理引用）。
+ * 需要在会话关闭时清理引用）。跳板机按 {@link planJumpHosts} 的分流规则
+ * 生效——直连主机应用面板覆盖，config 主机维持 config 链。
  *
  * @param options - 会话打开选项
  * @returns SSH 主机解析结果
  */
-export function resolveSshHost(options: OpenSessionOptions): ReturnType<typeof resolveHostWithAuth> {
+export function resolveSshHost(options: OpenSessionOptions): ResolvedHostWithJump {
   const auth = authOverridesOf(options);
   const resolved = resolveHostWithAuth(options.hostAlias, auth);
-  assertConnectable(resolved, options.hostAlias, {
+  // 面板跳板机覆盖：仅直连主机生效（分流与告警语义见 planJumpHosts）
+  const jumpPlan = planJumpHosts(options.hostAlias, options.jumpHosts);
+  const effective: ResolvedHostWithJump = jumpPlan.source === 'panel'
+    ? { ...resolved, jumpHosts: jumpPlan.chain }
+    : resolved;
+  assertConnectable(effective, options.hostAlias, {
     passwordAuth: auth.password !== undefined,
   });
-  return resolved;
+  return effective;
 }
 
 /**
