@@ -138,7 +138,7 @@ export async function launch(
 ): Promise<RemoteProcessInfo> {
   // 合并前先校验用户 env 的键名：remote-process.ts 的 envAssignments 把
   // 键名不经 quote 直接插值进 shell 命令，非法键名 = 命令注入；保留键
-  // （DSH_HOME/DSH_AGENTS_HOME/PATH）被用户值覆盖会破坏会话隔离契约
+  // （DSH_HOME/DSH_AGENTS_HOME/PATH）被用户值覆盖会破坏会话隔离与技能共享契约
   assertSafeEnvKeys(options.extraEnv ?? {}, `主机 ${transport.hostAlias}`);
   const extraEnv: Record<string, string> = {
     ...collectProxyEnv(),

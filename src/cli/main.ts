@@ -60,7 +60,7 @@ function printHelp(): void {
   println(`  ${cyan('connect')} <别名>            主命令：引导 → 起远端 → 建隧道 → 开浏览器（常驻）`);
   println(`  ${cyan('status')}                    列出本机正在维持的所有会话`);
   println(`  ${cyan('kill')} <别名>               停止远端 dsh 进程`);
-  println(`  ${cyan('clean')} <别名>              清理远端陈旧资源（旧版本、死会话目录）`);
+  println(`  ${cyan('clean')} <别名>              清理远端陈旧资源（旧版本、死会话目录、技能目录）`);
   println(`  ${cyan('list')}                      列出 ~/.ssh/config 中的主机`);
   println(`  ${cyan('doctor')} <别名>             诊断某台主机的引导条件`);
   println(`  ${cyan('provision')} <别名>          只做引导，不起服务（幂等）`);

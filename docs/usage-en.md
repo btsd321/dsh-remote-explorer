@@ -75,7 +75,7 @@ dsh-remote-explorer <command> [options]
 | `connect <alias>` | Main command: provision → start remote dsh → build tunnel → open browser (long-running) |
 | `status` | List all sessions maintained on this machine |
 | `kill <alias>` | Stop remote dsh process |
-| `clean <alias>` | Clean up stale remote resources (old versions, dead session dirs) |
+| `clean <alias>` | Clean up stale remote resources (old versions, dead session dirs, skill dir) |
 | `list` | List hosts from ~/.ssh/config |
 | `doctor <alias>` | Diagnose a host's provisioning conditions |
 | `provision <alias>` | Provision only, don't start services (idempotent) |
@@ -163,6 +163,21 @@ pnpm exec tsx src/cli/bin.ts provision <alias> --cwd //home/user
 **Why provision separately:** Provisioning is the slowest and most failure-prone step (~75 seconds for a fresh install). Separating it allows independent retry and diagnosis.
 
 **Version isolation:** Each Node and dsh version is installed in its own directory (e.g. `~/.dsh-remote-explorer/btsd321/node/v24.21.0/`, `~/.dsh-remote-explorer/btsd321/versions/dsh-0.1.6-alpha.2/`). Upgrading never overwrites in place — this avoids "Text file busy" errors when a running process holds files open.
+
+**Machine-level vs session-private:** Resources under the remote root fall into two classes:
+
+| Class | Location | Lifetime |
+|---|---|---|
+| Node / dsh installations | `node/<version>/`, `versions/dsh-<version>/` | Machine-level, versions coexist |
+| Plugin store | `profiles/web/` | Machine-level, shared by every session via symlink |
+| **Agent capabilities (skills)** | `.agents/` | **Machine-level, shared by every session** |
+| Session instance state | `sessions/<session id>/` | One per (host, remote directory) |
+
+The remote dsh's `DSH_AGENTS_HOME` points at `.agents`, mirroring `~/.agents` on a local machine. dsh treats `<agentsHome>/skills` as a **user-level** skill root (rank 500), so **opening a session in a different working directory on the same remote keeps your installed skills** — no reinstall needed. Skills in a project's `.dsh/skills` or `.agents/skills` still travel with the repository and outrank machine-level ones (rank 100/200).
+
+Concurrent writes to the skill directory are serialized by a flock at `.agents/.lock`. That lock only covers writes this tool initiates — third-party skill installers do not read it, so installing skills with an external tool concurrently from several sessions can still clobber `.skill-lock.json`.
+
+When upgrading from an earlier version, skills under `sessions/<session id>/agents/` are **not merged into** `.agents` automatically — that directory is no longer read, but it is not deleted either. `mv` what you want into `.agents/skills/` yourself (existing names are skipped, so decide the trade-off), or simply reinstall; leftovers disappear when `clean` removes the dead session directory.
 
 **Output:** A table showing the remote base directory, Node version, dsh version, dsh entry path, and session `DSH_HOME`.
 
@@ -269,7 +284,7 @@ Install directories and session profiles are preserved after kill. Use `connect`
 
 ## clean — Remove stale remote resources
 
-Removes stale session directories, old Node versions, and old dsh versions from the remote host. This is the necessary companion to the version-named, per-session-directory strategy — both accumulate over time.
+Removes stale session directories, old Node versions, old dsh versions, and the machine-level agent capability directory (`.agents`, installed skills included) from the remote host. This is the necessary companion to the version-named, per-session-directory strategy — both accumulate over time.
 
 ```bash
 # Clean with defaults (keep 1 version per category)
@@ -296,6 +311,7 @@ pnpm exec tsx src/cli/bin.ts clean <alias> --keep 2
 - **Stale session directories** — sessions whose pid file points to a dead process; directories owned by other fingerprints are skipped by default (`--include-others` includes them).
 - **Old dsh versions** — keeps the N newest, deletes the rest (protected versions excluded).
 - **Old Node versions** — same rule.
+- **The machine-level agent capability directory (`.agents`)** — removed entirely, installed skills included. It is a single directory with no "keep the N newest" notion, and skills are reinstallable; the next connection sets them up again. It is **not owner-scoped and not protected by active sessions** — `.agents` is account-wide, and an active session reads that same directory, so deleting it only affects the skills that session *discovers* afterwards (a missing skill root is a valid empty state and does not crash the remote process). Keep this in mind when several people share one remote account.
 
 The user-level plugin store (`plugins/`) is shared data and is **never touched by clean**.
 
@@ -388,7 +404,7 @@ The tool detects the running remote dsh and reuses it. You get a fresh local tun
 # Stop the remote dsh
 pnpm exec tsx src/cli/bin.ts kill my-server --all
 
-# Clean stale versions and dead sessions
+# Clean stale versions, dead sessions, and the skill directory (skills are reinstallable)
 pnpm exec tsx src/cli/bin.ts clean my-server
 
 # Full remote uninstall (run on the remote host itself)
