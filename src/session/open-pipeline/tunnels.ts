@@ -144,8 +144,11 @@ export async function launch(
   // （DSH_HOME/DSH_AGENTS_HOME/PATH）被用户值覆盖会破坏会话隔离与技能共享契约
   assertSafeEnvKeys(options.extraEnv ?? {}, `主机 ${transport.hostAlias}`);
   const extraEnv: Record<string, string> = {
-    // 代理层仅 SSH：WSL 连接切断 DSH_REMOTE_PROXY 兜底（见函数 JSDoc）
-    ...(options.transportType === 'ssh' ? collectProxyEnv(options.proxy) : {}),
+    // 代理层仅 SSH：WSL 连接切断 DSH_REMOTE_PROXY 兜底（见函数 JSDoc）。
+    // 判定用 !== 'wsl' 而非 === 'ssh'：transportType 是可选字段（缺省语义
+    // 'ssh'），CLI 的 SSH 连接不传该字段（undefined）——用 === 'ssh' 会把
+    // CLI SSH 连接的代理兜底一并误切断
+    ...(options.transportType !== 'wsl' ? collectProxyEnv(options.proxy) : {}),
     ...(options.extraEnv ?? {}),
     ...(credential ? credential.remoteEnv() : {}),
   };
