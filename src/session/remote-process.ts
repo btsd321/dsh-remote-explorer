@@ -17,6 +17,10 @@
  * 4. **没有免认证探活端点。** `/healthz`、`/version`、`/health` 全部 404，
  *    `/` 与 `/api` 无令牌时 401。所以探活靠「pid 存活 + 端口在监听」的组合判据，
  *    真正的 HTTP 探活要等 `dsh-remote-guard`（P5）。
+ *
+ * 5. **`DSH_AGENTS_HOME` 指机器级 `.agents`，不指会话目录。** agent 能力
+ *    （技能等）按机器共享，详见 envAssignments 处的说明与 remote-paths.ts
+ *    的 `agentsHome`。启动前预建该目录，让远端 watcher 能立即附加。
  */
 
 import { execFile } from 'node:child_process';
@@ -132,11 +136,13 @@ export async function startRemoteDsh(
 
   const envAssignments = [
     `DSH_HOME=${quote(options.dshHome)}`,
-    // skill 目录随会话隔离：dsh 的 skill-filesystem 默认读机器全局 ~/.agents
-    // （DSH_AGENTS_HOME 可覆盖）。不设的话本会话会加载远端其他使用者的
-    // skills——不破坏别人，但读到了别人的东西，违反隔离契约。
-    // 指向会话内的目录：不存在即空源，bundled skills 照常
-    `DSH_AGENTS_HOME=${quote(`${paths.sessionHome(sessionId)}/agents`)}`,
+    // agent 能力目录按**机器**共享，不按会话：dsh 的 skill-filesystem 把
+    // `<agentsHome>/skills` 当用户级根（rank 500），语义是"这台机器的使用者"，
+    // 不是"这一次会话"。早期版本指向 sessions/<id>/agents 换取隔离，代价是
+    // 同一台远端换个工作目录就要把技能重装一遍——与 opencode / Claude Code 的
+    // 单一用户级根模型相悖，也与本目录下 node、dsh、host profile 早已全账号
+    // 共享的粒度不一致。共享边界 = 远端账号（本工具的根就在该账号家目录下）。
+    `DSH_AGENTS_HOME=${quote(paths.agentsHome)}`,
     ...Object.entries(options.extraEnv ?? {}).map(([key, value]) => `${key}=${quote(value)}`),
     // PATH 特殊处理："$PATH" 必须留在引号外由 shell 展开，见 shell-quote 的说明
     `PATH=${quote(options.nodeBinDir)}:"$PATH"`,
@@ -158,7 +164,11 @@ export async function startRemoteDsh(
   const runner = runnerLines.join('\n');
 
   // 1. 写 runner 脚本 + 清理旧文件（同步 exec，快速返回）
+  //    顺带建机器级技能目录：dsh 的 skill-filesystem 对**不存在**的根只能用
+  //    fs.watchFile 逐个路径段轮询等它出现，预建好则 Chokidar 直接挂上，
+  //    装完技能当即进入下一次目录（省掉一轮轮询延迟）。
   const prepareLaunch = [
+    `mkdir -p ${quote(paths.agentsSkills)}`,
     `printf '%s' ${quote(runner)} > ${quote(runnerFile)}`,
     `rm -f ${quote(logFile)} ${quote(pidFile)}`,
   ].join('\n');
