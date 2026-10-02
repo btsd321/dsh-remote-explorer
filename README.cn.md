@@ -58,7 +58,7 @@ pnpm run build:plugin && dsh plugin --profile web add /path/to/repo
 
 装完重启 `dsh web`。插件提供三个入口：
 
-- **左导航「远程 SSH 会话」全局面板**：选主机、连接（桌面端单按钮弹整窗浮动桌面 webview——打开即隐藏主桌面、远程 web 界面铺满整窗、返回/关闭/停止走远端侧栏状态 pill；浏览器端当前标签切入 / 新标签双入口）、断开、远端插件管理、实时进度日志；远端窗口侧栏有状态 pill，可返回管理页或关闭/停止连接
+- **左导航「远程 SSH 会话」全局面板**：选主机、连接（桌面端单按钮弹整窗浮动桌面 webview——打开即隐藏主桌面、远程 web 界面铺满整窗、返回/关闭/停止走远端侧栏状态 pill；浏览器端当前标签切入 / 新标签双入口）、断开、实时进度日志；远端窗口侧栏有状态 pill，可返回管理页或关闭/停止连接
 - **slash 命令** `/remote-explorer`：`hosts | connect <别名> [远端目录] | status | disconnect <别名|会话id> [--keep-remote]`
 - **agent 工具** `remote_hosts_list / remote_connect / remote_status / remote_kill`（受 dsh 的工具审批门槛约束）
 
@@ -164,10 +164,14 @@ dsh 自身会把代理变量透传给它拉起的 `git`/`pnpm` 子进程，装�
 - `kill --all` 与 `clean` 默认只作用于**本机发起的会话**（owner 指纹，会话启动时写入远端 `.runtime/owner`）与无活进程的残留；他人会话跳过并列明，`--include-others` 恢复全量行为
 - **例外：`clean` 对机器级 `.agents` 不做 owner scope**——它是全账号共享的单一目录，`clean` 会整个清除（含已装技能），与你的指纹无关。技能属可重装资源，下次连接重新安装即可
 
-远端插件管理双表面（VS Code「连着就能管」），插件仓库为**用户级**（该远程账号一份，所有会话共享，对标 `~/.vscode-server/extensions/`；会话 profile 经 symlink 接入，零副本）：
+远端插件全部交由**远端 dsh 自己**管理，插件仓库为**用户级**（该远程账号一份，所有会话共享，对标 `~/.vscode-server/extensions/`；会话 profile 经 symlink 接入，零副本）。
 
-- **远端窗口内**：远端 dsh 自带的 Settings 插件 UI 完全可用（引导期已为远端装好 pnpm）
-- **本地管理页**：远程会话面板的「远端插件」区可做清单 / 安装 / 启停 / 卸载；操作后**本会话立即 hmr 热生效**，其他会话在下次连接时同步（VS Code 的 Reload Required 等价语义，不自动重启远端）
+管理入口有两个，都在远端那一侧：
+
+- **远端窗口内**：远端 dsh 自带的 Settings 插件 UI（引导期已为远端装好 pnpm）——清单 / 安装 / 启停 / 卸载，改动经远端 hmr 热生效
+- **远端终端**：`dsh plugin` 系列命令，等价能力
+
+本地面板**不提供**插件管理：连接成功后浏览器会切到远端 dsh 界面，本地管理页那时已不在用户视野里，保留一个看不见的管理区没有意义。首个连接建立后，远端窗口就是你管理这台机器插件的完整界面。
 
 ## 架构
 
@@ -238,7 +242,6 @@ dsh 自身会把代理变量透传给它拉起的 `git`/`pnpm` 子进程，装�
 | [src/credential/local-credentials.ts](src/credential/local-credentials.ts) | 读取本机 `.credentials.yaml` 的 refs 段，作为环境变量的凭据回退源 |
 | [src/credential/token.ts](src/credential/token.ts) | 代理令牌：生成与常数时间比较 |
 | [src/credential/proxy-secret.ts](src/credential/proxy-secret.ts) | 凭据材料读写：会话级令牌与反向端口的远端落盘 |
-| [src/plugin/remote-plugin-store.ts](src/plugin/remote-plugin-store.ts) | 远端插件包管理：list / install / remove / toggle |
 | [src/handoff/](src/handoff/) | 远端窗口交接组件：宿主半（远端 dsh 内 bundle）+ 浏览器半（状态 pill 与管理菜单） |
 | [src/cli/](src/cli/) | 命令分派、参数解析、终端输出、命令级认证装配 |
 

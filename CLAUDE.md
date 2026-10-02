@@ -102,7 +102,7 @@ pnpm run setup:hooks
 
 ```
 入口层      cli/            命令分派、参数解析、终端输出（CLI 形态）
-            plugin/         dsh 插件宿主半：supervisor 簿记、remote-plugin-store 远端插件包管理、host-env-store per-host 环境变量持久化、命令/工具/路由注册
+            plugin/         dsh 插件宿主半：supervisor 簿记、host-env-store per-host 环境变量持久化、命令/工具/路由注册（插件管理交由远端 dsh 自己，本地无该表面）
             plugin-client/  dsh 插件浏览器半：远程会话全局面板（React）、useSessionPolling 轮询 Hook、共享常量与样式
 编排层      session/      会话生命周期、心跳、重连、多会话簿记；open-pipeline 打开流水线（传输工厂 + prepare/probe/provision/tunnels 四阶段）、wsl-reverse WSL 反向通道编排、proxy-env 代理与用户环境变量收集注入
 能力层      provision/    装 Node、dsh 与 pnpm（探针读落盘、镜像候选链、11 系前提补齐）、镜像测速、生成会话 profile、RemoteContext 远端执行上下文

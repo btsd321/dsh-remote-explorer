@@ -58,7 +58,7 @@ pnpm run build:plugin && dsh plugin --profile web add /path/to/repo
 
 Restart `dsh web` after installing. The plugin provides three surfaces:
 
-- **"Remote SSH Sessions" global panel in the left navigation**: pick a host, connect in two window modes (enter current tab / open new tab), disconnect, manage remote plugins, live progress log; the remote window carries a status pill for returning to the manager or closing/stopping the connection
+- **"Remote SSH Sessions" global panel in the left navigation**: pick a host, connect in two window modes (enter current tab / open new tab), disconnect, live progress log; the remote window carries a status pill for returning to the manager or closing/stopping the connection
 - **Slash command** `/remote-explorer`: `hosts | connect <alias> [remote-dir] | status | disconnect <alias|session-id> [--keep-remote]`
 - **Agent tools** `remote_hosts_list / remote_connect / remote_status / remote_kill` (behind dsh's regular tool-approval gate)
 
@@ -164,10 +164,14 @@ The multi-user model follows VS Code Remote-SSH:
 - `kill --all` and `clean` default to acting only on **sessions started from this machine** (owner fingerprint written to remote `.runtime/owner` at session start) plus process-less leftovers; other owners' sessions are skipped and listed, `--include-others` restores the old full-scope behavior
 - **Exception: `clean` does not owner-scope the machine-level `.agents`** — it is a single account-wide directory, so `clean` removes it entirely (installed skills included) regardless of fingerprint. Skills are reinstallable; the next connection sets them up again
 
-Remote plugin management, two surfaces (VS Code's "manage while connected"). The plugin store is **user-level** (one per remote OS account, shared by all its sessions — the counterpart of `~/.vscode-server/extensions/`; session profiles attach via symlink with zero copies):
+Remote plugins are managed entirely by **the remote dsh itself**. The plugin store is **user-level** (one per remote OS account, shared by all its sessions — the counterpart of `~/.vscode-server/extensions/`; session profiles attach via symlink with zero copies).
 
-- **Inside the remote window**: the remote dsh's own Settings plugin UI is fully functional (provisioning installs pnpm on the remote)
-- **Local manager page**: the remote-session panel's "Remote plugins" section lists / installs / enables / disables / uninstalls; changes hot-apply to your own live session via remote hmr and reach other sessions at their next connect (VS Code's Reload Required equivalent — no automatic remote restart)
+There are two entry points, both on the remote side:
+
+- **Inside the remote window**: the remote dsh's own Settings plugin UI (provisioning installs pnpm on the remote) — list / install / enable / disable / uninstall, hot-applied through remote hmr
+- **A remote terminal**: the `dsh plugin` commands, with equivalent capabilities
+
+The local panel deliberately offers **no** plugin management: once a connection succeeds the browser moves to the remote dsh interface, so a local manager page is no longer in view — keeping an invisible management section buys nothing. After the first connection, the remote window is your complete interface for that machine's plugins.
 
 ## Architecture
 
@@ -238,7 +242,6 @@ Foundation   hosts/   util/
 | [src/credential/local-credentials.ts](src/credential/local-credentials.ts) | Read local `.credentials.yaml` refs as env-var credential fallback |
 | [src/credential/token.ts](src/credential/token.ts) | Proxy token: generation and constant-time comparison |
 | [src/credential/proxy-secret.ts](src/credential/proxy-secret.ts) | Credential material I/O: session-scoped token and reverse port persisted on remote |
-| [src/plugin/remote-plugin-store.ts](src/plugin/remote-plugin-store.ts) | Remote plugin package management: list / install / remove / toggle |
 | [src/handoff/](src/handoff/) | Remote-window handoff: host half (bundle inside remote dsh) + browser half (status pill and management menu) |
 | [src/cli/](src/cli/) | Command dispatch, argument parsing, terminal output, per-command auth wiring |
 
