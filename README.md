@@ -236,7 +236,8 @@ Foundation   hosts/   util/
 | [src/session/lifecycle-state.ts](src/session/lifecycle-state.ts) | Session state machine, pure functions |
 | [src/session/heartbeat.ts](src/session/heartbeat.ts) | Heartbeat: process + port + HTTP application-level, single command |
 | [src/session/reconnect.ts](src/session/reconnect.ts) | Bounded exponential backoff |
-| [src/session/session-registry.ts](src/session/session-registry.ts) | Local session table, lock file + atomic replacement |
+| [src/session/cancellable-wait.ts](src/session/cancellable-wait.ts) | Shared cancellable wait primitive (unref'd timer + abort rejection) — single implementation for polling and backoff waits |
+| [src/session/session-registry.ts](src/session/session-registry.ts) | Local session table, lock file + atomic replacement; reads cached by mtime+size (re-stat on every read, cross-process consistent) |
 | [src/session/session-manager.ts](src/session/session-manager.ts) | Session orchestration: lifecycle, heartbeat, reconnect, close; open flow split into open-pipeline |
 | [src/session/open-pipeline/](src/session/open-pipeline/) | Open flow in four stages: prepare / probe / provision / tunnels (with the transport factory) |
 | [src/session/wsl-reverse.ts](src/session/wsl-reverse.ts) | WSL reverse-channel orchestration: networking-mode detection, gateway refresh on reconnect, reverse-link self-check |
@@ -245,7 +246,7 @@ Foundation   hosts/   util/
 | [src/credential/local-credentials.ts](src/credential/local-credentials.ts) | Read local `.credentials.yaml` refs as env-var credential fallback, plus the DeepSeek account grant token (account channel) |
 | [src/credential/token.ts](src/credential/token.ts) | Proxy token: generation and constant-time comparison |
 | [src/credential/proxy-secret.ts](src/credential/proxy-secret.ts) | Credential material I/O: session-scoped token, reverse port, machine-level placeholder account credentials |
-| [src/handoff/](src/handoff/) | Remote-window handoff: host half (bundle inside remote dsh) + browser half (status pill and management menu) |
+| [src/handoff/](src/handoff/) | Remote-window handoff: host half (bundle inside remote dsh) + browser half (status pill and management menu); protocol.ts is the cross-layer shared contract (constants referenced by the entry/orchestration/capability layers, zero dependencies) |
 | [src/plugin/](src/plugin/) | Plugin host half: session supervisor (booking + bounded log buffer), `/api` routes, advanced-options global store (last input, 0600), connect-option summary log |
 | [src/plugin-client/](src/plugin-client/) | Browser half: SSH/WSL panels, connect form with the three advanced-option dialogs (jump hosts / env vars / proxy), session polling, desktop floating window |
 | [src/cli/](src/cli/) | Command dispatch, argument parsing, terminal output, per-command auth wiring |
@@ -255,6 +256,9 @@ Foundation   hosts/   util/
 ```bash
 # Type check
 pnpm run typecheck
+
+# Unit tests (pure-function modules, no SSH host needed)
+pnpm exec tsx --test tests/unit/*.test.ts
 ```
 
 > **⚠️ Contributors: install the git hook once after cloning — do not commit without it.**
