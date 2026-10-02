@@ -177,7 +177,7 @@ pnpm exec tsx src/cli/bin.ts provision <别名> --cwd //home/user
 
 技能目录的并发写由 `.agents/.lock`（flock）串行化。该锁只覆盖本工具发起的写入——第三方技能安装器不读它，跨会话用外部工具并发装技能仍可能互相覆盖 `.skill-lock.json`。
 
-从早期版本升级时，`sessions/<会话 id>/agents/` 下的既有技能会在该会话首次连接时并入 `.agents`：同名一律保留机器级版本，源目录改名 `agents.migrated-<时间戳>` 留痕（不删除，可人工取回）。迁移失败只记日志，不影响连接。
+从早期版本升级时，`sessions/<会话 id>/agents/` 下的旧技能**不会自动并入** `.agents`——该目录已不再被读取，但也未被删除。需要就手工 `mv` 进 `.agents/skills/`（同名项会被跳过，请自行决定取舍），或者直接重装；不需要就随 `clean` 清理死会话目录时一并消失。
 
 **输出：** 表格显示远端根目录、Node 版本、dsh 版本、dsh 入口路径和会话 `DSH_HOME`。
 

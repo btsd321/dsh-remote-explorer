@@ -149,7 +149,7 @@ dsh 自身会把代理变量透传给它拉起的 `git`/`pnpm` 子进程，装�
 
 技能目录的并发写由 `.agents/.lock`（flock）串行化。注意该锁只覆盖本工具发起的写入——第三方技能安装器不读它，跨会话并发用外部工具装技能仍有互相覆盖 `.skill-lock.json` 的风险。
 
-升级自早期版本时，`sessions/<会话 id>/agents/` 里的既有技能会在该会话首次连接时并入 `.agents`（同名一律保留机器级版本，源目录改名 `agents.migrated-<时间戳>` 留痕）。
+升级自早期版本时，`sessions/<会话 id>/agents/` 里的旧技能**不会自动搬过来**——它们已不再被读取，但也不会被删除。需要的话手工 `mv` 进 `.agents/skills/`，或者直接重装（更省事）；不需要的话随 `clean` 清理死会话目录时一并消失。
 
 **在 Git Bash 里写远端路径要用双斜杠**（`--cwd //home/xxx`）或先设 `MSYS_NO_PATHCONV=1`。MSYS 会把 `/home/xxx` 改写成 `D:/SoftWare/Git/home/xxx`，这发生在参数到达程序之前，程序只能识别并拒绝。
 

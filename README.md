@@ -149,7 +149,7 @@ Resources under this root fall into two classes:
 
 Concurrent writes to the skill directory are serialized by a flock at `.agents/.lock`. That lock only covers writes this tool initiates — third-party skill installers do not read it, so concurrently installing skills with an external tool from several sessions can still clobber `.skill-lock.json`.
 
-When upgrading from an earlier version, skills under `sessions/<session id>/agents/` are merged into `.agents` on that session's first connection (the machine-level copy always wins a name collision; the source directory is kept as `agents.migrated-<timestamp>`).
+When upgrading from an earlier version, skills under `sessions/<session id>/agents/` are **not carried over automatically** — they are no longer read, but they are not deleted either. `mv` them into `.agents/skills/` by hand, or simply reinstall (less work); leftovers disappear when `clean` removes the dead session directory.
 
 **When writing remote paths in Git Bash, use double slashes** (`--cwd //home/xxx`) or set `MSYS_NO_PATHCONV=1` first. MSYS rewrites `/home/xxx` into something like `D:/SoftWare/Git/home/xxx` before the argument reaches the program, which the CLI can only detect and reject.
 

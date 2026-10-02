@@ -124,11 +124,12 @@
 
 ## agent 能力（技能）
 
-**22. agent 能力目录按机器共享，不按会话——`DSH_AGENTS_HOME=<base>/.agents`（这是对第 11 条早期做法的**有意反转**）。** 早期版本把它指向 `sessions/<id>/agents` 换取「不读别人的 skills」，代价是同一台远端换个工作目录开会话就等于一台新机器，技能要重装一遍——用户诉求正是「不要反复配置」。判据来自 dsh 源码：skill-filesystem 的六个根里，`<agentsHome>/skills` 是 **`user-agents` 源、rank 500**，语义是「这台机器的使用者」，和 `<dshHome>/skills`（rank 400）同属用户级；项目级 `.dsh/skills`（100）与 `.agents/skills`（200）优先级更高且随仓库走，**不该也不能**接到机器级（会污染用户仓库、且破坏项目覆盖机器的既定语义）。共享边界 = 远端账号：本工具的根就在该账号家目录下，持有者本就共享这棵树里的 node、dsh、host profile，技能单独做指纹隔离会与同目录其他资源的粒度不一致。四个配套，改相关代码时别破坏：
+**22. agent 能力目录按机器共享，不按会话——`DSH_AGENTS_HOME=<base>/.agents`（这是对第 11 条早期做法的**有意反转**）。** 早期版本把它指向 `sessions/<id>/agents` 换取「不读别人的 skills」，代价是同一台远端换个工作目录开会话就等于一台新机器，技能要重装一遍——用户诉求正是「不要反复配置」。判据来自 dsh 源码：skill-filesystem 的六个根里，`<agentsHome>/skills` 是 **`user-agents` 源、rank 500**，语义是「这台机器的使用者」，和 `<dshHome>/skills`（rank 400）同属用户级；项目级 `.dsh/skills`（100）与 `.agents/skills`（200）优先级更高且随仓库走，**不该也不能**接到机器级（会污染用户仓库、且破坏项目覆盖机器的既定语义）。共享边界 = 远端账号：本工具的根就在该账号家目录下，持有者本就共享这棵树里的 node、dsh、host profile，技能单独做指纹隔离会与同目录其他资源的粒度不一致。三个配套，改相关代码时别破坏：
 
 - **目录名用 `.agents` 而非 `shared/agents`**：与本机 `~/.agents` 同形，且避开两个坑——`resolveDshHome` 不解析软链而 `canonicalizeWatchPath` 取 realpath，走 symlink 接法时两者可能比对不上（表现为「装完技能要重开会话才可见」）；`user-dsh` 根会跳过 `.system` 子目录而 `user-agents` 根不会，走 `.agents` 落在不受该规则影响的桶里
 - **启动前预建 `.agents/skills`**（[remote-process.ts](../src/session/remote-process.ts)）：skill-filesystem 对**不存在**的根只能用 `fs.watchFile` 逐个路径段轮询等它出现，预建好则 Chokidar 直接附加，装完技能当即进入下一次目录
 - **写临界区用 flock**（[agents-lock.ts](../src/provision/agents-lock.ts)，锁 `.agents/.lock`）：共享后新增的风险是技能安装器的 `.skill-lock.json` 为**目录级单文件整写**，并发装技能后者覆盖前者。超时取 90s（护的是秒级目录操作，不是第 11 条引导锁的分钟级下载）。**能力边界：只锁本工具发起的写入**，第三方安装器不读我们的锁——不做拦截任意进程写入的全局串行化，文档说明即可
-- **老会话幂等迁移**（[agents-migrate.ts](../src/provision/agents-migrate.ts)，接在 open 流水线第三阶段、远端启动前）：同名一律保留机器级版本（它是迁移后的唯一真源，可能已被别的会话更新，用旧副本覆盖等于回退别人的改动）；迁完改名 `agents.migrated-<时间戳>` **留痕而非 `rm -rf`**（技能是用户手工装的东西，判错一次不可恢复）；幂等判据是源目录还在不在，重连退化为空操作；失败只记日志不抛错（旧技能没搬过来是降级，让连接因此失败是更坏的结果）
+
+**不做老会话技能迁移（有意决策，别再补回来）。** 曾实现过一版 `agents-migrate.ts`：首连时把 `sessions/<id>/agents/` 并入 `.agents`，同名保留机器级版本、迁完改名留痕、幂等、失败不抛错。用户否决，理由是这样没用——该目录承载的是**上一代的会话级技能副本**，而本机 `~/.agents` 才是用户实际维护技能的地方（带 `.skill-lock.json` 的来源与 hash 记录）；搬过来的是一批陈旧且无人维护的副本，远不如让用户在新位置重装一次干净。真要保留旧技能的场合，手工 `mv` 的成本远低于为此维护一条幂等迁移路径（还得处理同名裁决、留痕、并发锁、部分失败五种情形）。旧目录**不删也不读**：不删是为了不擅自处置用户数据，不读是因为 `DSH_AGENTS_HOME` 已不再指向它；它随 `clean` 清理死会话目录时自然消失。
 
 与第 15 条的 store 相反，**`.agents` 会被 `clean` 整个清除**（[clean.ts](../src/cli/commands/clean.ts)）：它是单一目录没有「保留最新 N 个」的概念，技能属可重装资源；也不按 owner 指纹 scope、不按活会话保护——活会话读同一目录，删掉只影响它后续**发现**到的技能（skill-filesystem 的根缺失属于有效空状态，不会让进程崩）。顺带一处语义更正：保留键 `DSH_AGENTS_HOME` 禁止用户配置的理由从「护会话隔离契约」变成「护技能共享契约」——被改走会让该会话看不到机器上已装的技能，还把新技能装到下次就找不到的地方。

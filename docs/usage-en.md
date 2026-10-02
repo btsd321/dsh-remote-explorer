@@ -177,7 +177,7 @@ The remote dsh's `DSH_AGENTS_HOME` points at `.agents`, mirroring `~/.agents` on
 
 Concurrent writes to the skill directory are serialized by a flock at `.agents/.lock`. That lock only covers writes this tool initiates — third-party skill installers do not read it, so installing skills with an external tool concurrently from several sessions can still clobber `.skill-lock.json`.
 
-When upgrading from an earlier version, skills under `sessions/<session id>/agents/` are merged into `.agents` on that session's first connection: the machine-level copy always wins a name collision, and the source directory is renamed `agents.migrated-<timestamp>` rather than deleted (so anything left behind can be recovered by hand). A failed migration is logged and does not block the connection.
+When upgrading from an earlier version, skills under `sessions/<session id>/agents/` are **not merged into** `.agents` automatically — that directory is no longer read, but it is not deleted either. `mv` what you want into `.agents/skills/` yourself (existing names are skipped, so decide the trade-off), or simply reinstall; leftovers disappear when `clean` removes the dead session directory.
 
 **Output:** A table showing the remote base directory, Node version, dsh version, dsh entry path, and session `DSH_HOME`.
 
