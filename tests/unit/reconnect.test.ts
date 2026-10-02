@@ -3,6 +3,11 @@
  * @description 覆盖 backoffDelay 退避计算的纯函数行为（首次、连续失败递增、
  *              上限封顶、重置语义、边界 attempt 值）与 wait 的取消语义。
  *              runReconnect 等执行逻辑依赖真实传输，不在本文件范围。
+ *
+ *              预中止用例的断言原先按实际行为记录为 Node 内置 AbortError
+ *              （与 JSDoc 声明不符，注明「见报告」）；cancellableWait 收口
+ *              两条取消路径统一抛 RemoteError('ABORTED') 后，断言随之改为
+ *              RemoteError——本文件不再依赖内置 AbortError 的任何判断。
  */
 
 import { describe, it } from 'node:test';
@@ -119,17 +124,17 @@ describe('wait', () => {
     await wait(0);
   });
 
-  it('signal 已中止时立即抛错（当前为 Node 内置 AbortError，见报告）', async () => {
-    // 现状：预中止路径走 signal.throwIfAborted()，抛 DOMException AbortError，
-    // 与 JSDoc 声明的 RemoteError('ABORTED') 不一致（等待期间取消才是
-    // RemoteError）——按实际行为断言，差异记录在测试报告中
+  it('signal 已中止时立即抛 RemoteError ABORTED（与等待期间取消同类型）', async () => {
+    // 预中止路径原先走 signal.throwIfAborted() 抛 DOMException AbortError，
+    // 与 JSDoc 声明及等待期间取消路径的 RemoteError 不一致；统一后调用方
+    // 无需按中止时机区分错误类型（见文件头说明）
     const controller = new AbortController();
     controller.abort();
     await assert.rejects(
       () => wait(1_000, controller.signal),
       (err: unknown) => {
-        assert.ok(err instanceof Error);
-        assert.equal((err as Error).name, 'AbortError');
+        assert.ok(err instanceof RemoteError);
+        assert.equal(err.code, 'ABORTED');
         return true;
       },
     );
