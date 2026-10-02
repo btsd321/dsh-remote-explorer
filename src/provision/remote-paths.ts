@@ -15,6 +15,12 @@
  *   dsh 安装位置解析、再从 profile 目录解析，所以"装在哪"与"DSH_HOME 指向哪"
  *   彼此解耦（P0 已实测）。
  *
+ * - **能力与实例分离。** 插件（`profiles/`）与 agent 能力（`.agents/`）是
+ *   机器级共享的，只有会话实例（历史、storages、cache、.runtime）落在
+ *   `sessions/<id>/` 下。判据是 dsh 对该目录的语义：`<agentsHome>/skills` 是
+ *   **用户级**源（rank 500），代表"这台机器的使用者"，不是"这一次会话"。
+ *   会话级的 DSH_HOME 只用来承载实例状态，不用来承载配置。
+ *
  * - **临时目录带 pid。** 同样来自 Zed（`download-<pid>-<文件名>`），避免并发安装撞车。
  *
  * 跨平台约束：远端一定是 POSIX，本机可能是 Windows。所以远端路径**一律用 `/`
@@ -72,6 +78,36 @@ export interface RemotePaths {
    * 多人同远端账号并发引导时串起版本目录的写临界区，见 install-lock.ts。
    */
   readonly installLockFile: string;
+  /**
+   * 主机级 agent 能力根目录（`DSH_AGENTS_HOME` 的指向）。
+   *
+   * 与本机 `~/.agents` 同形，刻意不放在会话目录下：dsh 的
+   * skill-filesystem 把 `<agentsHome>/skills` 当作**用户级**根（rank 500），
+   * 语义上属于「这台机器的使用者」而非「这一次会话」。早期版本指向
+   * `sessions/<id>/agents` 换取隔离，代价是同一台远端换个会话就要重装一遍
+   * 技能——与 opencode / Claude Code 的单一用户级根模型相悖，也与本目录下
+   * node、dsh、host profile 早已全账号共享的粒度不一致。
+   *
+   * 共享边界 = 远端账号：本工具的根目录就在该账号家目录下，持有该账号者
+   * 本就共享这棵树里的一切。不按本机指纹分桶。
+   */
+  readonly agentsHome: string;
+  /**
+   * 主机级技能目录（`<agentsHome>/skills`）。
+   *
+   * dsh 的本地技能提供方只扫一层：`<root>/<name>/SKILL.md` 或
+   * `<root>/<name>.md`。该根为 `user-agents` 源、rank 500，低于项目级
+   * （rank 100/200），所以用户仓库内的项目技能仍然优先。
+   */
+  readonly agentsSkills: string;
+  /**
+   * 主机级 agent 能力写临界区锁文件（flock）。
+   *
+   * `.agents/` 共享后新增的风险：技能安装器的 `.skill-lock.json` 是**目录级
+   * 单文件**，多会话并发装技能会互相覆盖。本工具自己发起的写入经此锁串行化，
+   * 见 agents-lock.ts。
+   */
+  readonly agentsLockFile: string;
   /**
    * 主机级共享 profile 目录（dsh 官方 `$DSH_HOME/profiles/<name>/` 结构）。
    *
@@ -269,6 +305,9 @@ export function createRemotePaths(homeDir: string): RemotePaths {
     npmCache: `${base}/npm-cache`,
     tmpRoot: `${base}/tmp`,
     installLockFile: `${base}/tmp/install.lock`,
+    agentsHome: `${base}/.agents`,
+    agentsSkills: `${base}/.agents/skills`,
+    agentsLockFile: `${base}/.agents/.lock`,
     hostProfileDir: (platform) => `${base}/profiles/${platform}`,
     hostProfileManifest: (platform) => `${base}/profiles/${platform}/package.json`,
     hostProfileNodeModules: (platform) => `${base}/profiles/${platform}/node_modules`,
