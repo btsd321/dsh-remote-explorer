@@ -128,7 +128,11 @@ function buildRoutes(supervisor: SessionSupervisor): RouteDef[] {
         if (log === undefined) {
           return Response.json({ error: `没有会话 ${id}` }, { status: 404 });
         }
-        const snapshot = supervisor.list().find(item => item.sessionId === id);
+        // getLog 命中即证明会话在 supervisor 内存中，快照直接内存直查——
+        // 不再经 list() 读会话表（readFileSync + JSON.parse + 逐条 pid 探活），
+        // 该路由每 1.5s 轮询一次，读盘纯属浪费。快照缺失（已断开的会话）
+        // 时保持降级：仍返回 log
+        const snapshot = supervisor.snapshotById(id);
         return Response.json({
           ...(snapshot !== undefined ? { session: toPanelSession(snapshot) } : {}),
           log,
