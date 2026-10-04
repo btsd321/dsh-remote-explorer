@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "dsh-remote-explorer",
+    "description": "Remote development launcher: install dsh on a remote host and use it from your local browser. LLM credentials never leave your machine."
+  }
+}
