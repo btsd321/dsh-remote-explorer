@@ -59,7 +59,65 @@ AI agent 在本仓库工作时，除遵循上述规则外，还需注意：
 4. **agent 不做反向 merge**：如果 agent 需要同步其他分支的改动，应通知 Lead 处理
 5. **特性分支命名加编号**：便于追踪，如 `refactor/smell-1-transport-platform`
 
-### 1.4 发布流程
+### 1.4 Agent 团队协作与 git worktree
+
+当使用 **Agent 团队**（Lead + 多个 teammate）并行工作时，多个 agent 共享同一个工作目录。如果每个 agent 各自 `git checkout` 切换分支，会导致工作区在分支间反复切换，正在修改的文件被覆盖或丢失，工作区状态错乱。
+
+**核心规则：Agent 团队协作时，每个 agent 必须使用独立的 git worktree，而非在同一工作目录里切换分支。**
+
+#### 为什么必须用 worktree
+
+- 同一工作目录同一时刻只能 checkout 一个分支。agent A 切到 `feat/a` 时，agent B 正在 `feat/b` 上写的未提交改动会被覆盖
+- worktree 让每个 agent 在**独立目录**里拥有**独立的工作区与 HEAD**，共享同一个 `.git` 仓库对象库（分支、commit、stash 全局可见）
+- 多个 worktree 可以并行 checkout 不同分支，互不干扰
+
+#### 操作约定
+
+1. **Lead 负责创建 worktree**：为每个 teammate 分配任务时，为其创建独立的 worktree
+
+   ```bash
+   # Lead 为 teammate-a 创建 worktree（基于 develop 最新 HEAD）
+   git fetch origin
+   git worktree add ../dsh-remote-explorer-feat-a -b feat/agent-a-task develop
+   ```
+
+2. **teammate 在自己的 worktree 目录中工作**：teammate 收到任务时，Lead 会告知其 worktree 路径，teammate 的所有文件读写都在该路径下进行
+
+   ```bash
+   # teammate-a 在自己的 worktree 中工作
+   cd ../dsh-remote-explorer-feat-a
+   # 正常 add/commit，分支已由 Lead 创建好
+   git add -A && git commit -m "feat(transport): ..."
+   ```
+
+3. **worktree 命名**：以任务或 agent 名命名，便于追踪
+
+   ```
+   ../dsh-remote-explorer-<分支名简写>
+   ```
+
+4. **合并后清理 worktree**：Lead 审核 teammate 的工作、将特性分支 merge 回 develop 后，删除对应 worktree
+
+   ```bash
+   # 先删工作目录
+   git worktree remove ../dsh-remote-explorer-feat-a
+   # 再删已合并的特性分支
+   git branch -d feat/agent-a-task
+   ```
+
+#### worktree 与本仓库写作用户不重叠原则的关系
+
+- 1.3 节的「写作用户不重叠」原则仍然适用：不同 agent 的 worktree 应修改不相交的文件集合
+- worktree 解决的是**工作区物理隔离**（防止 checkout 互相覆盖），写作用户不重叠解决的是**逻辑隔离**（防止 merge 冲突）。两者互补，缺一不可
+- 即使用了 worktree，两个 agent 也不能同时改同一个文件——那会在 merge 回 develop 时产生冲突
+
+#### 何时不需要 worktree
+
+- **单个 agent 独立工作**（无 teammate）：直接在主工作目录用特性分支即可
+- **纯调研/只读任务**：不修改文件的 agent 不需要 worktree
+- **Lead 自身的工作**：Lead 在主工作目录操作即可，worktree 是为并行写入的 teammate 准备的
+
+### 1.5 发布流程
 
 ```
 develop (稳定) ──merge──→ master ──tag──→ v0.x.y
@@ -198,6 +256,7 @@ AI agent 在本仓库执行代码变更时，按以下清单自检：
 - [ ] 确认当前在正确的特性分支上（不在 master/develop 上直接改）
 - [ ] 确认特性分支从 develop 最新 HEAD 创建
 - [ ] 确认 Lead 分配的写作用户与其他 agent 不重叠
+- [ ] Agent 团队协作时：确认在 Lead 分配的独立 worktree 目录中工作，不在主工作目录切换分支
 
 ### 工作中
 
@@ -214,6 +273,7 @@ AI agent 在本仓库执行代码变更时，按以下清单自检：
 - [ ] 向 Lead 报告完成状态、commit hash、验证结果
 - [ ] **不自行 merge 到 develop 或 master**
 - [ ] **不做 master → develop 的反向 merge**
+- [ ] Agent 团队协作时：通知 Lead 工作已完成，由 Lead 负责合并后清理 worktree（不自行删除 worktree）
 
 ---
 
@@ -229,3 +289,4 @@ AI agent 在本仓库执行代码变更时，按以下清单自检：
 | 提交含 `.claude/`、`.agents/`、`agent/`、`tasks/` 的文件 | 已在 .gitignore 中排除 |
 | 提交信息用英文 | 本仓库一律中文 |
 | 提交 src/ 改动时不带 lib/ 更新 | lib/ 是构建产物，必须与源码同步提交 |
+| Agent 团队协作时在同一工作目录切换分支 | 多个 agent 共享工作目录时切换分支会互相覆盖，必须用 git worktree 隔离 |
