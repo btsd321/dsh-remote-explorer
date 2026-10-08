@@ -36,6 +36,9 @@ const logger = createLogger('wsl-panel');
 /** localStorage 里「上次远端目录」的键前缀（按发行版记忆） */
 const LAST_CWD_KEY_PREFIX = 'dsh-remote-explorer:wsl:lastCwd:';
 
+/** localStorage 里「上次 dsh 版本」的键（WSL 域，不按发行版区分） */
+const DSH_VERSION_KEY = 'dsh-remote-explorer:dshVersion:wsl';
+
 /** 面板 props：locale 面由 slots 框架注入 */
 export interface WslSessionPanelProps {
   /** 命名空间绑定的翻译函数 */
@@ -57,7 +60,9 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
   const [wslUser, setWslUser] = React.useState('');
   const [localPort, setLocalPort] = React.useState('');
   const [nodeVersion, setNodeVersion] = React.useState('');
-  const [dshVersion, setDshVersion] = React.useState('');
+  const [dshVersion, setDshVersion] = React.useState(() => {
+    try { return localStorage.getItem(DSH_VERSION_KEY) ?? ''; } catch { return ''; }
+  });
   const [forceRestart, setForceRestart] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [formError, setFormError] = React.useState('');
@@ -152,6 +157,8 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
       pendingNav.current = { sessionId: session.sessionId, mode };
       try {
         localStorage.setItem(`${LAST_CWD_KEY_PREFIX}${distroName.trim()}`, cwd.trim());
+        // dsh 版本按传输形态（WSL）记忆，下次连接时恢复上次选择
+        localStorage.setItem(DSH_VERSION_KEY, dshVersion.trim());
       } catch { /* 记忆失败不影响连接 */ }
       setSelectedId(session.sessionId);
     } catch (error) {
