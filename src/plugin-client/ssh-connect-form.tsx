@@ -36,6 +36,9 @@ import { DESKTOP } from './constants.js';
 /** localStorage 里「上次远端目录」的键前缀（按主机别名记忆） */
 const LAST_CWD_KEY_PREFIX = 'dsh-remote-explorer:lastCwd:';
 
+/** localStorage 里「上次 dsh 版本」的键（SSH 域，不按主机区分） */
+const DSH_VERSION_KEY = 'dsh-remote-explorer:dshVersion:ssh';
+
 /** 直连语法粗判（与宿主 parseAdHocHost 同族形态：user@host[:port]） */
 const AD_HOC_HOST_RE = /^([^@\s]+)@([^@\s]+?)(?::(\d+))?$/;
 
@@ -74,7 +77,9 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
   const [privateKey, setPrivateKey] = React.useState('');
   const [localPort, setLocalPort] = React.useState('');
   const [nodeVersion, setNodeVersion] = React.useState('');
-  const [dshVersion, setDshVersion] = React.useState('');
+  const [dshVersion, setDshVersion] = React.useState(() => {
+    try { return localStorage.getItem(DSH_VERSION_KEY) ?? ''; } catch { return ''; }
+  });
   const [forceRestart, setForceRestart] = React.useState(false);
   const [refreshMirrors, setRefreshMirrors] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
@@ -152,6 +157,8 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
       });
       try {
         localStorage.setItem(`${LAST_CWD_KEY_PREFIX}${host.trim()}`, cwd.trim());
+        // dsh 版本按传输形态（SSH）记忆，下次连接时恢复上次选择
+        localStorage.setItem(DSH_VERSION_KEY, dshVersion.trim());
       } catch { /* 记忆失败不影响连接 */ }
       onConnected(session, mode);
     } catch (error) {
