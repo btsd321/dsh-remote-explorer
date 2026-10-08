@@ -22,6 +22,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type {} from '@deepseek-ai/dsh-client-connection';
 import { listHosts, refreshConfig, type JumpEntry } from '../hosts/ssh-config-parser.js';
 import { listWslDistros, refreshWslCache } from '../hosts/wsl-distro-parser.js';
+import { fetchDshVersions } from '../provision/dsh-version-fetch.js';
 import { toErrorMessage } from '../util/errors.js';
 import { SessionSupervisor, SupervisorError, type ConnectRequest, type SessionSnapshot } from './supervisor.js';
 import {
@@ -115,6 +116,21 @@ function buildRoutes(supervisor: SessionSupervisor): RouteDef[] {
       path: `${ROUTE_PREFIX}/sessions`,
       methods: ['GET'],
       fetch: async () => Response.json({ sessions: supervisor.list().map(toPanelSession) }),
+    },
+    {
+      // dsh 已发布版本列表：面板版本下拉框的数据源（本机直接查 npm registry，
+      // 不走远端——面板路由跑在 dsh 宿主进程，没有 SSH 通道）。探测失败返回
+      // 空列表（降级为空 datalist，用户仍可手动输入）
+      path: `${ROUTE_PREFIX}/dsh-versions`,
+      methods: ['GET'],
+      fetch: async () => {
+        try {
+          const result = await fetchDshVersions();
+          return Response.json(result);
+        } catch (error) {
+          return internalError(error);
+        }
+      },
     },
     {
       // 单会话详情 + 增量日志（面板 1.5s 轮询 ?id=<会话id>&since=<seq>）
