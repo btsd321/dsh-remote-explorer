@@ -23,8 +23,9 @@ import * as React from 'react';
 import type { ReactNode } from 'react';
 import type { JumpEntry, SshHostSummary } from '../hosts/ssh-config-parser.js';
 import type { RemoteExplorerLocaleKey } from './locales.js';
-import { messageOf, postConnect, fetchDshVersions, type PanelSession } from './api.js';
+import { messageOf, postConnect, type PanelSession } from './api.js';
 import { HostPicker } from './host-picker.js';
+import { useDshVersions } from './use-dsh-versions.js';
 import { OVERLAY_INTENT_ORIGIN } from './remote-window.js';
 import { EnvDialog } from './dialogs/env-dialog.js';
 import { ProxyDialog } from './dialogs/proxy-dialog.js';
@@ -94,17 +95,7 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
   const [jumpEntries, setJumpEntries] = React.useState<JumpEntry[] | undefined>(undefined);
 
   // ---- dsh 版本下拉列表（挂载时探测 registry 填充 datalist） ----
-  const [dshVersions, setDshVersions] = React.useState<string[]>([]);
-  React.useEffect(() => {
-    void (async (): Promise<void> => {
-      try {
-        const result = await fetchDshVersions();
-        setDshVersions(result.versions);
-      } catch {
-        // 探测失败：datalist 留空，用户仍可手动输入任意版本号
-      }
-    })();
-  }, []);
+  const dshVersions = useDshVersions();
 
   /**
    * 主机输入是否直连语法（跳板机携带判据：仅直连目标把面板跳板条目放进
