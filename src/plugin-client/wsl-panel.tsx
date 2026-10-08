@@ -19,7 +19,7 @@ import * as React from 'react';
 import type { ReactNode } from 'react';
 import type { RemoteExplorerLocaleKey } from './locales.js';
 import {
-  fetchWslDistros, fetchDshVersions, messageOf, postConnect, postDisconnect,
+  fetchWslDistros, messageOf, postConnect, postDisconnect,
   type WslDistroSummary,
 } from './api.js';
 import { openRemoteWindow, OVERLAY_INTENT_ORIGIN } from './remote-window.js';
@@ -29,6 +29,7 @@ import { createLogger } from '../util/logger.js';
 import { inputStyle, buttonStyle } from './styles.js';
 import { DESKTOP, HANDOFF_COUNTDOWN_SECONDS } from './constants.js';
 import { useSessionPolling } from './use-session-polling.js';
+import { useDshVersions } from './use-dsh-versions.js';
 
 const logger = createLogger('wsl-panel');
 
@@ -63,7 +64,7 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
 
   // ---- 数据状态 ----
   const [distros, setDistros] = React.useState<WslDistroSummary[]>([]);
-  const [dshVersions, setDshVersions] = React.useState<string[]>([]);
+  const dshVersions = useDshVersions();
   const [stopRemote, setStopRemote] = React.useState(true);
   const logBoxRef = React.useRef<HTMLDivElement | null>(null);
 
@@ -107,18 +108,6 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
     }
   }, [setLoadError]);
   React.useEffect(() => { void loadDistros(false); }, [loadDistros]);
-
-  // dsh 版本列表：挂载时探测 registry 填充 datalist（探测失败留空，用户仍可手动输入）
-  React.useEffect(() => {
-    void (async (): Promise<void> => {
-      try {
-        const result = await fetchDshVersions();
-        setDshVersions(result.versions);
-      } catch {
-        // 探测失败：datalist 留空，用户仍可手动输入任意版本号
-      }
-    })();
-  }, []);
 
   // 日志自动滚底
   React.useEffect(() => {
