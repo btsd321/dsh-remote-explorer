@@ -30,6 +30,7 @@ import { inputStyle, buttonStyle } from './styles.js';
 import { DESKTOP, HANDOFF_COUNTDOWN_SECONDS } from './constants.js';
 import { useSessionPolling } from './use-session-polling.js';
 import { useDshVersions } from './use-dsh-versions.js';
+import { useNodeVersions } from './use-node-versions.js';
 
 const logger = createLogger('wsl-panel');
 
@@ -38,6 +39,9 @@ const LAST_CWD_KEY_PREFIX = 'dsh-remote-explorer:wsl:lastCwd:';
 
 /** localStorage 里「上次 dsh 版本」的键（WSL 域，不按发行版区分） */
 const DSH_VERSION_KEY = 'dsh-remote-explorer:dshVersion:wsl';
+
+/** localStorage 里「上次 Node 版本」的键（WSL 域，不按发行版区分） */
+const NODE_VERSION_KEY = 'dsh-remote-explorer:nodeVersion:wsl';
 
 /** 面板 props：locale 面由 slots 框架注入 */
 export interface WslSessionPanelProps {
@@ -59,7 +63,9 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
   const [cwd, setCwd] = React.useState('');
   const [wslUser, setWslUser] = React.useState('');
   const [localPort, setLocalPort] = React.useState('');
-  const [nodeVersion, setNodeVersion] = React.useState('');
+  const [nodeVersion, setNodeVersion] = React.useState(() => {
+    try { return localStorage.getItem(NODE_VERSION_KEY) ?? ''; } catch { return ''; }
+  });
   const [dshVersion, setDshVersion] = React.useState(() => {
     try { return localStorage.getItem(DSH_VERSION_KEY) ?? ''; } catch { return ''; }
   });
@@ -70,6 +76,7 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
   // ---- 数据状态 ----
   const [distros, setDistros] = React.useState<WslDistroSummary[]>([]);
   const dshVersions = useDshVersions();
+  const nodeVersions = useNodeVersions();
   const [stopRemote, setStopRemote] = React.useState(true);
   const logBoxRef = React.useRef<HTMLDivElement | null>(null);
 
@@ -159,6 +166,8 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
         localStorage.setItem(`${LAST_CWD_KEY_PREFIX}${distroName.trim()}`, cwd.trim());
         // dsh 版本按传输形态（WSL）记忆，下次连接时恢复上次选择
         localStorage.setItem(DSH_VERSION_KEY, dshVersion.trim());
+        // Node 版本同纪律（WSL 域独立记忆）
+        localStorage.setItem(NODE_VERSION_KEY, nodeVersion.trim());
       } catch { /* 记忆失败不影响连接 */ }
       setSelectedId(session.sessionId);
     } catch (error) {
@@ -263,8 +272,13 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
             </label>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               <span style={{ fontSize: 12, opacity: 0.75 }}>{t('nodeVersion')}</span>
-              <input value={nodeVersion} placeholder="v24.21.0" style={inputStyle}
+              <input value={nodeVersion} list="dsh-remote-explorer-wsl-node-versions" placeholder="v24.21.0" style={inputStyle}
                 onChange={event => setNodeVersion(event.target.value)} />
+              <datalist id="dsh-remote-explorer-wsl-node-versions">
+                {nodeVersions.map(version => (
+                  <option key={version} value={version} />
+                ))}
+              </datalist>
             </label>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               <span style={{ fontSize: 12, opacity: 0.75 }}>{t('dshVersion')}</span>
