@@ -220,7 +220,8 @@ Foundation   hosts/   util/
 | [src/provision/mirror-selector.ts](src/provision/mirror-selector.ts) | Live mirror latency measurement and adaptive selection |
 | [src/provision/remote-paths.ts](src/provision/remote-paths.ts) | Single source of truth for remote path rules |
 | [src/provision/node-installer.ts](src/provision/node-installer.ts) | Install Node, version-isolated, self-checks after install |
-| [src/provision/dsh-installer.ts](src/provision/dsh-installer.ts) | Install dsh: latest published version by default (dist-tag `latest` lags in practice), fallback floor on resolution failure |
+| [src/provision/dsh-installer.ts](src/provision/dsh-installer.ts) | Install dsh: latest published version by default (dist-tag `latest` lags in practice), fallback floor on resolution failure; exports semver pure functions (parse/compare/max) shared by version-fetch |
+| [src/provision/dsh-version-fetch.ts](src/provision/dsh-version-fetch.ts) | Local npm registry query for the panel's dsh-version dropdown: fetches published versions, filters ≥ 0.2.0, 5-min in-process cache, degrades to empty list on failure |
 | [src/provision/pnpm-installer.ts](src/provision/pnpm-installer.ts) | Install pnpm (pinned 11.7.0, reuses majors 10/11/12); version probe reads the on-disk package.json |
 | [src/provision/pnpm-profile.ts](src/provision/pnpm-profile.ts) | Idempotent pnpm 11 prerequisites in the host profile's pnpm-workspace.yaml (allowBuilds / minimumReleaseAge) |
 | [src/provision/profile-writer.ts](src/provision/profile-writer.ts) | Per-session independent `DSH_HOME` and profile/patch generation |
@@ -248,7 +249,7 @@ Foundation   hosts/   util/
 | [src/credential/proxy-secret.ts](src/credential/proxy-secret.ts) | Credential material I/O: session-scoped token, reverse port, machine-level placeholder account credentials |
 | [src/handoff/](src/handoff/) | Remote-window handoff: host half (bundle inside remote dsh) + browser half (status pill and management menu); protocol.ts is the cross-layer shared contract (constants referenced by the entry/orchestration/capability layers, zero dependencies) |
 | [src/plugin/](src/plugin/) | Plugin host half: session supervisor (booking + bounded log buffer), `/api` routes, advanced-options store (per transport form: SSH domain has env/proxy/jump hosts, WSL domain env only, 0600), connect-option summary log |
-| [src/plugin-client/](src/plugin-client/) | Browser half: SSH/WSL panels, connect form with the three advanced-option dialogs (jump hosts / env vars / proxy), session polling, desktop floating window |
+| [src/plugin-client/](src/plugin-client/) | Browser half: SSH/WSL panels, connect form with the three advanced-option dialogs (jump hosts / env vars / proxy), session polling, dsh-version dropdown (useDshVersions hook), desktop floating window |
 | [src/cli/](src/cli/) | Command dispatch, argument parsing, terminal output, per-command auth wiring |
 
 ## Development

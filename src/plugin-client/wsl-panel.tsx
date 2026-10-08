@@ -29,6 +29,7 @@ import { createLogger } from '../util/logger.js';
 import { inputStyle, buttonStyle } from './styles.js';
 import { DESKTOP, HANDOFF_COUNTDOWN_SECONDS } from './constants.js';
 import { useSessionPolling } from './use-session-polling.js';
+import { useDshVersions } from './use-dsh-versions.js';
 
 const logger = createLogger('wsl-panel');
 
@@ -63,6 +64,7 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
 
   // ---- 数据状态 ----
   const [distros, setDistros] = React.useState<WslDistroSummary[]>([]);
+  const dshVersions = useDshVersions();
   const [stopRemote, setStopRemote] = React.useState(true);
   const logBoxRef = React.useRef<HTMLDivElement | null>(null);
 
@@ -259,8 +261,13 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
             </label>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               <span style={{ fontSize: 12, opacity: 0.75 }}>{t('dshVersion')}</span>
-              <input value={dshVersion} style={inputStyle}
+              <input value={dshVersion} list="dsh-remote-explorer-wsl-dsh-versions" style={inputStyle}
                 onChange={event => setDshVersion(event.target.value)} />
+              <datalist id="dsh-remote-explorer-wsl-dsh-versions">
+                {dshVersions.map(version => (
+                  <option key={version} value={version} />
+                ))}
+              </datalist>
             </label>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
               <input type="checkbox" checked={forceRestart}

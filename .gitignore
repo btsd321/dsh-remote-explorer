@@ -58,3 +58,6 @@ lerna-debug.log*
 agent/
 skills-lock.json
 tasks/
+
+# git worktree 临时工作区（Agent 团队协作时创建，已在 .worktrees/ 下）
+.worktrees/

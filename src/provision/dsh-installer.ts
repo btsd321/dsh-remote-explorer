@@ -164,7 +164,7 @@ export async function ensureDsh(
 // ─── 版本比较（纯函数，默认「最新」策略的判定核心） ────────────────────────
 
 /** semver 解析结果（仅用于优先级比较；build metadata 不参与优先级，不接受） */
-interface SemverParts {
+export interface SemverParts {
   /** 主版本号 */
   major: number;
   /** 次版本号 */
@@ -190,7 +190,7 @@ const SEMVER_PATTERN =
  * @param candidate - 待解析字符串（原样传入，带空白即非法）
  * @returns 解析结果；不满足 semver 语法返回 undefined
  */
-function parseSemver(candidate: string): SemverParts | undefined {
+export function parseSemver(candidate: string): SemverParts | undefined {
   const match = SEMVER_PATTERN.exec(candidate);
   if (!match) return undefined;
   return {
@@ -232,7 +232,7 @@ function comparePrereleaseIdentifiers(a: string, b: string): number {
  * @param b - 右侧版本
  * @returns 负数表示 a < b，0 相等，正数表示 a > b
  */
-function compareSemver(a: SemverParts, b: SemverParts): number {
+export function compareSemver(a: SemverParts, b: SemverParts): number {
   if (a.major !== b.major) return a.major - b.major;
   if (a.minor !== b.minor) return a.minor - b.minor;
   if (a.patch !== b.patch) return a.patch - b.patch;
