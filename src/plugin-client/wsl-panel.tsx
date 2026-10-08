@@ -31,6 +31,7 @@ import { DESKTOP, HANDOFF_COUNTDOWN_SECONDS } from './constants.js';
 import { useSessionPolling } from './use-session-polling.js';
 import { useDshVersions } from './use-dsh-versions.js';
 import { useNodeVersions } from './use-node-versions.js';
+import { VersionPicker } from './version-picker.js';
 
 const logger = createLogger('wsl-panel');
 
@@ -272,23 +273,13 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
             </label>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               <span style={{ fontSize: 12, opacity: 0.75 }}>{t('nodeVersion')}</span>
-              <input value={nodeVersion} list="dsh-remote-explorer-wsl-node-versions" placeholder="v24.21.0" style={inputStyle}
-                onChange={event => setNodeVersion(event.target.value)} />
-              <datalist id="dsh-remote-explorer-wsl-node-versions">
-                {nodeVersions.map(version => (
-                  <option key={version} value={version} />
-                ))}
-              </datalist>
+              <VersionPicker value={nodeVersion} onChange={setNodeVersion}
+                versions={nodeVersions} placeholder="v24.21.0" />
             </label>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               <span style={{ fontSize: 12, opacity: 0.75 }}>{t('dshVersion')}</span>
-              <input value={dshVersion} list="dsh-remote-explorer-wsl-dsh-versions" style={inputStyle}
-                onChange={event => setDshVersion(event.target.value)} />
-              <datalist id="dsh-remote-explorer-wsl-dsh-versions">
-                {dshVersions.map(version => (
-                  <option key={version} value={version} />
-                ))}
-              </datalist>
+              <VersionPicker value={dshVersion} onChange={setDshVersion}
+                versions={dshVersions} />
             </label>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
               <input type="checkbox" checked={forceRestart}

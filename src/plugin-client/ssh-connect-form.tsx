@@ -25,6 +25,7 @@ import type { JumpEntry, SshHostSummary } from '../hosts/ssh-config-parser.js';
 import type { RemoteExplorerLocaleKey } from './locales.js';
 import { messageOf, postConnect, type PanelSession } from './api.js';
 import { HostPicker } from './host-picker.js';
+import { VersionPicker } from './version-picker.js';
 import { useDshVersions } from './use-dsh-versions.js';
 import { useNodeVersions } from './use-node-versions.js';
 import { OVERLAY_INTENT_ORIGIN } from './remote-window.js';
@@ -231,23 +232,13 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <span style={{ fontSize: 12, opacity: 0.75 }}>{t('nodeVersion')}</span>
-            <input value={nodeVersion} list="dsh-remote-explorer-node-versions" placeholder="v24.21.0" style={inputStyle}
-              onChange={event => setNodeVersion(event.target.value)} />
-            <datalist id="dsh-remote-explorer-node-versions">
-              {nodeVersions.map(version => (
-                <option key={version} value={version} />
-              ))}
-            </datalist>
+            <VersionPicker value={nodeVersion} onChange={setNodeVersion}
+              versions={nodeVersions} placeholder="v24.21.0" />
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <span style={{ fontSize: 12, opacity: 0.75 }}>{t('dshVersion')}</span>
-            <input value={dshVersion} list="dsh-remote-explorer-dsh-versions" style={inputStyle}
-              onChange={event => setDshVersion(event.target.value)} />
-            <datalist id="dsh-remote-explorer-dsh-versions">
-              {dshVersions.map(version => (
-                <option key={version} value={version} />
-              ))}
-            </datalist>
+            <VersionPicker value={dshVersion} onChange={setDshVersion}
+              versions={dshVersions} />
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
             <input type="checkbox" checked={forceRestart}
