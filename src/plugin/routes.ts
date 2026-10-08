@@ -23,6 +23,7 @@ import type {} from '@deepseek-ai/dsh-client-connection';
 import { listHosts, refreshConfig, type JumpEntry } from '../hosts/ssh-config-parser.js';
 import { listWslDistros, refreshWslCache } from '../hosts/wsl-distro-parser.js';
 import { fetchDshVersions } from '../provision/dsh-version-fetch.js';
+import { fetchNodeVersions } from '../provision/node-version-fetch.js';
 import { toErrorMessage } from '../util/errors.js';
 import { SessionSupervisor, SupervisorError, type ConnectRequest, type SessionSnapshot } from './supervisor.js';
 import {
@@ -125,6 +126,15 @@ function buildRoutes(supervisor: SessionSupervisor): RouteDef[] {
       path: `${ROUTE_PREFIX}/dsh-versions`,
       methods: ['GET'],
       fetch: async () => Response.json(await fetchDshVersions()),
+    },
+    {
+      // Node 已发布版本列表：面板版本下拉框的数据源（本机直接查 Node 官方
+      // 发行站 index.json）。探测失败由 fetchNodeVersions 内部 catch 返回空
+      // 列表（降级为空 datalist，用户仍可手动输入），不会抛错——此处无需
+      // try/catch
+      path: `${ROUTE_PREFIX}/node-versions`,
+      methods: ['GET'],
+      fetch: async () => Response.json(await fetchNodeVersions()),
     },
     {
       // 单会话详情 + 增量日志（面板 1.5s 轮询 ?id=<会话id>&since=<seq>）

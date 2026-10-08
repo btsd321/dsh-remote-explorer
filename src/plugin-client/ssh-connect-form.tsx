@@ -26,6 +26,7 @@ import type { RemoteExplorerLocaleKey } from './locales.js';
 import { messageOf, postConnect, type PanelSession } from './api.js';
 import { HostPicker } from './host-picker.js';
 import { useDshVersions } from './use-dsh-versions.js';
+import { useNodeVersions } from './use-node-versions.js';
 import { OVERLAY_INTENT_ORIGIN } from './remote-window.js';
 import { EnvDialog } from './dialogs/env-dialog.js';
 import { ProxyDialog } from './dialogs/proxy-dialog.js';
@@ -38,6 +39,9 @@ const LAST_CWD_KEY_PREFIX = 'dsh-remote-explorer:lastCwd:';
 
 /** localStorage 里「上次 dsh 版本」的键（SSH 域，不按主机区分） */
 const DSH_VERSION_KEY = 'dsh-remote-explorer:dshVersion:ssh';
+
+/** localStorage 里「上次 Node 版本」的键（SSH 域，不按主机区分） */
+const NODE_VERSION_KEY = 'dsh-remote-explorer:nodeVersion:ssh';
 
 /** 直连语法粗判（与宿主 parseAdHocHost 同族形态：user@host[:port]） */
 const AD_HOC_HOST_RE = /^([^@\s]+)@([^@\s]+?)(?::(\d+))?$/;
@@ -76,7 +80,9 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
   const [password, setPassword] = React.useState('');
   const [privateKey, setPrivateKey] = React.useState('');
   const [localPort, setLocalPort] = React.useState('');
-  const [nodeVersion, setNodeVersion] = React.useState('');
+  const [nodeVersion, setNodeVersion] = React.useState(() => {
+    try { return localStorage.getItem(NODE_VERSION_KEY) ?? ''; } catch { return ''; }
+  });
   const [dshVersion, setDshVersion] = React.useState(() => {
     try { return localStorage.getItem(DSH_VERSION_KEY) ?? ''; } catch { return ''; }
   });
@@ -99,8 +105,9 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
    */
   const [jumpEntries, setJumpEntries] = React.useState<JumpEntry[] | undefined>(undefined);
 
-  // ---- dsh 版本下拉列表（挂载时探测 registry 填充 datalist） ----
+  // ---- 版本下拉列表（挂载时探测 registry/发行站填充 datalist） ----
   const dshVersions = useDshVersions();
+  const nodeVersions = useNodeVersions();
 
   /**
    * 主机输入是否直连语法（跳板机携带判据：仅直连目标把面板跳板条目放进
@@ -159,6 +166,8 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
         localStorage.setItem(`${LAST_CWD_KEY_PREFIX}${host.trim()}`, cwd.trim());
         // dsh 版本按传输形态（SSH）记忆，下次连接时恢复上次选择
         localStorage.setItem(DSH_VERSION_KEY, dshVersion.trim());
+        // Node 版本同纪律（SSH 域独立记忆）
+        localStorage.setItem(NODE_VERSION_KEY, nodeVersion.trim());
       } catch { /* 记忆失败不影响连接 */ }
       onConnected(session, mode);
     } catch (error) {
@@ -222,8 +231,13 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <span style={{ fontSize: 12, opacity: 0.75 }}>{t('nodeVersion')}</span>
-            <input value={nodeVersion} placeholder="v24.21.0" style={inputStyle}
+            <input value={nodeVersion} list="dsh-remote-explorer-node-versions" placeholder="v24.21.0" style={inputStyle}
               onChange={event => setNodeVersion(event.target.value)} />
+            <datalist id="dsh-remote-explorer-node-versions">
+              {nodeVersions.map(version => (
+                <option key={version} value={version} />
+              ))}
+            </datalist>
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <span style={{ fontSize: 12, opacity: 0.75 }}>{t('dshVersion')}</span>

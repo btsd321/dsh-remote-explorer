@@ -13,6 +13,7 @@ import type { LogEntry, SessionSnapshot } from '../plugin/supervisor.js';
 import type { StoredJumpEntry } from '../plugin/advanced-store.js';
 import type { JumpEntry, SshHostSummary } from '../hosts/ssh-config-parser.js';
 import type { DshVersionList } from '../provision/dsh-version-fetch.js';
+import type { NodeVersionList } from '../provision/node-version-fetch.js';
 
 /** 宿主路由前缀（与 src/plugin/routes.ts 的 ROUTE_PREFIX 一致，check 脚本盯住宿主侧） */
 const BASE = '/api/dsh-remote-explorer';
@@ -270,4 +271,19 @@ export type { DshVersionList };
  */
 export async function fetchDshVersions(): Promise<DshVersionList> {
   return request<DshVersionList>('/dsh-versions');
+}
+
+/** Node 版本探测结果（GET /node-versions 出参；类型从宿主侧 node-version-fetch.ts 共享） */
+export type { NodeVersionList };
+
+/**
+ * 探测 Node 官方发行站的已发布版本列表（宿主本机查询，不走远端）。供版本
+ * 下拉框填充——探测失败返回空列表，面板降级为空 datalist，用户仍可手动
+ * 输入任意版本号。
+ *
+ * @returns 版本列表与最新版本号
+ * @throws ApiError http_error（宿主侧 5xx 等罕见情况；探测失败本身不抛错）
+ */
+export async function fetchNodeVersions(): Promise<NodeVersionList> {
+  return request<NodeVersionList>('/node-versions');
 }
