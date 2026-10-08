@@ -13,7 +13,8 @@
 
 import { createLogger } from '../util/logger.js';
 import { compareSemver, parseSemver, type SemverParts } from './dsh-installer.js';
-import { raceMirrors, type LocalMirrorCandidate } from './local-mirror-race.js';
+import { getCandidates } from './mirror-selector.js';
+import { raceMirrors } from './local-mirror-race.js';
 
 /** 模块日志器（探测关键节点与失败告警） */
 const log = createLogger('node-version-fetch');
@@ -43,13 +44,11 @@ function meetsDshEngines(parts: SemverParts): boolean {
 /** 缓存有效期（毫秒）。面板高频打开，5 分钟窗口内复用上次查询结果 */
 const CACHE_TTL_MS = 5 * 60 * 1_000;
 
-/** Node 发行站候选镜像（与 mirror-selector.ts 的 NODE_MIRRORS 对齐） */
-const NODE_MIRRORS: readonly LocalMirrorCandidate[] = [
-  { name: '中科大', baseUrl: 'https://mirrors.ustc.edu.cn/node' },
-  { name: '阿里', baseUrl: 'https://npmmirror.com/mirrors/node' },
-  { name: '清华', baseUrl: 'https://mirrors.tuna.tsinghua.edu.cn/nodejs-release' },
-  { name: '官方', baseUrl: 'https://nodejs.org/dist' },
-];
+/**
+ * Node 发行站候选镜像（与远端测速 selectMirror 共用单一数据源，
+ * 避免两处手动复制导致不一致）
+ */
+const NODE_MIRRORS = getCandidates('node');
 
 /** Node 版本探测结果 */
 export interface NodeVersionList {

@@ -22,7 +22,8 @@
 
 import { createLogger } from '../util/logger.js';
 import { compareSemver, parseSemver, type SemverParts } from './dsh-installer.js';
-import { raceMirrors, type LocalMirrorCandidate } from './local-mirror-race.js';
+import { getCandidates } from './mirror-selector.js';
+import { raceMirrors } from './local-mirror-race.js';
 
 /** 模块日志器（探测关键节点与失败告警） */
 const log = createLogger('dsh-version-fetch');
@@ -35,11 +36,21 @@ const MIN_DSH_MINOR = 2;
 /** 缓存有效期（毫秒）。面板高频打开，5 分钟窗口内复用上次查询结果 */
 const CACHE_TTL_MS = 5 * 60 * 1_000;
 
-/** npm registry 候选镜像（与 mirror-selector.ts 的 NPM_MIRRORS 对齐） */
-const REGISTRY_MIRRORS: readonly LocalMirrorCandidate[] = [
-  { name: '阿里', baseUrl: 'https://registry.npmmirror.com' },
-  { name: '官方', baseUrl: 'https://registry.npmjs.org' },
-];
+/**
+ * npm registry 候选镜像。
+ *
+ * 优先读环境变量 `npm_config_registry`（企业内网/自建 registry 场景，
+ * `npm config set registry` 写入该变量）——若用户显式配置了自定义 registry，
+ * 只用它一个（不与公共镜像竞速，避免内网请求泄漏到公网）。未配置时走
+ * {@link getCandidates}('npm') 的公共镜像竞速（与远端测速共用单一数据源）。
+ */
+const REGISTRY_MIRRORS: readonly { name: string; baseUrl: string }[] = (() => {
+  const custom = process.env.npm_config_registry?.trim();
+  if (custom) {
+    return [{ name: '自定义（npm_config_registry）', baseUrl: custom }];
+  }
+  return getCandidates('npm');
+})();
 
 /** 探测包名（与 dsh-installer 安装目标一致） */
 const PACKAGE_NAME = '@deepseek-ai/dsh';

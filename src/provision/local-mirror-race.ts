@@ -20,6 +20,7 @@
  */
 
 import { createLogger } from '../util/logger.js';
+import type { MirrorCandidate } from './mirror-selector.js';
 
 /** 模块日志器（竞速关键节点与失败告警） */
 const log = createLogger('local-mirror-race');
@@ -30,18 +31,10 @@ const PER_MIRROR_TIMEOUT_MS = 8_000;
 /** 镜像选中结果的进程内缓存有效期（毫秒） */
 const SELECTED_CACHE_TTL_MS = 5 * 60 * 1_000;
 
-/** 一个候选镜像 */
-export interface LocalMirrorCandidate {
-  /** 展示名（日志用） */
-  name: string;
-  /** 基础 URL（不含尾部斜杠） */
-  baseUrl: string;
-}
-
 /** 选中镜像的缓存条目 */
 interface SelectedCacheEntry {
   /** 选中的候选 */
-  candidate: LocalMirrorCandidate;
+  candidate: MirrorCandidate;
   /** 缓存过期时间戳（epoch 毫秒） */
   expiresAt: number;
 }
@@ -56,6 +49,9 @@ const selectedCache = new Map<string, SelectedCacheEntry>();
  * 且 body 能解析为 JSON 的候选胜出，其余请求 abort。进程内缓存选中镜像
  * （5 分钟 TTL），缓存窗口内直接用该镜像。
  *
+ * 候选列表应由调用方从 {@link getCandidates} 获取（单一数据源），与远端
+ * 测速 {@link selectMirror} 共用同一份镜像清单，避免两处手动复制。
+ *
  * **降级语义**：全部候选都失败（不可达、超时、非 JSON）时返回 undefined，
  * 不抛错——调用方降级为空列表。
  *
@@ -64,7 +60,7 @@ const selectedCache = new Map<string, SelectedCacheEntry>();
  * @returns 胜出候选的 baseUrl 与解析后的 JSON；全部失败时 undefined
  */
 export async function raceMirrors<T>(
-  candidates: readonly LocalMirrorCandidate[],
+  candidates: readonly MirrorCandidate[],
   pathSuffix: string,
 ): Promise<{ baseUrl: string; data: T } | undefined> {
   if (candidates.length === 0) return undefined;
@@ -106,27 +102,32 @@ export async function raceMirrors<T>(
       const data = await response.json() as T;
       return { candidate, data, url };
     } catch (error) {
+      // 失败一律 reject（Promise.any 会忽略 reject 继续等其他候选）。
       // 预期的 abort（竞速败者）不报 warn——只有真正的失败才记日志
-      if (controller.signal.aborted) return null;
-      const msg = error instanceof Error ? error.message : String(error);
-      log.warn('镜像查询失败', { mirror: candidate.name, url, error: msg });
-      return null;
+      if (!controller.signal.aborted) {
+        const msg = error instanceof Error ? error.message : String(error);
+        log.warn('镜像查询失败', { mirror: candidate.name, url, error: msg });
+      }
+      throw error;
     }
   });
 
-  // 取首个非 null 结果（竞速胜出者）
-  for (const task of tasks) {
-    const result = await task;
-    if (result !== null) {
-      // 胜出：abort 其余请求 + 缓存选中镜像
-      controller.abort();
-      selectedCache.set(cacheKey, {
-        candidate: result.candidate,
-        expiresAt: Date.now() + SELECTED_CACHE_TTL_MS,
-      });
-      log.info('镜像竞速选中', { mirror: result.candidate.name, url: result.url });
-      return { baseUrl: result.candidate.baseUrl, data: result.data };
-    }
+  // 真正的竞速：用 Promise.any 取首个 resolve（成功）的候选。
+  // 不能用 for...of 顺序 await——那会按数组顺序阻塞，首候选慢（超时 8s）
+  // 时即使后续候选早已成功（0.5s）也要干等首候选落定，违背竞速语义。
+  // 全部 reject 时 Promise.any 抛 AggregateError，降级返回 undefined。
+  try {
+    const winner = await Promise.any(tasks);
+    // 胜出：abort 其余请求 + 缓存选中镜像
+    controller.abort();
+    selectedCache.set(cacheKey, {
+      candidate: winner.candidate,
+      expiresAt: Date.now() + SELECTED_CACHE_TTL_MS,
+    });
+    log.info('镜像竞速选中', { mirror: winner.candidate.name, url: winner.url });
+    return { baseUrl: winner.candidate.baseUrl, data: winner.data };
+  } catch {
+    // 全部候选都 reject——降级返回 undefined
   }
 
   // 全部失败
