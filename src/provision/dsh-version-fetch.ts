@@ -19,7 +19,7 @@
  */
 
 import { createLogger } from '../util/logger.js';
-import { compareSemver, maxPublishedVersion, parseSemver, type SemverParts } from './dsh-installer.js';
+import { compareSemver, parseSemver, type SemverParts } from './dsh-installer.js';
 
 /** 模块日志器（探测关键节点与失败告警） */
 const log = createLogger('dsh-version-fetch');
@@ -143,10 +143,9 @@ export async function fetchDshVersions(): Promise<DshVersionList> {
     }
     const versions = filterAndSortVersions((packument as Record<string, unknown>).versions);
 
-    // latest 取过滤后列表的最大值（与 maxPublishedVersion 同款 semver 逻辑，
-    // 确保一致；理论上过滤后列表已降序，versions[0] 即为最新，这里用
-    // maxPublishedVersion 二次确认保持语义一致）
-    const latest = maxPublishedVersion(versions);
+    // latest 取过滤后降序列表的首项（filterAndSortVersions 已按 semver 降序排列，
+    // versions[0] 即为最大值，无需二次遍历解析）
+    const latest = versions.length > 0 ? versions[0] : undefined;
     const result: DshVersionList = {
       versions,
       ...(latest !== undefined ? { latest } : {}),

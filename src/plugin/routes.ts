@@ -119,18 +119,12 @@ function buildRoutes(supervisor: SessionSupervisor): RouteDef[] {
     },
     {
       // dsh 已发布版本列表：面板版本下拉框的数据源（本机直接查 npm registry，
-      // 不走远端——面板路由跑在 dsh 宿主进程，没有 SSH 通道）。探测失败返回
-      // 空列表（降级为空 datalist，用户仍可手动输入）
+      // 不走远端——面板路由跑在 dsh 宿主进程，没有 SSH 通道）。探测失败由
+      // fetchDshVersions 内部 catch 返回空列表（降级为空 datalist，用户仍可
+      // 手动输入），不会抛错——此处无需 try/catch
       path: `${ROUTE_PREFIX}/dsh-versions`,
       methods: ['GET'],
-      fetch: async () => {
-        try {
-          const result = await fetchDshVersions();
-          return Response.json(result);
-        } catch (error) {
-          return internalError(error);
-        }
-      },
+      fetch: async () => Response.json(await fetchDshVersions()),
     },
     {
       // 单会话详情 + 增量日志（面板 1.5s 轮询 ?id=<会话id>&since=<seq>）
