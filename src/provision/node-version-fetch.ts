@@ -1,9 +1,9 @@
 /**
  * @file 本机 Node 版本探测
- * @description 在 dsh 宿主进程（本机）直接 HTTP 查询 Node 官方发行站 index.json，
+ * @description 在 dsh 宿主进程（本机）直接 HTTP 查询 Node 发行站 index.json，
  *              拉取已发布版本列表，供面板版本下拉框填充。与 dsh-version-fetch
- *              同款设计：进程内缓存（TTL 5 分钟）、降级优先（不可达返回空列表）、
- *              门槛过滤（只显示 dsh engines 兼容的版本）。
+ *              同款设计：镜像竞速自适应、进程内缓存（TTL 5 分钟）、降级优先
+ *              （不可达返回空列表）、门槛过滤（只显示 dsh engines 兼容的版本）。
  *
  *              Node 版本号带 `v` 前缀（如 `v24.21.0`），与 dsh 的 semver 格式
  *              不同——解析时需剥掉 `v` 前缀再过 parseSemver。dsh 的 engines
@@ -13,6 +13,7 @@
 
 import { createLogger } from '../util/logger.js';
 import { compareSemver, parseSemver, type SemverParts } from './dsh-installer.js';
+import { raceMirrors, type LocalMirrorCandidate } from './local-mirror-race.js';
 
 /** 模块日志器（探测关键节点与失败告警） */
 const log = createLogger('node-version-fetch');
@@ -42,11 +43,13 @@ function meetsDshEngines(parts: SemverParts): boolean {
 /** 缓存有效期（毫秒）。面板高频打开，5 分钟窗口内复用上次查询结果 */
 const CACHE_TTL_MS = 5 * 60 * 1_000;
 
-/** Node 官方发行站 index.json 地址 */
-const INDEX_URL = 'https://nodejs.org/dist/index.json';
-
-/** HTTP 查询超时（毫秒）：慢链路下不阻塞面板加载太久 */
-const FETCH_TIMEOUT_MS = 15_000;
+/** Node 发行站候选镜像（与 mirror-selector.ts 的 NODE_MIRRORS 对齐） */
+const NODE_MIRRORS: readonly LocalMirrorCandidate[] = [
+  { name: '中科大', baseUrl: 'https://mirrors.ustc.edu.cn/node' },
+  { name: '阿里', baseUrl: 'https://npmmirror.com/mirrors/node' },
+  { name: '清华', baseUrl: 'https://mirrors.tuna.tsinghua.edu.cn/nodejs-release' },
+  { name: '官方', baseUrl: 'https://nodejs.org/dist' },
+];
 
 /** Node 版本探测结果 */
 export interface NodeVersionList {
@@ -123,49 +126,39 @@ export async function fetchNodeVersions(): Promise<NodeVersionList> {
     return cache.list;
   }
 
-  // 2. 查询 Node 官方发行站 index.json
-  try {
-    const response = await fetch(INDEX_URL, {
-      headers: { accept: 'application/json' },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-    if (!response.ok) {
-      log.warn('index.json 查询返回非 2xx', { url: INDEX_URL, status: response.status });
-      return emptyResult();
-    }
-    const raw: unknown = await response.json();
-    if (!Array.isArray(raw)) {
-      log.warn('index.json 返回非数组', { url: INDEX_URL });
-      return emptyResult();
-    }
-    // 逐条校验形状，只取 version 字段（lts 字段保留供将来扩展）
-    const entries: NodeIndexEntry[] = [];
-    for (const item of raw) {
-      if (typeof item !== 'object' || item === null || Array.isArray(item)) continue;
-      const record = item as Record<string, unknown>;
-      if (typeof record.version !== 'string') continue;
-      entries.push({
-        version: record.version,
-        lts: typeof record.lts === 'string' ? record.lts : false,
-      });
-    }
-    const versions = filterAndSortVersions(entries);
-
-    // latest 取过滤后降序列表的首项（filterAndSortVersions 已按 semver 降序排列）
-    const latest = versions.length > 0 ? versions[0] : undefined;
-    const result: NodeVersionList = {
-      versions,
-      ...(latest !== undefined ? { latest } : {}),
-    };
-    cache = { list: result, expiresAt: now + CACHE_TTL_MS };
-    log.info('Node 版本探测成功', { count: versions.length, latest });
-    return result;
-  } catch (error) {
-    // 降级：index.json 不可达/超时/解析失败——返回空列表，不阻塞面板
-    const msg = error instanceof Error ? error.message : String(error);
-    log.warn('Node 版本探测失败，返回空列表', { url: INDEX_URL, error: msg });
+  // 2. 镜像竞速查询 Node 发行站 index.json
+  const raced = await raceMirrors<unknown>(NODE_MIRRORS, '/index.json');
+  if (raced === undefined) {
+    // 全部镜像都失败——降级返回空列表
     return emptyResult();
   }
+  const raw = raced.data;
+  if (!Array.isArray(raw)) {
+    log.warn('index.json 返回非数组');
+    return emptyResult();
+  }
+  // 逐条校验形状，只取 version 字段（lts 字段保留供将来扩展）
+  const entries: NodeIndexEntry[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) continue;
+    const record = item as Record<string, unknown>;
+    if (typeof record.version !== 'string') continue;
+    entries.push({
+      version: record.version,
+      lts: typeof record.lts === 'string' ? record.lts : false,
+    });
+  }
+  const versions = filterAndSortVersions(entries);
+
+  // latest 取过滤后降序列表的首项（filterAndSortVersions 已按 semver 降序排列）
+  const latest = versions.length > 0 ? versions[0] : undefined;
+  const result: NodeVersionList = {
+    versions,
+    ...(latest !== undefined ? { latest } : {}),
+  };
+  cache = { list: result, expiresAt: now + CACHE_TTL_MS };
+  log.info('Node 版本探测成功', { count: versions.length, latest });
+  return result;
 }
 
 /**

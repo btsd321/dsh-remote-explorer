@@ -8,6 +8,8 @@
  *              传输——面板路由跑在 dsh 宿主进程里，没有 SSH 通道可用。
  *
  * 设计要点：
+ * - **镜像竞速**：官方 npm registry 在中国大陆可能被墙或超时，并发请求
+ *   阿里镜像与官方源，取首个成功的（{@link raceMirrors}），缓存选中镜像
  * - 进程内缓存（TTL 5 分钟）：面板每次打开都打 registry 太重，缓存窗口内
  *   复用上次结果；缓存失效由时间戳判定，不做主动失效
  * - 降级优先：registry 不可达、返回非 JSON、解析失败——一律返回空列表，
@@ -20,6 +22,7 @@
 
 import { createLogger } from '../util/logger.js';
 import { compareSemver, parseSemver, type SemverParts } from './dsh-installer.js';
+import { raceMirrors, type LocalMirrorCandidate } from './local-mirror-race.js';
 
 /** 模块日志器（探测关键节点与失败告警） */
 const log = createLogger('dsh-version-fetch');
@@ -29,17 +32,17 @@ const MIN_DSH_MAJOR = 0;
 /** 显示给用户的最小 minor 版本（major === MIN_DSH_MAJOR 时生效） */
 const MIN_DSH_MINOR = 2;
 
-/** 缓存有效期（毫秒）。面板高频打开，5 分钟窗口内复用上次 registry 查询结果 */
+/** 缓存有效期（毫秒）。面板高频打开，5 分钟窗口内复用上次查询结果 */
 const CACHE_TTL_MS = 5 * 60 * 1_000;
 
-/** npm registry 地址（优先读环境变量 `npm_config_registry`，缺省官方源） */
-const REGISTRY_URL = process.env.npm_config_registry?.trim() || 'https://registry.npmjs.org';
+/** npm registry 候选镜像（与 mirror-selector.ts 的 NPM_MIRRORS 对齐） */
+const REGISTRY_MIRRORS: readonly LocalMirrorCandidate[] = [
+  { name: '阿里', baseUrl: 'https://registry.npmmirror.com' },
+  { name: '官方', baseUrl: 'https://registry.npmjs.org' },
+];
 
 /** 探测包名（与 dsh-installer 安装目标一致） */
 const PACKAGE_NAME = '@deepseek-ai/dsh';
-
-/** npm registry 查询超时（毫秒）：慢链路下不阻塞面板加载太久 */
-const FETCH_TIMEOUT_MS = 15_000;
 
 /** dsh 版本探测结果 */
 export interface DshVersionList {
@@ -124,41 +127,31 @@ export async function fetchDshVersions(): Promise<DshVersionList> {
     return cache.list;
   }
 
-  // 2. 查询 registry packument
+  // 2. 镜像竞速查询 registry packument
   //    packument URL 用 %2F 编码 scope 分隔符（npm 标准）
-  const url = `${REGISTRY_URL.replace(/\/+$/, '')}/${PACKAGE_NAME.replace('/', '%2F')}`;
-  try {
-    const response = await fetch(url, {
-      headers: { accept: 'application/json' },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-    if (!response.ok) {
-      log.warn('registry 查询返回非 2xx', { url, status: response.status });
-      return emptyResult();
-    }
-    const packument: unknown = await response.json();
-    if (typeof packument !== 'object' || packument === null || Array.isArray(packument)) {
-      log.warn('registry 返回非对象 packument', { url });
-      return emptyResult();
-    }
-    const versions = filterAndSortVersions((packument as Record<string, unknown>).versions);
-
-    // latest 取过滤后降序列表的首项（filterAndSortVersions 已按 semver 降序排列，
-    // versions[0] 即为最大值，无需二次遍历解析）
-    const latest = versions.length > 0 ? versions[0] : undefined;
-    const result: DshVersionList = {
-      versions,
-      ...(latest !== undefined ? { latest } : {}),
-    };
-    cache = { list: result, expiresAt: now + CACHE_TTL_MS };
-    log.info('dsh 版本探测成功', { count: versions.length, latest });
-    return result;
-  } catch (error) {
-    // 降级：registry 不可达/超时/解析失败——返回空列表，不阻塞面板
-    const msg = error instanceof Error ? error.message : String(error);
-    log.warn('dsh 版本探测失败，返回空列表', { url, error: msg });
+  const pathSuffix = `/${PACKAGE_NAME.replace('/', '%2F')}`;
+  const raced = await raceMirrors<unknown>(REGISTRY_MIRRORS, pathSuffix);
+  if (raced === undefined) {
+    // 全部镜像都失败——降级返回空列表
     return emptyResult();
   }
+  const packument = raced.data;
+  if (typeof packument !== 'object' || packument === null || Array.isArray(packument)) {
+    log.warn('registry 返回非对象 packument');
+    return emptyResult();
+  }
+  const versions = filterAndSortVersions((packument as Record<string, unknown>).versions);
+
+  // latest 取过滤后降序列表的首项（filterAndSortVersions 已按 semver 降序排列，
+  // versions[0] 即为最大值，无需二次遍历解析）
+  const latest = versions.length > 0 ? versions[0] : undefined;
+  const result: DshVersionList = {
+    versions,
+    ...(latest !== undefined ? { latest } : {}),
+  };
+  cache = { list: result, expiresAt: now + CACHE_TTL_MS };
+  log.info('dsh 版本探测成功', { count: versions.length, latest });
+  return result;
 }
 
 /**
