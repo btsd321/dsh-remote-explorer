@@ -11,8 +11,8 @@ import * as React from 'react';
 import { fetchNodeVersions } from './api.js';
 
 /**
- * Node 版本探测 Hook：挂载时拉取 Node 官方发行站已发布版本列表（major >= 22，
- * 按 semver 降序），探测失败静默返回空数组。
+ * Node 版本探测 Hook：挂载时拉取 Node 官方发行站已发布版本列表（满足 dsh
+ * engines `^22.19.0 || >=24.0.0`，按 semver 降序），探测失败静默返回空数组。
  *
  * @returns 可用版本号列表（最新在前，带 v 前缀；探测失败时为空数组）
  */
