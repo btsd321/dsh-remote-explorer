@@ -12,6 +12,7 @@
 import type { LogEntry, SessionSnapshot } from '../plugin/supervisor.js';
 import type { StoredJumpEntry } from '../plugin/advanced-store.js';
 import type { JumpEntry, SshHostSummary } from '../hosts/ssh-config-parser.js';
+import type { DshVersionList } from '../provision/dsh-version-fetch.js';
 
 /** 宿主路由前缀（与 src/plugin/routes.ts 的 ROUTE_PREFIX 一致，check 脚本盯住宿主侧） */
 const BASE = '/api/dsh-remote-explorer';
@@ -256,13 +257,8 @@ export async function fetchWslDistros(refresh = false): Promise<WslDistroSummary
   return result.distros;
 }
 
-/** dsh 版本探测结果（GET /dsh-versions 出参） */
-export interface DshVersionList {
-  /** 可用版本列表（major >= 0.2.0，按 semver 降序排列，最新在前） */
-  versions: string[];
-  /** 最新版本（列表非空时为 versions[0]）；探测失败时缺省 */
-  latest?: string;
-}
+/** dsh 版本探测结果（GET /dsh-versions 出参；类型从宿主侧 dsh-version-fetch.ts 共享） */
+export type { DshVersionList };
 
 /**
  * 探测 npm registry 上 `@deepseek-ai/dsh` 的已发布版本列表（宿主本机查询，
