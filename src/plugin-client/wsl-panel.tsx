@@ -19,7 +19,7 @@ import * as React from 'react';
 import type { ReactNode } from 'react';
 import type { RemoteExplorerLocaleKey } from './locales.js';
 import {
-  fetchWslDistros, messageOf, postConnect, postDisconnect,
+  fetchWslDistros, fetchDshVersions, messageOf, postConnect, postDisconnect,
   type WslDistroSummary,
 } from './api.js';
 import { openRemoteWindow, OVERLAY_INTENT_ORIGIN } from './remote-window.js';
@@ -63,6 +63,7 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
 
   // ---- 数据状态 ----
   const [distros, setDistros] = React.useState<WslDistroSummary[]>([]);
+  const [dshVersions, setDshVersions] = React.useState<string[]>([]);
   const [stopRemote, setStopRemote] = React.useState(true);
   const logBoxRef = React.useRef<HTMLDivElement | null>(null);
 
@@ -106,6 +107,18 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
     }
   }, [setLoadError]);
   React.useEffect(() => { void loadDistros(false); }, [loadDistros]);
+
+  // dsh 版本列表：挂载时探测 registry 填充 datalist（探测失败留空，用户仍可手动输入）
+  React.useEffect(() => {
+    void (async (): Promise<void> => {
+      try {
+        const result = await fetchDshVersions();
+        setDshVersions(result.versions);
+      } catch {
+        // 探测失败：datalist 留空，用户仍可手动输入任意版本号
+      }
+    })();
+  }, []);
 
   // 日志自动滚底
   React.useEffect(() => {
@@ -259,8 +272,13 @@ export function WslSessionPanel(props: WslSessionPanelProps): ReactNode {
             </label>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               <span style={{ fontSize: 12, opacity: 0.75 }}>{t('dshVersion')}</span>
-              <input value={dshVersion} style={inputStyle}
+              <input value={dshVersion} list="dsh-remote-explorer-wsl-dsh-versions" style={inputStyle}
                 onChange={event => setDshVersion(event.target.value)} />
+              <datalist id="dsh-remote-explorer-wsl-dsh-versions">
+                {dshVersions.map(version => (
+                  <option key={version} value={version} />
+                ))}
+              </datalist>
             </label>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
               <input type="checkbox" checked={forceRestart}

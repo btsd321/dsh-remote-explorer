@@ -255,3 +255,23 @@ export async function fetchWslDistros(refresh = false): Promise<WslDistroSummary
   );
   return result.distros;
 }
+
+/** dsh 版本探测结果（GET /dsh-versions 出参） */
+export interface DshVersionList {
+  /** 可用版本列表（major >= 0.2.0，按 semver 降序排列，最新在前） */
+  versions: string[];
+  /** 最新版本（列表非空时为 versions[0]）；探测失败时缺省 */
+  latest?: string;
+}
+
+/**
+ * 探测 npm registry 上 `@deepseek-ai/dsh` 的已发布版本列表（宿主本机查询，
+ * 不走远端）。供版本下拉框填充——探测失败返回空列表，面板降级为空 datalist，
+ * 用户仍可手动输入任意版本号。
+ *
+ * @returns 版本列表与最新版本号
+ * @throws ApiError http_error（宿主侧 5xx 等罕见情况；探测失败本身不抛错）
+ */
+export async function fetchDshVersions(): Promise<DshVersionList> {
+  return request<DshVersionList>('/dsh-versions');
+}
