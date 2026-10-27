@@ -5,9 +5,8 @@
  *              映射到远端端口，远端设 `http_proxy=http://127.0.0.1:<远端端口>` 后，
  *              curl/npm 的出站请求经远端端口 → SSH 反向隧道 → 本机代理 → 公网。
  *
- *              机制对标 `D:\Tool\net_proxy` 的 pproxy + `ssh -R`，区别是不依赖
- *              外部 Python/pproxy——纯 JS 用 Node 原生 `http`/`net` 模块实现，
- *              跑在 dsh 宿主进程内。
+ *              纯 JS 用 Node 原生 `http`/`net` 模块实现，跑在 dsh 宿主进程内，
+ *              不引入外部依赖。
  *
  * 实现：标准 `http.Server` 监听 127.0.0.1:0（OS 分配端口），处理 HTTP CONNECT
  * 方法（HTTPS/HTTP 代理的标准握手）。SSH `forwardIn` 的入站 stream 经

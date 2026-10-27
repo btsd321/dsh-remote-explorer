@@ -13,8 +13,7 @@
  * 代理只在引导期存活——dsh 启动后远端不再需要引导期代理（dsh 自己的代理
  * 走 collectProxyEnv，那是另一条独立链路）。
  *
- * 架构对标 `D:\Tool\net_proxy`（pproxy + ssh -R），区别是纯 JS 实现、不依赖
- * 外部 Python/pproxy，跑在 dsh 宿主进程内。
+ * 架构：纯 JS 实现，不依赖外部进程或 Python 模块，跑在 dsh 宿主进程内。
  *
  * 分层约束：本文件属能力层（provision/），向下使用隧道层（tunnel/）与传输层
  * （transport/types）；不依赖编排层（session/）或入口层。
