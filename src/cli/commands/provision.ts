@@ -15,6 +15,7 @@ import type { RemoteTransport } from '../../transport/types.js';
 import type { TransportType } from '../../session/options.js';
 import { provision } from '../../provision/provisioner.js';
 import { computeSessionId } from '../../util/session-id.js';
+import type { LocalResourceDownloadMode } from '../../provision/local-download-mode.js';
 import { prepareHostAuth } from '../host-auth.js';
 import { bold, cyan, dim, green, println, printTable, ProgressReporter } from '../output.js';
 
@@ -33,7 +34,7 @@ export interface ProvisionCommandOptions {
   /** 强制重测镜像 */
   refreshMirrors: boolean;
   /** 本地资源下载模式（auto/always/off）；仅 SSH 有效 */
-  localResourceDownload?: 'auto' | 'always' | 'off';
+  localResourceDownload?: LocalResourceDownloadMode;
   /** 传输类型；默认 'ssh' */
   transportType?: TransportType;
   /** WSL 发行版名称（transportType='wsl' 时必需） */

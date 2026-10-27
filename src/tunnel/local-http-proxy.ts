@@ -20,6 +20,9 @@
  * - 监听只绑 127.0.0.1——不挂到全网卡（代理可访问公网，绑全网卡等于开放中继）
  * - SSH 反向转发也绑远端 127.0.0.1（forwardIn 默认行为）——远端其他用户不可用
  * - 不记日志请求内容与目标 URL——CONNECT 只记 host:port（诊断级别 debug）
+ * - **不设目标白名单**：远端同权限用户仍可通过本机出口访问任意站点（与凭据
+ *   代理是同族已知残余风险——他们拿不到 key，但能借用你的网络出口）。这使
+ *   代理只在引导期存活的理由之一；多用户远端主机上需自行评估。
  *
  * 分层约束：本文件属能力层（tunnel/），向下使用基础层（util/logger）；不依赖
  * 编排层（session/）或入口层。
@@ -49,6 +52,13 @@ export class LocalHttpProxy {
   private _localPort = 0;
   /** 活跃的上游连接（stop 时全部销毁） */
   private readonly activeUpstreams = new Set<Socket>();
+  /**
+   * 注入进来的客户端侧流（SSH 反向隧道入站）。
+   *
+   * `stop()` 必须显式销毁它们：`server.close()` 会等所有连接结束才回调，
+   * 而 SSH 通道流的生命周期不归本机管——漏登记就是 provision 收尾时永久挂起。
+   */
+  private readonly injectedStreams = new Set<Duplex>();
 
   constructor() {
     this.server = createServer((req, res) => {
@@ -110,6 +120,10 @@ export class LocalHttpProxy {
   handleStream(stream: NodeJS.ReadableStream & NodeJS.WritableStream): void {
     // Node 的 http.Server 接受任意双工流作为 connection——它用内部 HTTP 解析器
     // 把流当成本机 TCP 连接处理。SSH stream 是全双工的，语义等价
+    const duplex = stream as unknown as Duplex;
+    this.injectedStreams.add(duplex);
+    // 流结束时自动移出登记表，避免集合随连接数无限增长
+    duplex.once('close', () => { this.injectedStreams.delete(duplex); });
     this.server.emit('connection', stream as unknown as Socket);
   }
 
@@ -117,14 +131,26 @@ export class LocalHttpProxy {
    * 停止代理服务器，销毁所有活跃连接。
    *
    * 幂等：多次调用安全。provision 完成后调用——代理只在引导期存活。
+   *
+   * 先显式销毁全部在飞连接（上游 socket + 注入的 SSH 流），再 `close()`：
+   * `server.close()` 只停止接受新连接并等待现有连接自行结束，若远端还有
+   * 半开的隧道连接，回调永不触发——而 provision 的 finally 正 await 这个
+   * 方法，整个连接流程会挂死。
    */
   async stop(): Promise<void> {
     if (this._localPort === 0) return;
-    // 销毁所有活跃的上游连接（正在传输的代理请求）
+    // 1. 销毁所有活跃的上游连接（正在传输的代理请求）
     for (const upstream of this.activeUpstreams) {
       upstream.destroy();
     }
     this.activeUpstreams.clear();
+    // 2. 销毁注入的 SSH 流——它们的关闭不由本机驱动
+    for (const stream of this.injectedStreams) {
+      stream.destroy();
+    }
+    this.injectedStreams.clear();
+    // 3. 兜底清掉本机监听侧可能残留的空闲连接（keep-alive）
+    this.server.closeAllConnections();
     return new Promise<void>((resolve) => {
       this.server.close(() => {
         this._localPort = 0;
@@ -170,15 +196,25 @@ export class LocalHttpProxy {
       upstream.destroy(new Error(`连接 ${target} 超时`));
     });
 
+    /**
+     * 是否已回复 200 并进入隧道态。
+     *
+     * 隧道建立之后不能再往客户端写 HTTP 响应——那段字节会混进已加密的
+     * 隧道流里污染数据。故 502 只在握手阶段写。
+     */
+    let established = false;
+
     upstream.on('error', (error) => {
       log.debug(`CONNECT ${target} 失败：${error.message}`);
-      // 代理连接失败：回复 502 让客户端知道目标不可达
+      if (established) return;
+      // 握手阶段失败：回复 502 让客户端知道目标不可达
       clientSocket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
       clientSocket.destroy();
     });
 
     upstream.on('connect', () => {
       // 上游连接就绪：回复 200，开始双向桥接
+      established = true;
       clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       this.activeUpstreams.add(upstream);
       // 双向 pipe——任一方关闭时另一方也关闭

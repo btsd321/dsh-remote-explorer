@@ -240,22 +240,21 @@ function buildRoutes(supervisor: SessionSupervisor): RouteDef[] {
               { status: 400 },
             );
           }
-          // WSL 域只有 env：body 出现 localResourceDownload 一律 400（域契约，
-          // 存储层写侧还有一道防御性抛错）——与 proxy/jumpHosts 同约束
-          if (transportType === 'wsl' && lrdRaw !== undefined) {
-            return Response.json(
-              { code: 'bad_usage', message: 'WSL 连接不支持 localResourceDownload 配置，仅支持环境变量' },
-              { status: 400 },
-            );
-          }
           // WSL 域只有 env：body 出现 proxy/jumpHosts/localResourceDownload 一律 400
-          // （域契约，存储层写侧还有一道防御性抛错）——localResourceDownload 的检查
-          // 在上方 lrdRaw 解析后已独立做，这里不重复
-          if (transportType === 'wsl' && (proxyRaw !== undefined || jumpRaw !== undefined)) {
-            return Response.json(
-              { code: 'bad_usage', message: 'WSL 连接不支持代理/跳板机配置，仅支持环境变量' },
-              { status: 400 },
-            );
+          // （域契约，存储层写侧还有一道防御性抛错）
+          if (transportType === 'wsl') {
+            if (lrdRaw !== undefined) {
+              return Response.json(
+                { code: 'bad_usage', message: 'WSL 连接不支持 localResourceDownload 配置，仅支持环境变量' },
+                { status: 400 },
+              );
+            }
+            if (proxyRaw !== undefined || jumpRaw !== undefined) {
+              return Response.json(
+                { code: 'bad_usage', message: 'WSL 连接不支持代理/跳板机配置，仅支持环境变量' },
+                { status: 400 },
+              );
+            }
           }
           // 部分更新合并（按域）：缺省字段沿用当前域存储值；显式空值（'' / []）按清除
           const current = readAdvancedConfig(transportType);
@@ -326,7 +325,7 @@ function buildRoutes(supervisor: SessionSupervisor): RouteDef[] {
             // 本地资源下载模式（仅 SSH 有效；WSL 域无此字段，transportType=wsl
             // 时不传——supervisor 也按 isSsh 分流）
             ...(transportType === 'ssh' && stringField(body, 'localResourceDownload') !== undefined
-              ? { localResourceDownload: stringField(body, 'localResourceDownload') as 'auto' | 'always' | 'off' }
+              ? { localResourceDownload: stringField(body, 'localResourceDownload') as LocalResourceDownloadMode }
               : {}),
             // 跳板机条目（面板跳板机弹窗保存后的完整快照；含内存态密码，
             // 绝不落盘——advanced store 只持久化 target/identityFile 子集）。

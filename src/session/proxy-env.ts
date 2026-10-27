@@ -22,6 +22,7 @@
  */
 
 import { RemoteError } from '../util/errors.js';
+import { buildProxyEnv } from '../util/proxy-env.js';
 
 /**
  * 环境变量键名合法形态。
@@ -48,11 +49,9 @@ export const RESERVED_REMOTE_ENV_KEYS: readonly string[] = ['DSH_HOME', 'DSH_AGE
  * 收集要注入远端 dsh 的代理环境变量。
  *
  * 来源优先级：显式传入 > 本机环境变量 `DSH_REMOTE_PROXY` > 不设（有网机器
- * 零影响的回归语义）。命中时同时设八个键：六个代理键（大小写各半 +
- * ALL_PROXY，值相同——git 认小写、npm/curl 认大小写皆可、Node 的 undici
- * 认大写，全设是为了覆盖各自的读取习惯，不指望消费方统一）加一对
- * `no_proxy`/`NO_PROXY` 排除回环地址——隧道代理的 baseURL 指向
- * `127.0.0.1:<反向端口>`，走 HTTP 代理会把隧道请求导向别处。
+ * 零影响的回归语义）。八个键的清单与展开规则在基础层的
+ * {@link buildProxyEnv}——provision/ 的 installer 与本模块共用同一实现，
+ * 避免同一份键清单在两层各写一遍。
  *
  * dsh 的 `scrubbedParentEnv` 会保留这些变量并注入 `NODE_USE_ENV_PROXY=1`，
  * 使远端 dsh 拉起的 git/pnpm 子进程走同一代理（见 deepseek-harness
@@ -62,21 +61,7 @@ export const RESERVED_REMOTE_ENV_KEYS: readonly string[] = ['DSH_HOME', 'DSH_AGE
  * @returns 代理环境变量映射；无代理时返回空对象
  */
 export function collectProxyEnv(explicit?: string): Record<string, string> {
-  const proxy = explicit ?? process.env.DSH_REMOTE_PROXY;
-  // 空串与 undefined 同等对待：空代理 URL 无意义，注入反而会让子进程解析失败
-  if (proxy === undefined || proxy === '') return {};
-  return {
-    http_proxy: proxy,
-    HTTP_PROXY: proxy,
-    https_proxy: proxy,
-    HTTPS_PROXY: proxy,
-    ALL_PROXY: proxy,
-    all_proxy: proxy,
-    // 排除回环地址——隧道代理的 baseURL 指向 127.0.0.1:<反向端口>，
-    // 这些请求不能走 HTTP 代理（会被导向 dsh webserver 端口而非隧道代理）
-    no_proxy: '127.0.0.1,localhost,::1',
-    NO_PROXY: '127.0.0.1,localhost,::1',
-  };
+  return buildProxyEnv(explicit ?? process.env.DSH_REMOTE_PROXY);
 }
 
 /**

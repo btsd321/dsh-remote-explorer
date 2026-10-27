@@ -110,14 +110,17 @@ export interface OpenSessionOptions {
   /**
    * 本地资源下载模式（local_resource_download，**仅 SSH 连接**）。
    *
-   * 远端无网络时用本机网络下载资源包再经 SFTP 传到远端的模式选择，类似
-   * VS Code Remote.SSH: Local Server Download。三值：
-   * - `auto`（默认）：先远端下载，失败回退本机下载 + SFTP 传输
-   * - `always`：始终本机下载 + SFTP 传输
-   * - `off`：仅远端下载（恢复原行为）
+   * 远端无网络时借本机网络完成引导期下载（Node 发行包、npm 包）的模式选择，
+   * 类似 VS Code Remote.SSH: Local Server Download。三值：
+   * - `auto`（默认）：先探测远端网络，不可达才建代理隧道
+   * - `always`：直接建代理隧道（跳过探测）
+   * - `off`：远端直连下载（远端无网时失败——恢复原行为）
+   *
+   * 「借本机网络」靠代理隧道实现（本机 HTTP CONNECT 代理 + SSH 反向转发），
+   * 远端下载命令本身不变。
    *
    * undefined = 未配置（provision 层按 `auto` 处理——与 advanced-store
-   * 的默认值同源，见 {@link DEFAULT_LOCAL_RESOURCE_DOWNLOAD}）。
+   * 的默认值同源，见 local-download-mode.ts 的 DEFAULT_LOCAL_RESOURCE_DOWNLOAD）。
    * **仅 SSH 连接生效**——WSL 有本地文件系统访问（UNC 路径），无需此选项
    */
   localResourceDownload?: LocalResourceDownloadMode;

@@ -78,7 +78,7 @@ function printHelp(): void {
   println(`  --node-version <版本>     Node 版本（默认 ${versions.node}）`);
   println(`  --dsh-version <版本>      dsh 版本或 dist-tag（默认${versions.dsh}）`);
   println('  --refresh-mirrors         强制重测镜像延迟，忽略缓存');
-  println('  --local-resource-download <mode>  本地资源下载：远端无网时本机下载 + SFTP 传输（auto/always/off，默认 auto）');
+  println('  --local-resource-download <mode>  本地资源下载：远端无网时经本机网络代理下载（auto/always/off，默认 auto）');
   println('  --wsl <发行版>            连接 WSL 发行版（与主机别名互斥）');
   println('  --wsl-user <用户>         WSL 用户名（仅 --wsl 时有效）');
   println();
@@ -263,7 +263,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     }
     localResourceDownload = lrdRaw;
     if (wslDistro !== undefined) {
-      printErr(red('--local-resource-download 仅支持 SSH 主机，不支持 WSL 发⾏版'));
+      printErr(red('--local-resource-download 仅支持 SSH 主机，不支持 WSL 发行版'));
       return 64;
     }
   }

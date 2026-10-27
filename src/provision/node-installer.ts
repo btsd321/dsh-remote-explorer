@@ -19,6 +19,7 @@
 
 import { RemoteError, toErrorMessage } from '../util/errors.js';
 import { createLogger } from '../util/logger.js';
+import { buildCurlProxyArg } from '../util/proxy-env.js';
 import { quote } from '../util/shell-quote.js';
 import { INSTALL_LOCK_WAIT_SECONDS, lockInstallCommand } from './install-lock.js';
 import { getCandidates, OFFICIAL_NODE_BASE_URL, type MirrorCandidate } from './mirror-selector.js';
@@ -226,7 +227,7 @@ async function downloadAndExtract(
   const targetDir = paths.nodeDir(version);
 
   // curl 代理参数：proxyUrl 非空时加 -x 让 curl 走 HTTP 代理
-  const proxyArg = proxyUrl !== undefined ? ` -x ${quote(proxyUrl)}` : '';
+  const proxyArg = buildCurlProxyArg(proxyUrl);
 
   // 1. 候选链逐源下载。curl 用 -fL：跟随重定向（镜像常有 302），HTTP 错误码
   //    要失败而非写出错误页；--connect-timeout 让不可达源快速失败

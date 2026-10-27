@@ -14,6 +14,7 @@ import type { StoredJumpEntry } from '../plugin/advanced-store.js';
 import type { JumpEntry, SshHostSummary } from '../hosts/ssh-config-parser.js';
 import type { DshVersionList } from '../provision/dsh-version-fetch.js';
 import type { NodeVersionList } from '../provision/node-version-fetch.js';
+import type { LocalResourceDownloadMode } from '../provision/local-download-mode.js';
 
 /** 宿主路由前缀（与 src/plugin/routes.ts 的 ROUTE_PREFIX 一致，check 脚本盯住宿主侧） */
 const BASE = '/api/dsh-remote-explorer';
@@ -162,7 +163,7 @@ export interface ConnectBody {
   /** dsh 版本覆盖 */
   dshVersion?: string;
   /** 本地资源下载模式（auto/always/off；仅 SSH 传输有效） */
-  localResourceDownload?: 'auto' | 'always' | 'off';
+  localResourceDownload?: LocalResourceDownloadMode;
   /** 本机管理页 origin（location.origin）：远端 handoff 组件的返回动作依赖它 */
   managerUrl?: string;
   /** 传输类型：ssh（默认）或 wsl */

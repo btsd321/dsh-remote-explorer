@@ -22,6 +22,7 @@
 import * as React from 'react';
 import type { ReactNode } from 'react';
 import type { JumpEntry, SshHostSummary } from '../hosts/ssh-config-parser.js';
+import type { LocalResourceDownloadMode } from '../provision/local-download-mode.js';
 import type { RemoteExplorerLocaleKey } from './locales.js';
 import { messageOf, postConnect, type PanelSession } from './api.js';
 import { HostPicker } from './host-picker.js';
@@ -155,7 +156,7 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
         ...(Number.isFinite(port) && port > 0 ? { localPort: port } : {}),
         ...(nodeVersion.trim() !== '' ? { nodeVersion: nodeVersion.trim() } : {}),
         ...(dshVersion.trim() !== '' ? { dshVersion: dshVersion.trim() } : {}),
-        ...(localResourceDownload !== '' ? { localResourceDownload: localResourceDownload as 'auto' | 'always' | 'off' } : {}),
+        ...(localResourceDownload !== '' ? { localResourceDownload: localResourceDownload as LocalResourceDownloadMode } : {}),
         forceRestart,
         refreshMirrors,
         // 跳板机条目：仅直连目标携带（分流规则见文件头）；面板未配置过弹窗

@@ -228,7 +228,7 @@ When the remote host has no public internet access, the provisioning downloads (
 | `always` | Always build a proxy tunnel (skip the probe) |
 | `off` | Remote downloads only — original behavior (fails if the remote has no internet) |
 
-**How it works**: the local process starts a pure-JS HTTP CONNECT proxy and maps it to a remote port via SSH reverse forwarding (`forwardIn`). The remote `curl` / `npm install` commands receive `http_proxy=http://127.0.0.1:<remote-port>`, so their outbound traffic flows through the tunnel back to the local network — no change to the remote download commands, and npm dependency trees resolve normally. The tunnel lives only during provisioning and is torn down when provisioning completes; the dsh process's own proxy (`DSH_REMOTE_PROXY`) is a separate, independent path.
+**How it works**: the local process starts a pure-JS HTTP CONNECT proxy and maps it to a remote port via SSH reverse forwarding (`forwardIn`). The remote `curl` / `npm install` commands receive `http_proxy=http://127.0.0.1:<remote-port>`, so their outbound traffic flows through the tunnel back to the local network — no change to the remote download commands, and npm dependency trees resolve normally. The whole provisioning network path goes through it (mirror latency probing, Node tarball download, npm version resolution, `npm install`), and the remote port is allocated from the same dynamic range as the other reverse tunnels, so concurrent sessions on one host do not collide. The tunnel lives only during provisioning and is torn down when provisioning completes; the dsh process's own proxy (`DSH_REMOTE_PROXY`) is a separate, independent path.
 
 ```bash
 # CLI: always route through local network

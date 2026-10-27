@@ -32,6 +32,7 @@
 
 import { RemoteError } from '../util/errors.js';
 import { createLogger } from '../util/logger.js';
+import { buildProxyEnv } from '../util/proxy-env.js';
 import { quote } from '../util/shell-quote.js';
 import { installLockHint, lockInstallCommand } from './install-lock.js';
 import type { RemoteContext } from './remote-context.js';
@@ -175,20 +176,12 @@ export async function ensurePnpm(
     `--registry=${quote(registryUrl)} --no-audit --no-fund ${quote(`pnpm@${version}`)}`,
   ].join(' '));
 
-  // 代理 env：proxyUrl 非空时展开为 http_proxy/https_proxy/ALL_PROXY + no_proxy
-  // 四对（大小写各半），与 dsh-installer 的 npmEnv 同款。npm 认这些环境变量，
-  // 值指向 SSH 反向隧道的远端端口
-  const env: Record<string, string> = { npm_config_cache: paths.npmCache };
-  if (options.proxyUrl !== undefined && options.proxyUrl !== '') {
-    env.http_proxy = options.proxyUrl;
-    env.HTTP_PROXY = options.proxyUrl;
-    env.https_proxy = options.proxyUrl;
-    env.HTTPS_PROXY = options.proxyUrl;
-    env.ALL_PROXY = options.proxyUrl;
-    env.all_proxy = options.proxyUrl;
-    env.no_proxy = '127.0.0.1,localhost,::1';
-    env.NO_PROXY = '127.0.0.1,localhost,::1';
-  }
+  // 代理 env：proxyUrl 非空时并入基础层 buildProxyEnv 的八个代理键
+  // （与 dsh-installer 的 npmEnv 同一实现，键清单只有一处维护）
+  const env: Record<string, string> = {
+    npm_config_cache: paths.npmCache,
+    ...buildProxyEnv(options.proxyUrl),
+  };
 
   try {
     await transport.exec(install, {

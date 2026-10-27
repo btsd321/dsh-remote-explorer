@@ -145,8 +145,9 @@ export interface ConnectRequest {
   /**
    * 本地资源下载模式（local_resource_download，**仅 SSH 连接**）。
    *
-   * 远端无网络时用本机网络下载资源包再经 SFTP 传到远端，类似 VS Code
-   * Remote.SSH: Local Server Download。三值 auto/always/off，默认 auto。
+   * 远端无网络时借本机网络完成引导期下载（Node 发行包、npm 包）的模式选择，
+   * 类似 VS Code Remote.SSH: Local Server Download。三值 auto/always/off，
+   * 默认 auto（先探测远端网络，不可达才建代理隧道）。
    * undefined = 用 advanced-store 里的持久化值（也未配则回落 auto）
    */
   localResourceDownload?: LocalResourceDownloadMode;

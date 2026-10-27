@@ -227,7 +227,7 @@ flowchart TD
 | `always` | 直接建代理隧道（跳过探测） |
 | `off` | 仅远端下载——恢复原行为（远端无网时失败） |
 
-**工作原理**：本机进程起一个纯 JS HTTP CONNECT 代理，经 SSH 反向转发（`forwardIn`）映射到远端端口。远端的 `curl` / `npm install` 收到 `http_proxy=http://127.0.0.1:<远端端口>`，出站流量经隧道回到本机网络——远端下载命令不改，npm 依赖树也能正常拉取。隧道只在引导期存活，引导完成后拆除；dsh 进程自身的代理（`DSH_REMOTE_PROXY`）是另一条独立链路。
+**工作原理**：本机进程起一个纯 JS HTTP CONNECT 代理，经 SSH 反向转发（`forwardIn`）映射到远端端口。远端的 `curl` / `npm install` 收到 `http_proxy=http://127.0.0.1:<远端端口>`，出站流量经隧道回到本机网络——远端下载命令不改，npm 依赖树也能正常拉取。引导期的整条网络链路都走它（镜像测速、Node 发行包下载、npm 版本解析、`npm install`），远端端口从与其他反向隧道同一套动态区间分配，同一主机的并发会话不会撞端口。隧道只在引导期存活，引导完成后拆除；dsh 进程自身的代理（`DSH_REMOTE_PROXY`）是另一条独立链路。
 
 ```bash
 # CLI：始终经本机网络

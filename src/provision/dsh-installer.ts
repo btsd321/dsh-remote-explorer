@@ -33,6 +33,7 @@
 
 import { RemoteError, toErrorMessage } from '../util/errors.js';
 import { createLogger } from '../util/logger.js';
+import { buildProxyEnv } from '../util/proxy-env.js';
 import { quote } from '../util/shell-quote.js';
 import { INSTALL_LOCK_WAIT_SECONDS, installLockHint, lockInstallCommand } from './install-lock.js';
 import type { RemoteContext } from './remote-context.js';
@@ -515,28 +516,16 @@ async function runWithPath(
  * 那是与远端其他 npm 使用者共享的目录——隔离契约要求装机不碰它。
  * `npm_config_cache` 对 install 与 view 一视同仁。
  *
- * 代理注入：`proxyUrl` 非空时展开为 http_proxy/https_proxy/ALL_PROXY +
- * no_proxy 四对（大小写各半）。npm 认这些环境变量（Node 的 undici 认大写，
- * npm CLI 认小写），值指向 SSH 反向隧道的远端端口。no_proxy 排除回环地址——
- * 隧道代理本身在 127.0.0.1，不能被代理循环。
+ * 代理注入：`proxyUrl` 非空时并入基础层 {@link buildProxyEnv} 的八个代理键
+ * （http_proxy/https_proxy/ALL_PROXY 大小写各半 + no_proxy 排除回环）。
+ * npm CLI 认小写、Node 的 undici 认大写，两组都要给。
  *
  * @param paths - 远端路径集合
  * @param proxyUrl - HTTP 代理 URL（local_resource_download 建隧道时注入）；undefined = 不代理
  * @returns 环境变量
  */
 function npmEnv(paths: RemotePaths, proxyUrl?: string): Record<string, string> {
-  const env: Record<string, string> = { npm_config_cache: paths.npmCache };
-  if (proxyUrl !== undefined && proxyUrl !== '') {
-    env.http_proxy = proxyUrl;
-    env.HTTP_PROXY = proxyUrl;
-    env.https_proxy = proxyUrl;
-    env.HTTPS_PROXY = proxyUrl;
-    env.ALL_PROXY = proxyUrl;
-    env.all_proxy = proxyUrl;
-    env.no_proxy = '127.0.0.1,localhost,::1';
-    env.NO_PROXY = '127.0.0.1,localhost,::1';
-  }
-  return env;
+  return { npm_config_cache: paths.npmCache, ...buildProxyEnv(proxyUrl) };
 }
 
 /**
