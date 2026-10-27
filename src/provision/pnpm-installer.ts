@@ -32,6 +32,7 @@
 
 import { RemoteError } from '../util/errors.js';
 import { createLogger } from '../util/logger.js';
+import { buildProxyEnv } from '../util/proxy-env.js';
 import { quote } from '../util/shell-quote.js';
 import { installLockHint, lockInstallCommand } from './install-lock.js';
 import type { RemoteContext } from './remote-context.js';
@@ -133,6 +134,8 @@ export async function ensurePnpm(
     registryUrl: string;
     /** node bin 目录，会加进 PATH */
     nodeBinDir: string;
+    /** HTTP 代理 URL（local_resource_download 建隧道时注入到 npm install） */
+    proxyUrl?: string;
     /** 取消信号 */
     signal?: AbortSignal;
     /** 阶段进度回调 */
@@ -173,10 +176,17 @@ export async function ensurePnpm(
     `--registry=${quote(registryUrl)} --no-audit --no-fund ${quote(`pnpm@${version}`)}`,
   ].join(' '));
 
+  // 代理 env：proxyUrl 非空时并入基础层 buildProxyEnv 的八个代理键
+  // （与 dsh-installer 的 npmEnv 同一实现，键清单只有一处维护）
+  const env: Record<string, string> = {
+    npm_config_cache: paths.npmCache,
+    ...buildProxyEnv(options.proxyUrl),
+  };
+
   try {
     await transport.exec(install, {
       pathPrefix: nodeBinDir,
-      env: { npm_config_cache: paths.npmCache },
+      env,
       timeoutMs: INSTALL_TIMEOUT_MS + 60_000,
       ...(signal ? { signal } : {}),
     });

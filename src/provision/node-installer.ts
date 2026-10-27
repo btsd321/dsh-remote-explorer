@@ -19,6 +19,7 @@
 
 import { RemoteError, toErrorMessage } from '../util/errors.js';
 import { createLogger } from '../util/logger.js';
+import { buildCurlProxyArg } from '../util/proxy-env.js';
 import { quote } from '../util/shell-quote.js';
 import { INSTALL_LOCK_WAIT_SECONDS, lockInstallCommand } from './install-lock.js';
 import { getCandidates, OFFICIAL_NODE_BASE_URL, type MirrorCandidate } from './mirror-selector.js';
@@ -92,6 +93,8 @@ export async function ensureNode(
     mirrorBaseUrl: string;
     /** 跳过稳定性自检（仅供 doctor 之类只读场景使用） */
     skipStabilityCheck?: boolean;
+    /** HTTP 代理 URL（local_resource_download 建隧道时注入到 curl）；undefined = 不代理 */
+    proxyUrl?: string;
     /** 取消信号 */
     signal?: AbortSignal;
     /** 阶段进度回调 */
@@ -123,7 +126,7 @@ export async function ensureNode(
       );
     }
     options.onProgress?.(`下载 Node ${version}`);
-    await downloadAndExtract(ctx, version, mirrorBaseUrl, signal);
+    await downloadAndExtract(ctx, version, mirrorBaseUrl, signal, options.proxyUrl);
 
     // 装完立即验证版本，避免镜像给错文件时把问题留到后面
     const verify = await transport.exec(`${quote(nodeBin)} -v`, {
@@ -194,10 +197,14 @@ export function nodeMirrorChain(preferredBaseUrl: string): readonly MirrorCandid
  * 才汇总各次失败原因上抛。curl 加 `--connect-timeout`：不可达的源在
  * 连接期 15 秒内失败，不吃满整个下载超时。
  *
+ * 代理注入：`proxyUrl` 非空时经 `curl -x` 参数注入（curl 原生支持 HTTP 代理），
+ * 让远端无网时 curl 经 SSH 反向隧道的代理走本机网络。
+ *
  * @param ctx - 远端执行上下文
  * @param version - 目标版本
  * @param preferredBaseUrl - 首选镜像 baseUrl（候选链首项；空串时用默认链）
  * @param signal - 取消信号
+ * @param proxyUrl - HTTP 代理 URL（local_resource_download 建隧道时注入）；undefined = 不代理
  * @throws RemoteError('PLATFORM_UNSUPPORTED') 平台无对应发行版
  * @throws RemoteError('EXEC_FAILED') 候选链全部下载失败，或解包失败
  */
@@ -206,6 +213,7 @@ async function downloadAndExtract(
   version: string,
   preferredBaseUrl: string,
   signal?: AbortSignal,
+  proxyUrl?: string,
 ): Promise<void> {
   const { transport, paths } = ctx;
   const platform = transport.platform;
@@ -218,6 +226,9 @@ async function downloadAndExtract(
   const tmpDir = paths.tmpDir(process.pid, 'node-install');
   const targetDir = paths.nodeDir(version);
 
+  // curl 代理参数：proxyUrl 非空时加 -x 让 curl 走 HTTP 代理
+  const proxyArg = buildCurlProxyArg(proxyUrl);
+
   // 1. 候选链逐源下载。curl 用 -fL：跟随重定向（镜像常有 302），HTTP 错误码
   //    要失败而非写出错误页；--connect-timeout 让不可达源快速失败
   const attempts = nodeMirrorChain(preferredBaseUrl);
@@ -229,7 +240,7 @@ async function downloadAndExtract(
       `mkdir -p ${quote(tmpDir)}`,
       `cd ${quote(tmpDir)}`,
       `curl -fsSL --connect-timeout 15 --max-time ${Math.floor(DOWNLOAD_TIMEOUT_MS / 1000)}`
-        + ` -o ${quote(tarball)} ${quote(url)}`,
+        + `${proxyArg} -o ${quote(tarball)} ${quote(url)}`,
     ].join('\n');
     try {
       await transport.exec(download, {

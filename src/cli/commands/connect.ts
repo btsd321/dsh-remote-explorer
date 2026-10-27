@@ -14,6 +14,7 @@ import { spawn } from 'node:child_process';
 import { openSession, type RemoteSession, type TransportType } from '../../session/session-manager.js';
 import { describeState, type SessionState } from '../../session/lifecycle-state.js';
 import { toErrorMessage } from '../../util/errors.js';
+import type { LocalResourceDownloadMode } from '../../provision/local-download-mode.js';
 import {
   bold, cyan, dim, green, println, printTable, red, yellow, ProgressReporter,
 } from '../output.js';
@@ -48,6 +49,8 @@ export interface ConnectCommandOptions {
   keepRemote: boolean;
   /** 强制重测镜像 */
   refreshMirrors: boolean;
+  /** 本地资源下载模式（auto/always/off）；仅 SSH 有效 */
+  localResourceDownload?: LocalResourceDownloadMode;
   /** 传输类型；默认 'ssh'（向后兼容） */
   transportType?: TransportType;
   /** WSL 发行版名称（transportType='wsl' 时必需） */
@@ -96,6 +99,7 @@ export async function runConnect(options: ConnectCommandOptions): Promise<number
       ...(options.wslUser ? { wslUser: options.wslUser } : {}),
       ...(options.nodeVersion ? { nodeVersion: options.nodeVersion } : {}),
       ...(options.dshVersion ? { dshVersion: options.dshVersion } : {}),
+      ...(options.localResourceDownload ? { localResourceDownload: options.localResourceDownload } : {}),
       ...(options.forceRestart ? { forceRestart: true } : {}),
       ...(options.refreshMirrors ? { refreshMirrors: true } : {}),
       ...(options.privateKey ? { privateKey: options.privateKey } : {}),

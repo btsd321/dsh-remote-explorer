@@ -111,6 +111,11 @@ export async function provisionAndConfigure(
     ...(options.nodeVersion ? { nodeVersion: options.nodeVersion } : {}),
     ...(options.dshVersion ? { dshVersion: options.dshVersion } : {}),
     ...(options.refreshMirrors ? { refreshMirrors: true } : {}),
+    // localResourceDownload 仅 SSH 传输传递：WSL 有本地文件系统访问，无需此选项。
+    // undefined = auto（与 advanced-store 默认值同源）。严格离线模式下忽略（离线不下载）
+    ...(options.localResourceDownload !== undefined
+      ? { localResourceDownload: options.localResourceDownload }
+      : {}),
     ...(options.onStageStart ? { onStageStart: options.onStageStart } : {}),
     ...(options.onStageDone ? { onStageDone: options.onStageDone } : {}),
     ...(options.onStageSkip ? { onStageSkip: options.onStageSkip } : {}),

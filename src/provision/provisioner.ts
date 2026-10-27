@@ -20,8 +20,10 @@ import { ensurePnpm } from './pnpm-installer.js';
 import { ensurePnpmProfileSettings } from './pnpm-profile.js';
 import { prepareSessionProfile, type PatchEntry, type ProfileResult } from './profile-writer.js';
 import { createRemotePaths, type RemotePaths } from './remote-paths.js';
+import { setupProvisionProxyTunnel } from './provision-proxy-tunnel.js';
 import { createLogger } from '../util/logger.js';
 import { toErrorMessage } from '../util/errors.js';
+import type { LocalResourceDownloadMode } from './local-download-mode.js';
 import type { RemoteContext } from './remote-context.js';
 import type { RemoteTransport } from '../transport/types.js';
 
@@ -49,6 +51,14 @@ export interface ProvisionOptions {
   patches?: readonly PatchEntry[];
   /** 强制重测镜像，忽略缓存 */
   refreshMirrors?: boolean;
+  /**
+   * 本地资源下载模式（local_resource_download，**仅 SSH 传输**）。
+   *
+   * 远端无网时建代理隧道（本机 HTTP 代理 + SSH 反向转发），让远端 curl/npm
+   * install 经隧道走本机网络。三值 auto/always/off，默认 auto。undefined = auto。
+   * 严格离线模式下忽略（离线不下载任何东西，只复用预装运行时）
+   */
+  localResourceDownload?: LocalResourceDownloadMode;
   /** 跳过 Node 稳定性自检（只读诊断场景用） */
   skipStabilityCheck?: boolean;
   /** 取消信号 */
@@ -153,6 +163,46 @@ export async function provision(
     options.onStageDone?.(`复用 Node ${node.version} / DSH ${dsh.version}`);
     return { paths, probe, node, dsh, profile };
   }
+  // local_resource_download：按模式建代理隧道（本机 HTTP 代理 + SSH 反向转发），
+  // 让远端无网时 curl/npm install 经隧道走本机网络。严格离线在上一分支已返回，
+  // 故此处无需再判 offline。proxyUrl 非空时注入全部远端网络调用：镜像测速、
+  // 两个 installer、npm 版本解析
+  const proxyTunnel = await setupProvisionProxyTunnel(transport, options.localResourceDownload);
+  if (proxyTunnel.proxyUrl !== undefined) {
+    options.onStageStart?.('建立代理隧道（远端无网时经本机网络下载）');
+    options.onStageDone?.(`代理: ${proxyTunnel.proxyUrl}`);
+  }
+
+  try {
+    return await runProvisionStages(ctx, options, probe, nodeVersion, proxyTunnel.proxyUrl, signal);
+  } finally {
+    await proxyTunnel.teardown();
+  }
+}
+
+/**
+ * 执行引导的实际各阶段（从 probe 之后到返回结果）。
+ *
+ * 拆分出独立函数是为了让 {@link provision} 的 try/finally 能在 provision 完成后
+ * teardown 代理隧道——这个函数的返回/抛错都触发 finally 里的 teardown。
+ *
+ * @param ctx - 远端执行上下文（已含 transport 与 paths）
+ * @param options - 引导选项
+ * @param probe - 探测结果
+ * @param nodeVersion - 已解析的 Node 版本
+ * @param proxyUrl - 代理隧道 URL（undefined = 不代理）
+ * @param signal - 取消信号
+ * @returns 引导结果
+ */
+async function runProvisionStages(
+  ctx: RemoteContext,
+  options: ProvisionOptions,
+  probe: ProbeResult,
+  nodeVersion: string,
+  proxyUrl: string | undefined,
+  signal: AbortSignal | undefined,
+): Promise<ProvisionResult> {
+  const { transport, paths } = ctx;
   const alreadyHasNode = probe.managedNodes.some(node => node.version === nodeVersion);
 
   // 2. Node 镜像测速——已装目标版本时不需要，省掉一次网络往返
@@ -165,6 +215,7 @@ export async function provision(
     const selection = await selectMirror(transport, 'node', {
       cachePath: paths.mirrorCache,
       ...(options.refreshMirrors ? { force: true } : {}),
+      ...(proxyUrl !== undefined ? { proxyUrl } : {}),
       ...(signal ? { signal } : {}),
     });
     nodeMirrorUrl = selection.selected.baseUrl;
@@ -178,6 +229,7 @@ export async function provision(
     version: nodeVersion,
     // 已装时不会用到 URL，给个占位避免把 undefined 传下去
     mirrorBaseUrl: nodeMirrorUrl ?? '',
+    ...(proxyUrl !== undefined ? { proxyUrl } : {}),
     ...(options.skipStabilityCheck ? { skipStabilityCheck: true } : {}),
     ...(signal ? { signal } : {}),
   });
@@ -188,6 +240,7 @@ export async function provision(
   const npmSelection = await selectMirror(transport, 'npm', {
     cachePath: paths.mirrorCache,
     ...(options.refreshMirrors ? { force: true } : {}),
+    ...(proxyUrl !== undefined ? { proxyUrl } : {}),
     ...(signal ? { signal } : {}),
   });
   if (npmSelection.fromCache) options.onStageSkip?.(`命中缓存：${npmSelection.selected.name}`);
@@ -208,6 +261,7 @@ export async function provision(
         tag: requested,
         registryUrl: npmSelection.selected.baseUrl,
         nodeBinDir: node.binDir,
+        ...(proxyUrl !== undefined ? { proxyUrl } : {}),
         ...(signal ? { signal } : {}),
       });
       options.onStageDone?.(`${requested} → ${dshVersion}`);
@@ -220,6 +274,7 @@ export async function provision(
       dshCandidates = await resolveDshCandidates(ctx, {
         registryUrl: npmSelection.selected.baseUrl,
         nodeBinDir: node.binDir,
+        ...(proxyUrl !== undefined ? { proxyUrl } : {}),
         ...(signal ? { signal } : {}),
       });
       dshVersion = dshCandidates[0]!;
@@ -246,6 +301,7 @@ export async function provision(
     candidates: dshCandidates,
     registryUrl: npmSelection.selected.baseUrl,
     nodeBinDir: node.binDir,
+    ...(proxyUrl !== undefined ? { proxyUrl } : {}),
     ...(signal ? { signal } : {}),
   });
   options.onStageDone?.(dsh.reused ? '复用已有安装' : '已安装');
@@ -256,6 +312,7 @@ export async function provision(
   const pnpm = await ensurePnpm(ctx, {
     registryUrl: npmSelection.selected.baseUrl,
     nodeBinDir: node.binDir,
+    ...(proxyUrl !== undefined ? { proxyUrl } : {}),
     ...(signal ? { signal } : {}),
   });
   // pnpm 11 启用前提：host profile 的 pnpm-workspace.yaml 幂等补齐

@@ -14,6 +14,7 @@ import type { StoredJumpEntry } from '../plugin/advanced-store.js';
 import type { JumpEntry, SshHostSummary } from '../hosts/ssh-config-parser.js';
 import type { DshVersionList } from '../provision/dsh-version-fetch.js';
 import type { NodeVersionList } from '../provision/node-version-fetch.js';
+import type { LocalResourceDownloadMode } from '../provision/local-download-mode.js';
 
 /** 宿主路由前缀（与 src/plugin/routes.ts 的 ROUTE_PREFIX 一致，check 脚本盯住宿主侧） */
 const BASE = '/api/dsh-remote-explorer';
@@ -125,6 +126,8 @@ export interface AdvancedPayload {
   proxy?: string;
   /** 直连主机跳板机条目（落盘子集，无密码）；未配置时缺省 */
   jumpHosts?: StoredJumpEntry[];
+  /** 本地资源下载模式（仅 SSH 域）；未配置时缺省（语义等同 auto） */
+  localResourceDownload?: LocalResourceDownloadMode;
 }
 
 /**
@@ -139,6 +142,8 @@ export interface AdvancedSaveBody {
   proxy?: string;
   /** 直连主机跳板机条目（落盘子集；空数组 = 清除） */
   jumpHosts?: StoredJumpEntry[];
+  /** 本地资源下载模式（仅 SSH 域；三值之一，无「清除」语义——auto 即默认） */
+  localResourceDownload?: LocalResourceDownloadMode;
 }
 
 /** 面板连接请求体（与宿主 /connect 的字段一致） */
@@ -161,6 +166,8 @@ export interface ConnectBody {
   nodeVersion?: string;
   /** dsh 版本覆盖 */
   dshVersion?: string;
+  /** 本地资源下载模式（auto/always/off；仅 SSH 传输有效） */
+  localResourceDownload?: LocalResourceDownloadMode;
   /** 本机管理页 origin（location.origin）：远端 handoff 组件的返回动作依赖它 */
   managerUrl?: string;
   /** 传输类型：ssh（默认）或 wsl */

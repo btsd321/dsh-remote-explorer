@@ -25,6 +25,7 @@ import { readAdvancedConfig } from './advanced-store.js';
 import { renderConnectSummary } from './connect-summary.js';
 import { planJumpHosts } from '../session/transport/factory.js';
 import type { JumpEntry } from '../hosts/ssh-config-parser.js';
+import type { LocalResourceDownloadMode } from '../provision/local-download-mode.js';
 import { INITIAL_STATE, transition, type SessionState } from '../session/lifecycle-state.js';
 import { computeSessionId } from '../util/session-id.js';
 import { normalizeRemoteCwd, validateRemoteCwd } from '../util/remote-cwd.js';
@@ -141,6 +142,15 @@ export interface ConnectRequest {
    * 经 meta 路由交给远端 handoff 组件渲染「返回/并返回」动作；缺省则远端菜单只读
    */
   managerUrl?: string;
+  /**
+   * 本地资源下载模式（local_resource_download，**仅 SSH 连接**）。
+   *
+   * 远端无网络时借本机网络完成引导期下载（Node 发行包、npm 包）的模式选择，
+   * 类似 VS Code Remote.SSH: Local Server Download。三值 auto/always/off，
+   * 默认 auto（先探测远端网络，不可达才建代理隧道）。
+   * undefined = 用 advanced-store 里的持久化值（也未配则回落 auto）
+   */
+  localResourceDownload?: LocalResourceDownloadMode;
   /**
    * 直连主机的跳板机条目（面板跳板机弹窗保存后的完整条目，含内存态密码）。
    *
@@ -434,6 +444,10 @@ export class SessionSupervisor {
       const advanced = readAdvancedConfig(record.transportType);
       const isSsh = record.transportType === 'ssh';
       const jumpHosts = isSsh ? (request.jumpHosts ?? advanced.jumpHosts) : undefined;
+      // localResourceDownload 仅 SSH 域：请求覆盖 > 持久化存储 > undefined（下游 auto）
+      const localResourceDownload = isSsh
+        ? (request.localResourceDownload ?? advanced.localResourceDownload)
+        : undefined;
 
       // 生效值（请求覆盖 > 插件配置默认）：连接日志与 openSession 同源
       const localPort = request.localPort ?? this.defaults.localPort;
@@ -468,6 +482,7 @@ export class SessionSupervisor {
         ...(dshVersion !== undefined && dshVersion !== '' ? { dshVersion } : {}),
         forceRestart,
         refreshMirrors,
+        ...(localResourceDownload !== undefined ? { localResourceDownload } : {}),
         privateKey: request.privateKey !== undefined && request.privateKey !== '',
       });
       for (const line of summaryLines) {
@@ -498,6 +513,10 @@ export class SessionSupervisor {
         // 显式分流一次——WSL 连接即使请求带了也不会透传（域契约双保险）
         ...(isSsh && advanced.proxy !== undefined && advanced.proxy !== '' ? { proxy: advanced.proxy } : {}),
         ...(isSsh && jumpHosts !== undefined && jumpHosts.length > 0 ? { jumpHosts } : {}),
+        // localResourceDownload 仅 SSH 连接传递（WSL 域无此字段，isSsh 为 false 时不传）
+        ...(isSsh && localResourceDownload !== undefined
+          ? { localResourceDownload }
+          : {}),
         onStageStart: (stage) => { this.push(record, 'info', `[开始] ${stage}`); },
         onStageDone: (detail) => {
           this.push(record, 'info', `[完成] ${detail ?? ''}`);

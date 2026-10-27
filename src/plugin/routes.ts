@@ -24,6 +24,7 @@ import { listHosts, refreshConfig, type JumpEntry } from '../hosts/ssh-config-pa
 import { listWslDistros, refreshWslCache } from '../hosts/wsl-distro-parser.js';
 import { fetchDshVersions } from '../provision/dsh-version-fetch.js';
 import { fetchNodeVersions } from '../provision/node-version-fetch.js';
+import { isValidLocalResourceDownloadMode, type LocalResourceDownloadMode } from '../provision/local-download-mode.js';
 import { toErrorMessage } from '../util/errors.js';
 import { SessionSupervisor, SupervisorError, type ConnectRequest, type SessionSnapshot } from './supervisor.js';
 import {
@@ -231,20 +232,41 @@ function buildRoutes(supervisor: SessionSupervisor): RouteDef[] {
               { status: 400 },
             );
           }
-          // WSL 域只有 env：body 出现 proxy/jumpHosts 一律 400（域契约，
-          // 存储层写侧还有一道防御性抛错）
-          if (transportType === 'wsl' && (proxyRaw !== undefined || jumpRaw !== undefined)) {
+          // localResourceDownload 可选；类型与合法值不对返回 400（仅 SSH 域）
+          const lrdRaw: unknown = body.localResourceDownload;
+          if (lrdRaw !== undefined && !isValidLocalResourceDownloadMode(lrdRaw)) {
             return Response.json(
-              { code: 'bad_usage', message: 'WSL 连接不支持代理/跳板机配置，仅支持环境变量' },
+              { code: 'bad_usage', message: `localResourceDownload 必须是 'auto'、'always' 或 'off'，收到 '${String(lrdRaw)}'` },
               { status: 400 },
             );
           }
+          // WSL 域只有 env：body 出现 proxy/jumpHosts/localResourceDownload 一律 400
+          // （域契约，存储层写侧还有一道防御性抛错）
+          if (transportType === 'wsl') {
+            if (lrdRaw !== undefined) {
+              return Response.json(
+                { code: 'bad_usage', message: 'WSL 连接不支持 localResourceDownload 配置，仅支持环境变量' },
+                { status: 400 },
+              );
+            }
+            if (proxyRaw !== undefined || jumpRaw !== undefined) {
+              return Response.json(
+                { code: 'bad_usage', message: 'WSL 连接不支持代理/跳板机配置，仅支持环境变量' },
+                { status: 400 },
+              );
+            }
+          }
           // 部分更新合并（按域）：缺省字段沿用当前域存储值；显式空值（'' / []）按清除
           const current = readAdvancedConfig(transportType);
+          // localResourceDownload 生效值：显式传值覆盖当前值；否则沿用当前域存储值
+          const lrdEffective = lrdRaw !== undefined
+            ? (lrdRaw as LocalResourceDownloadMode)
+            : current.localResourceDownload;
           const merged: AdvancedConfig = {
             env: envRaw !== undefined ? env : current.env,
             ...(proxyRaw !== undefined && proxyRaw !== '' ? { proxy: proxyRaw } : {}),
             ...(jumpRaw !== undefined && jumpRaw.length > 0 ? { jumpHosts: jumpRaw } : {}),
+            ...(lrdEffective !== undefined ? { localResourceDownload: lrdEffective } : {}),
           };
           const validation = validateAdvancedConfig(merged);
           if (validation !== undefined) {
@@ -300,6 +322,11 @@ function buildRoutes(supervisor: SessionSupervisor): RouteDef[] {
             ...(booleanField(body, 'refreshMirrors') !== undefined ? { refreshMirrors: booleanField(body, 'refreshMirrors') } : {}),
             ...(stringField(body, 'nodeVersion') !== undefined ? { nodeVersion: stringField(body, 'nodeVersion') } : {}),
             ...(stringField(body, 'dshVersion') !== undefined ? { dshVersion: stringField(body, 'dshVersion') } : {}),
+            // 本地资源下载模式（仅 SSH 有效；WSL 域无此字段，transportType=wsl
+            // 时不传——supervisor 也按 isSsh 分流）
+            ...(transportType === 'ssh' && stringField(body, 'localResourceDownload') !== undefined
+              ? { localResourceDownload: stringField(body, 'localResourceDownload') as LocalResourceDownloadMode }
+              : {}),
             // 跳板机条目（面板跳板机弹窗保存后的完整快照；含内存态密码，
             // 绝不落盘——advanced store 只持久化 target/identityFile 子集）。
             // 深校验（条目可解析性）由连接时的 resolveJumpChain 负责

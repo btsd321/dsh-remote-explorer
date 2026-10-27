@@ -218,57 +218,24 @@ Transport    transport/
 Foundation   hosts/   util/
 ```
 
-| Module | Responsibility |
-|---|---|
-| [src/util/](src/util/) | Shell escaping, error types, interactive password prompt (no echo) |
-| [src/hosts/ssh-config-parser.ts](src/hosts/ssh-config-parser.ts) | **Sole** source of host config: parses ssh config (plus ad-hoc `user@host[:port]`), recursively resolves ProxyJump, applies auth overrides; also resolves panel-configured jump chains (`resolveJumpChain`) and tells config hosts from direct hosts (`isConfigHost`) |
-| [src/transport/types.ts](src/transport/types.ts) | Transport abstraction (SSH and WSL implementations) |
-| [src/transport/ssh-transport.ts](src/transport/ssh-transport.ts) | ssh2 implementation: jump host chains, command execution, SFTP, forward/reverse forwarding, password auth (retries on rejection, up to 3) |
-| [src/transport/wsl-transport.ts](src/transport/wsl-transport.ts) | WSL distro transport: command execution and detached launch via wsl.exe |
-| [src/transport/channel-pool.ts](src/transport/channel-pool.ts) | SSH channel quota, avoids exceeding MaxSessions |
-| [src/transport/platform.ts](src/transport/platform.ts) | Shared platform detection and command building: arch mapping, uname parsing, PATH assembly |
-| [src/transport/wsl-network.ts](src/transport/wsl-network.ts) | WSL networking-mode probe pure functions: NAT/mirrored detection, default-route gateway resolution, loopback/reverse probe command builders |
-| [src/provision/probe.ts](src/provision/probe.ts) | Remote probe + **Node stability self-check** |
-| [src/provision/mirror-selector.ts](src/provision/mirror-selector.ts) | Live mirror latency measurement and adaptive selection |
-| [src/provision/remote-paths.ts](src/provision/remote-paths.ts) | Single source of truth for remote path rules |
-| [src/provision/node-installer.ts](src/provision/node-installer.ts) | Install Node, version-isolated, self-checks after install |
-| [src/provision/dsh-installer.ts](src/provision/dsh-installer.ts) | Install dsh at a single install point and upgrade in place, clearing the install tree when the version differs or the binary is broken; highest stable by default (latest rc if no stable exists, alpha excluded), walking down a candidate chain to the next newest when the top pick cannot be installed (up to 3 attempts; dist-tag `latest` lags in practice), fallback floor on resolution failure; exports semver pure functions (parse/compare/max) shared by version-fetch |
-| [src/provision/dsh-version-fetch.ts](src/provision/dsh-version-fetch.ts) | Local npm registry query for the panel's dsh-version dropdown: mirror-raced fetch of published versions, filters ≥ 0.2.0, 5-min in-process cache, degrades to empty list on failure |
-| [src/provision/node-version-fetch.ts](src/provision/node-version-fetch.ts) | Local Node.js dist index.json query for the panel's node-version dropdown: mirror-raced fetch, filters to dsh engines range (^22.19.0 \|\| >=24.0.0), 5-min cache, degrades to empty list |
-| [src/provision/local-mirror-race.ts](src/provision/local-mirror-race.ts) | Local mirror race: concurrent fetch across candidate mirrors (reuses getCandidates from mirror-selector), Promise.any takes first winner, caches selected mirror 5 min; shared by dsh-version-fetch and node-version-fetch |
-| [src/provision/pnpm-installer.ts](src/provision/pnpm-installer.ts) | Install pnpm (pinned 11.7.0, reuses majors 10/11/12); version probe reads the on-disk package.json |
-| [src/provision/pnpm-profile.ts](src/provision/pnpm-profile.ts) | Idempotent pnpm 11 prerequisites in the host profile's pnpm-workspace.yaml (allowBuilds / minimumReleaseAge) |
-| [src/provision/profile-writer.ts](src/provision/profile-writer.ts) | Per-session independent `DSH_HOME` and profile/patch generation |
-| [src/provision/provisioner.ts](src/provision/provisioner.ts) | Provisioning orchestration, each step idempotent; strict-offline branch verifies preinstalled runtimes without any network step |
-| [src/provision/offline-runtime.ts](src/provision/offline-runtime.ts) | Strict-offline runtime inspection: validates preinstalled Node/DSH/pnpm, fails fast on anything missing; single switch (`isOfflineMode`) shared by CLI flag, env var and plugin config |
-| [src/provision/offline-bundle.ts](src/provision/offline-bundle.ts) | Offline bundle manifest parsing + archive validation: whitelist-only paths, symlink/hardlink boundary checks, expansion quotas (1 GiB archive / 8 GiB expanded / 200k entries) |
-| [src/provision/offline-transfer.ts](src/provision/offline-transfer.ts) | Export/import of runtime bundles: tar whitelisted runtime on the prep host, verify checksums on both ends, staged runtime self-check, atomic publish under install lock with rollback — refuses to overwrite existing installs |
-| [src/provision/offline-plugin.ts](src/provision/offline-plugin.ts) | Self-contained local plugin installer: Node-fs-only copy of manifest-verified files, merges the profile package.json (preserving user patches/credentials), install lock + backup, never touches pnpm |
-| [src/provision/remote-context.ts](src/provision/remote-context.ts) | Remote execution context: binds transport instance and path info |
-| [src/util/session-id.ts](src/util/session-id.ts) | Deterministic session id from host alias + remote directory |
-| [src/tunnel/port-allocator.ts](src/tunnel/port-allocator.ts) | Remote port allocation and listen confirmation |
-| [src/tunnel/forward-local.ts](src/tunnel/forward-local.ts) | Forward tunneling, **listener survives reconnection** |
-| [src/tunnel/reverse-listener.ts](src/tunnel/reverse-listener.ts) | Windows-side reverse listener: **bind-first allocation**, ghost-port candidate retry, OS-assigned port when the whole range is silently held |
-| [src/session/remote-process.ts](src/session/remote-process.ts) | Remote dsh detach launch, token capture, safe shutdown |
-| [src/session/transport/factory.ts](src/session/transport/factory.ts) | Transport instantiation + **jump-host plan** (`planJumpHosts`: config alias → config ProxyJump, direct host → panel entries) — the single routing rule shared by open/reconnect and the connect log |
-| [src/session/options.ts](src/session/options.ts) | Open/close option contract (auth overrides, extra env, proxy, jump entries — passwords memory-only) |
-| [src/session/lifecycle-state.ts](src/session/lifecycle-state.ts) | Session state machine, pure functions |
-| [src/session/heartbeat.ts](src/session/heartbeat.ts) | Heartbeat: process + port + HTTP application-level, single command |
-| [src/session/reconnect.ts](src/session/reconnect.ts) | Bounded exponential backoff |
-| [src/session/cancellable-wait.ts](src/session/cancellable-wait.ts) | Shared cancellable wait primitive (unref'd timer + abort rejection) — single implementation for polling and backoff waits |
-| [src/session/session-registry.ts](src/session/session-registry.ts) | Local session table, lock file + atomic replacement; reads cached by mtime+size (re-stat on every read, cross-process consistent) |
-| [src/session/session-manager.ts](src/session/session-manager.ts) | Session orchestration: lifecycle, heartbeat, reconnect, close; open flow split into open-pipeline |
-| [src/session/open-pipeline/](src/session/open-pipeline/) | Open flow in four stages: prepare / probe / provision / tunnels (with the transport factory) |
-| [src/session/wsl-reverse.ts](src/session/wsl-reverse.ts) | WSL reverse-channel orchestration: networking-mode detection, gateway refresh on reconnect, reverse-link self-check |
-| [src/credential/tunnel-proxy.ts](src/credential/tunnel-proxy.ts) | Reverse tunnel LLM proxy (multi-provider routing), injects real keys; account channel swaps the `x-dsh-auth-token` header for the real DeepSeek account token |
-| [src/credential/provider-routes.ts](src/credential/provider-routes.ts) | Extract provider routes from local config (settings.yaml / profile patch), produce remote mirror |
-| [src/credential/local-credentials.ts](src/credential/local-credentials.ts) | Read local `.credentials.yaml` refs as env-var credential fallback, plus the DeepSeek account grant token (account channel) |
-| [src/credential/token.ts](src/credential/token.ts) | Proxy token: generation and constant-time comparison |
-| [src/credential/proxy-secret.ts](src/credential/proxy-secret.ts) | Credential material I/O: session-scoped token, reverse port, machine-level placeholder account credentials |
-| [src/handoff/](src/handoff/) | Remote-window handoff: host half (bundle inside remote dsh) + browser half (status pill and management menu); protocol.ts is the cross-layer shared contract (constants referenced by the entry/orchestration/capability layers, zero dependencies) |
-| [src/plugin/](src/plugin/) | Plugin host half: session supervisor (booking + bounded log buffer), `/api` routes, advanced-options store (per transport form: SSH domain has env/proxy/jump hosts, WSL domain env only, 0600), connect-option summary log |
-| [src/plugin-client/](src/plugin-client/) | Browser half: SSH/WSL panels, connect form with the three advanced-option dialogs (jump hosts / env vars / proxy), session polling, version dropdowns (VersionPicker combobox + useDshVersions/useNodeVersions hooks), desktop floating window |
-| [src/cli/](src/cli/) | Command dispatch, argument parsing, terminal output, per-command auth wiring |
+## Local resource download (local_resource_download)
+
+When the remote host has no public internet access, the provisioning downloads (Node tarball, npm packages) can be routed through the local machine's network via an SSH reverse-tunnel HTTP proxy. This is similar to VS Code's "Remote.SSH: Local Server Download" setting and is controlled by the `local_resource_download` option (SSH only; WSL has direct filesystem access and does not need it):
+
+| Mode | Behavior |
+|------|----------|
+| `auto` (default) | Probe the remote network first; build a proxy tunnel only if the remote cannot reach the internet |
+| `always` | Always build a proxy tunnel (skip the probe) |
+| `off` | Remote downloads only — original behavior (fails if the remote has no internet) |
+
+**How it works**: the local process starts a pure-JS HTTP CONNECT proxy and maps it to a remote port via SSH reverse forwarding (`forwardIn`). The remote `curl` / `npm install` commands receive `http_proxy=http://127.0.0.1:<remote-port>`, so their outbound traffic flows through the tunnel back to the local network — no change to the remote download commands, and npm dependency trees resolve normally. The whole provisioning network path goes through it (mirror latency probing, Node tarball download, npm version resolution, `npm install`), and the remote port is allocated from the same dynamic range as the other reverse tunnels, so concurrent sessions on one host do not collide. The tunnel lives only during provisioning and is torn down when provisioning completes; the dsh process's own proxy (`DSH_REMOTE_PROXY`) is a separate, independent path.
+
+```bash
+# CLI: always route through local network
+pnpm exec tsx src/cli/bin.ts connect myhost --local-resource-download always
+
+# Plugin panel: Advanced options → "Local resource download" dropdown (auto / always / off; saved per SSH domain)
+```
 
 ## Development
 
