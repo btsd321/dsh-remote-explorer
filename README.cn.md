@@ -217,50 +217,24 @@ flowchart TD
 基础层      hosts/   util/
 ```
 
-| 模块 | 职责 |
-|---|---|
-| [src/util/](src/util/) | shell 转义、错误类型、交互式密码提示（不回显） |
-| [src/hosts/ssh-config-parser.ts](src/hosts/ssh-config-parser.ts) | 主机配置的**唯一**来源：解析 ssh config（含 `user@host[:port]` 直连），递归解析 ProxyJump，应用认证覆盖 |
-| [src/transport/types.ts](src/transport/types.ts) | 传输抽象接口（SSH 与 WSL 双实现） |
-| [src/transport/ssh-transport.ts](src/transport/ssh-transport.ts) | ssh2 实现：跳板机链、命令执行、SFTP、正反向转发、密码认证（被拒重试，最多 3 次） |
-| [src/transport/wsl-transport.ts](src/transport/wsl-transport.ts) | WSL 发行版传输：经 wsl.exe 执行命令与 detach 启动 |
-| [src/transport/channel-pool.ts](src/transport/channel-pool.ts) | SSH 通道配额，避免超 `MaxSessions` |
-| [src/transport/platform.ts](src/transport/platform.ts) | 平台探测与命令构建共享：架构映射、uname 解析、PATH 拼接 |
-| [src/transport/wsl-network.ts](src/transport/wsl-network.ts) | WSL 网络模式探测纯函数：NAT/mirrored 判定、默认路由网关解析、回环与反向探测命令构建 |
-| [src/provision/probe.ts](src/provision/probe.ts) | 远端探测 + **Node 稳定性自检** |
-| [src/provision/mirror-selector.ts](src/provision/mirror-selector.ts) | 在远端实测镜像延迟并自适应选取 |
-| [src/provision/remote-paths.ts](src/provision/remote-paths.ts) | 远端路径规则的唯一真源 |
-| [src/provision/node-installer.ts](src/provision/node-installer.ts) | 装 Node，版本隔离，装完自检 |
-| [src/provision/dsh-installer.ts](src/provision/dsh-installer.ts) | 装 dsh：单一安装点原地升级，版本不符或损坏时清空安装树重装；默认最大稳定版（无稳定版取最新 rc，alpha 不选），首选装不上时沿候选链退到次新（最多 3 个；dist-tag 实测滞后），解析失败回退兜底地板 |
-| [src/provision/pnpm-installer.ts](src/provision/pnpm-installer.ts) | 装 pnpm（钉 11.7.0，主版本 10/11/12 兼容复用）；版本探针读落盘 package.json |
-| [src/provision/pnpm-profile.ts](src/provision/pnpm-profile.ts) | host profile 的 pnpm 11 前提幂等补齐（allowBuilds / minimumReleaseAge） |
-| [src/provision/profile-writer.ts](src/provision/profile-writer.ts) | 每会话独立 `DSH_HOME` 与 profile、patch 生成 |
-| [src/provision/provisioner.ts](src/provision/provisioner.ts) | 引导流程编排，各步均幂等；含严格离线分支（只校验预装运行时，零网络步骤） |
-| [src/provision/offline-runtime.ts](src/provision/offline-runtime.ts) | 严格离线运行时检查：校验预装 Node/DSH/pnpm，缺件立即失败；`isOfflineMode` 收口 CLI 参数、环境变量与插件配置三个开关 |
-| [src/provision/offline-bundle.ts](src/provision/offline-bundle.ts) | 离线包清单解析与归档校验：白名单路径、符号/硬链接边界检查、展开限额（压缩 1 GiB / 展开 8 GiB / 20 万条目） |
-| [src/provision/offline-transfer.ts](src/provision/offline-transfer.ts) | 运行包导出/导入：准备机白名单打包、双端摘要校验、暂存运行自检、安装锁内原子发布带回滚，拒绝覆盖已有安装 |
-| [src/provision/offline-plugin.ts](src/provision/offline-plugin.ts) | 自包含本机插件安装器：纯 Node 文件 API 复制已验清单文件、合并 profile package.json（保留用户 patch 与凭据）、安装锁与备份，不触碰 pnpm |
-| [src/provision/remote-context.ts](src/provision/remote-context.ts) | 远端执行上下文封装：绑定传输实例与路径信息 |
-| [src/util/session-id.ts](src/util/session-id.ts) | 由主机别名 + 远端目录算确定性会话 id |
-| [src/tunnel/port-allocator.ts](src/tunnel/port-allocator.ts) | 远端端口分配与监听确认 |
-| [src/tunnel/forward-local.ts](src/tunnel/forward-local.ts) | 正向转发，**监听器跨重连存活** |
-| [src/tunnel/reverse-listener.ts](src/tunnel/reverse-listener.ts) | Windows 侧反向监听：**分配即绑定**，幽灵端口换候选，区间被整段占用时回退 OS 分配端口 |
-| [src/session/remote-process.ts](src/session/remote-process.ts) | 远端 dsh 的 detach 启动、令牌捕获、安全停止 |
-| [src/session/lifecycle-state.ts](src/session/lifecycle-state.ts) | 会话状态机，纯函数 |
-| [src/session/heartbeat.ts](src/session/heartbeat.ts) | 心跳探活：进程 + 端口 + HTTP 应用级，一条命令 |
-| [src/session/reconnect.ts](src/session/reconnect.ts) | 有限次指数退避 |
-| [src/session/cancellable-wait.ts](src/session/cancellable-wait.ts) | 可取消等待原语（定时器 unref + 中止拒绝），轮询与退避等待的单一实现 |
-| [src/session/session-registry.ts](src/session/session-registry.ts) | 本机会话表，锁文件 + 原子替换；读取带 mtime+size 双键缓存（每次 stat 复核，跨进程一致） |
-| [src/session/session-manager.ts](src/session/session-manager.ts) | 会话编排：生命周期、心跳、重连、关闭；打开流程拆入 open-pipeline |
-| [src/session/open-pipeline/](src/session/open-pipeline/) | 打开流程四阶段：prepare / probe / provision / tunnels（含传输工厂） |
-| [src/session/wsl-reverse.ts](src/session/wsl-reverse.ts) | WSL 反向通道编排：网络模式探测、网关随重连刷新、反向链路自检 |
-| [src/credential/tunnel-proxy.ts](src/credential/tunnel-proxy.ts) | 反向隧道 LLM 代理（多供应商路由），注入真实 key |
-| [src/credential/provider-routes.ts](src/credential/provider-routes.ts) | 从本机配置（settings.yaml / profile patch）提取供应商路由，产出远端镜像 |
-| [src/credential/local-credentials.ts](src/credential/local-credentials.ts) | 读取本机 `.credentials.yaml` 的 refs 段，作为环境变量的凭据回退源 |
-| [src/credential/token.ts](src/credential/token.ts) | 代理令牌：生成与常数时间比较 |
-| [src/credential/proxy-secret.ts](src/credential/proxy-secret.ts) | 凭据材料读写：会话级令牌与反向端口的远端落盘 |
-| [src/handoff/](src/handoff/) | 远端窗口交接组件：宿主半（远端 dsh 内 bundle）+ 浏览器半（状态 pill 与管理菜单）；protocol.ts 是跨层共享契约（协议常量被入口/编排/能力三层引用，自身零依赖） |
-| [src/cli/](src/cli/) | 命令分派、参数解析、终端输出、命令级认证装配 |
+## 本地资源下载（local_resource_download）
+
+远端主机无公网时，引导阶段的下载（Node tarball、npm 包）可经本机网络的 SSH 反向隧道 HTTP 代理完成。类似 VS Code 的 "Remote.SSH: Local Server Download" 设置，由 `local_resource_download` 选项控制（仅 SSH；WSL 有本地文件系统访问，无需此选项）：
+
+| 模式 | 行为 |
+|------|------|
+| `auto`（默认） | 先探测远端网络，不可达才建代理隧道 |
+| `always` | 直接建代理隧道（跳过探测） |
+| `off` | 仅远端下载——恢复原行为（远端无网时失败） |
+
+**工作原理**：本机进程起一个纯 JS HTTP CONNECT 代理，经 SSH 反向转发（`forwardIn`）映射到远端端口。远端的 `curl` / `npm install` 收到 `http_proxy=http://127.0.0.1:<远端端口>`，出站流量经隧道回到本机网络——远端下载命令不改，npm 依赖树也能正常拉取。引导期的整条网络链路都走它（镜像测速、Node 发行包下载、npm 版本解析、`npm install`），远端端口从与其他反向隧道同一套动态区间分配，同一主机的并发会话不会撞端口。隧道只在引导期存活，引导完成后拆除；dsh 进程自身的代理（`DSH_REMOTE_PROXY`）是另一条独立链路。
+
+```bash
+# CLI：始终经本机网络
+pnpm exec tsx src/cli/bin.ts connect myhost --local-resource-download always
+
+# 插件面板：高级选项 →「本地资源下载」下拉框（auto / always / off；按 SSH 域保存）
+```
 
 ## 开发
 

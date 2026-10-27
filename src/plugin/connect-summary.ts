@@ -21,6 +21,7 @@
 
 import type { JumpPlan } from '../session/transport/factory.js';
 import type { ResolvedHost } from '../hosts/ssh-config-parser.js';
+import type { LocalResourceDownloadMode } from '../provision/local-download-mode.js';
 
 /** 连接选项汇总的输入（生效值由调用方算好，本模块只渲染） */
 export interface ConnectSummaryInput {
@@ -48,6 +49,11 @@ export interface ConnectSummaryInput {
   forceRestart: boolean;
   /** 生效的重测镜像标记 */
   refreshMirrors: boolean;
+  /**
+   * 生效的本地资源下载模式（SSH 专属渲染行）；undefined = 未配置（auto）。
+   * 仅 SSH 渲染该字段——WSL 域无此选项
+   */
+  localResourceDownload?: LocalResourceDownloadMode;
   /** 是否带私钥路径覆盖（仅 SSH 渲染该段） */
   privateKey: boolean;
 }
@@ -105,6 +111,12 @@ export function renderConnectSummary(input: ConnectSummaryInput): string[] {
     + ` / 强制重启: ${input.forceRestart ? '是' : '否'}`
     + ` / 重测镜像: ${input.refreshMirrors ? '是' : '否'}`
     + (input.transportType === 'ssh' ? ` / 私钥覆盖: ${input.privateKey ? '有' : '无'}` : ''));
+
+  // 本地资源下载（SSH 专属；WSL 域无此选项，不渲染占位行免误导）
+  if (input.transportType === 'ssh') {
+    const mode = input.localResourceDownload ?? 'auto';
+    lines.push(`  本地资源下载: ${mode}`);
+  }
   return lines;
 }
 

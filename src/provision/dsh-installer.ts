@@ -33,6 +33,7 @@
 
 import { RemoteError, toErrorMessage } from '../util/errors.js';
 import { createLogger } from '../util/logger.js';
+import { buildProxyEnv } from '../util/proxy-env.js';
 import { quote } from '../util/shell-quote.js';
 import { INSTALL_LOCK_WAIT_SECONDS, installLockHint, lockInstallCommand } from './install-lock.js';
 import type { RemoteContext } from './remote-context.js';
@@ -108,6 +109,8 @@ export async function ensureDsh(
     registryUrl: string;
     /** node bin 目录，会加进 PATH */
     nodeBinDir: string;
+    /** HTTP 代理 URL（local_resource_download 建隧道时注入到 npm）；undefined = 不代理 */
+    proxyUrl?: string;
     /** 取消信号 */
     signal?: AbortSignal;
     /** 阶段进度回调 */
@@ -156,7 +159,7 @@ export async function ensureDsh(
     try {
       await transport.exec(install, {
         pathPrefix: nodeBinDir,
-        env: npmEnv(paths),
+        env: npmEnv(paths, options.proxyUrl),
         timeoutMs: INSTALL_TIMEOUT_MS + INSTALL_LOCK_WAIT_SECONDS * 1_000,
         ...(signal ? { signal } : {}),
       });
@@ -396,6 +399,8 @@ export async function resolveDshVersion(
     registryUrl: string;
     /** node bin 目录 */
     nodeBinDir: string;
+    /** HTTP 代理 URL（local_resource_download 建隧道时注入到 npm view） */
+    proxyUrl?: string;
     /** 取消信号 */
     signal?: AbortSignal;
   },
@@ -409,7 +414,7 @@ export async function resolveDshVersion(
     {
       allowNonZeroExit: true,
       timeoutMs: NPM_TIMEOUT_MS,
-      env: npmEnv(paths),
+      env: npmEnv(paths, options.proxyUrl),
       ...(signal ? { signal } : {}),
     },
   );
@@ -448,6 +453,8 @@ export async function resolveDshCandidates(
     registryUrl: string;
     /** node bin 目录 */
     nodeBinDir: string;
+    /** HTTP 代理 URL（local_resource_download 建隧道时注入到 npm view） */
+    proxyUrl?: string;
     /** 取消信号 */
     signal?: AbortSignal;
   },
@@ -461,7 +468,7 @@ export async function resolveDshCandidates(
     {
       allowNonZeroExit: true,
       timeoutMs: NPM_TIMEOUT_MS,
-      env: npmEnv(paths),
+      env: npmEnv(paths, options.proxyUrl),
       ...(signal ? { signal } : {}),
     },
   );
@@ -505,15 +512,20 @@ async function runWithPath(
 /**
  * npm 的隔离环境变量：缓存收进本工具的根目录。
  *
- * 不设置时 npm 写远端用户级 `~/.npm`（缓存与 `_logs` 都在其中），
+ * 不设置时 npm 写远端用户级 `~/.npm`（缓存与 `_logs` 都在里面），
  * 那是与远端其他 npm 使用者共享的目录——隔离契约要求装机不碰它。
  * `npm_config_cache` 对 install 与 view 一视同仁。
  *
+ * 代理注入：`proxyUrl` 非空时并入基础层 {@link buildProxyEnv} 的八个代理键
+ * （http_proxy/https_proxy/ALL_PROXY 大小写各半 + no_proxy 排除回环）。
+ * npm CLI 认小写、Node 的 undici 认大写，两组都要给。
+ *
  * @param paths - 远端路径集合
+ * @param proxyUrl - HTTP 代理 URL（local_resource_download 建隧道时注入）；undefined = 不代理
  * @returns 环境变量
  */
-function npmEnv(paths: RemotePaths): Record<string, string> {
-  return { npm_config_cache: paths.npmCache };
+function npmEnv(paths: RemotePaths, proxyUrl?: string): Record<string, string> {
+  return { npm_config_cache: paths.npmCache, ...buildProxyEnv(proxyUrl) };
 }
 
 /**

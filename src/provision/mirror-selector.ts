@@ -19,6 +19,7 @@
  */
 
 import { RemoteError } from '../util/errors.js';
+import { buildCurlProxyArg } from '../util/proxy-env.js';
 import { quote } from '../util/shell-quote.js';
 import type { RemoteTransport } from '../transport/types.js';
 
@@ -147,6 +148,14 @@ export async function selectMirror(
     cachePath: string;
     /** 强制重测，忽略缓存 */
     force?: boolean;
+    /**
+     * HTTP 代理 URL（local_resource_download 建代理隧道时传入）。
+     *
+     * 远端无公网时测速本身也必须走代理——否则所有候选都不可达，这里会抛
+     * MIRROR_ALL_UNREACHABLE，后续本已注入代理的下载步骤根本执行不到。
+     * undefined = 直连（原行为）。
+     */
+    proxyUrl?: string;
     /** 取消信号 */
     signal?: AbortSignal;
   },
@@ -167,7 +176,7 @@ export async function selectMirror(
   }
 
   // 2. 远端实测
-  const results = await probeAll(transport, kind, candidates, options.signal);
+  const results = await probeAll(transport, kind, candidates, options.signal, options.proxyUrl);
   const usable = results.filter(r => r.isUsable);
   if (usable.length === 0) {
     const detail = results
@@ -196,6 +205,7 @@ export async function selectMirror(
  * @param kind - 镜像用途
  * @param candidates - 候选列表
  * @param signal - 取消信号
+ * @param proxyUrl - HTTP 代理 URL（远端无公网时测速也要走代理）；undefined = 直连
  * @returns 测速结果，按耗时升序（不可用的排最后）
  */
 async function probeAll(
@@ -203,8 +213,10 @@ async function probeAll(
   kind: MirrorKind,
   candidates: readonly MirrorCandidate[],
   signal?: AbortSignal,
+  proxyUrl?: string,
 ): Promise<MirrorProbeResult[]> {
   const spec = PROBE_SPEC[kind];
+  const proxyArg = buildCurlProxyArg(proxyUrl);
 
   // 每个候选：跟随重定向取首字节校验内容，再单独测总耗时。
   // 两次请求看似浪费，但第一次通常命中 CDN 缓存，且正确性比省一次请求重要。
@@ -214,9 +226,9 @@ async function probeAll(
   const lines = candidates.map((candidate, index) => {
     const url = quote(`${candidate.baseUrl}${spec.path}`);
     return [
-      `head=$(curl -fsSL -m ${PROBE_TIMEOUT_SECONDS} ${url} 2>/dev/null | head -c 1)`,
+      `head=$(curl -fsSL${proxyArg} -m ${PROBE_TIMEOUT_SECONDS} ${url} 2>/dev/null | head -c 1)`,
       `if [ "$head" = ${quote(spec.expectFirstChar)} ]; then`,
-      `  t=$(curl -fsSL -m ${PROBE_TIMEOUT_SECONDS} -o /dev/null -w '%{time_total}' ${url} 2>/dev/null)`,
+      `  t=$(curl -fsSL${proxyArg} -m ${PROBE_TIMEOUT_SECONDS} -o /dev/null -w '%{time_total}' ${url} 2>/dev/null)`,
       `  printf 'R=%s OK %s\\n' ${index} "$t"`,
       'else',
       `  printf 'R=%s BAD %s\\n' ${index} "$head"`,
