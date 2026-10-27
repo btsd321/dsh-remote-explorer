@@ -123,6 +123,37 @@ describe('LocalHttpProxy', () => {
     assert.equal(body, 'ping');
   });
 
+  it('隧道建立后空闲超过建连超时也不被掐断（回归：CONNECT 反复重连刷屏）', async () => {
+    const echoPort = await startEchoServer();
+    // 建连超时压到 100ms，便于在测试里跨过它
+    const proxy = new LocalHttpProxy({ connectTimeoutMs: 100 });
+    proxies.push(proxy);
+    const proxyPort = await proxy.start();
+
+    const result = await new Promise<string>((resolve, reject) => {
+      const req = httpRequest({
+        host: '127.0.0.1',
+        port: proxyPort,
+        method: 'CONNECT',
+        path: `127.0.0.1:${echoPort}`,
+      });
+      req.on('connect', (res, socket) => {
+        assert.equal(res.statusCode, 200);
+        // 隧道建立后静默 300ms（远超 100ms 建连超时），再发数据
+        setTimeout(() => {
+          socket.once('data', (chunk) => { resolve(chunk.toString()); socket.destroy(); });
+          socket.once('error', reject);
+          socket.write('still-alive');
+        }, 300);
+      });
+      req.on('error', reject);
+      req.end();
+    });
+
+    // 未解除空闲超时时，socket 会在 100ms 静默后被 destroy，这里拿不到数据
+    assert.equal(result, 'still-alive');
+  });
+
   it('目标不可达时回 502 而非挂住', async () => {
     const proxy = makeProxy();
     const proxyPort = await proxy.start();

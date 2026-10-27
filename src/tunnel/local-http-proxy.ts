@@ -19,7 +19,9 @@
  * 安全约束：
  * - 监听只绑 127.0.0.1——不挂到全网卡（代理可访问公网，绑全网卡等于开放中继）
  * - SSH 反向转发也绑远端 127.0.0.1（forwardIn 默认行为）——远端其他用户不可用
- * - 不记日志请求内容与目标 URL——CONNECT 只记 host:port（诊断级别 debug）
+ * - 不记日志请求内容与目标 URL：**成功的 CONNECT 一条都不记**（npm install
+ *   会产生上百条连接，逐条打会把控制台刷屏成看起来像死循环），只在 stop()
+ *   时汇总转发条数；建连失败才留痕（debug，含 host:port）
  * - **不设目标白名单**：远端同权限用户仍可通过本机出口访问任意站点（与凭据
  *   代理是同族已知残余风险——他们拿不到 key，但能借用你的网络出口）。这使
  *   代理只在引导期存活的理由之一；多用户远端主机上需自行评估。
@@ -48,8 +50,17 @@ const CONNECT_TIMEOUT_MS = 30_000;
 export class LocalHttpProxy {
   /** 底层 HTTP 服务器（处理 CONNECT 方法） */
   private readonly server: Server;
+  /** 建连（握手）超时；隧道建立后不再生效 */
+  private readonly connectTimeoutMs: number;
   /** 本机监听端口（start() 后可用；0 = 尚未启动） */
   private _localPort = 0;
+  /**
+   * 累计成功建立的隧道数。
+   *
+   * 逐条 CONNECT 不记日志（npm install 会产生上百次连接，逐条打会把
+   * 控制台刷屏、看起来像卡在循环里），只在 stop() 时汇总一行。
+   */
+  private _tunnelsHandled = 0;
   /** 活跃的上游连接（stop 时全部销毁） */
   private readonly activeUpstreams = new Set<Socket>();
   /**
@@ -60,7 +71,13 @@ export class LocalHttpProxy {
    */
   private readonly injectedStreams = new Set<Duplex>();
 
-  constructor() {
+  /**
+   * @param options - 可选配置
+   * @param options.connectTimeoutMs - 建连（握手）超时，默认 {@link CONNECT_TIMEOUT_MS}。
+   *        仅供测试注入更短的值；隧道建立后该超时被解除，不限制传输时长
+   */
+  constructor(options: { connectTimeoutMs?: number } = {}) {
+    this.connectTimeoutMs = options.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
     this.server = createServer((req, res) => {
       // 非 CONNECT 的普通 HTTP 请求——代理不处理普通 GET/POST（只做 CONNECT 隧道），
       // 返回 405 让客户端知道要用 CONNECT。npm/curl 的代理走的是 CONNECT
@@ -151,9 +168,12 @@ export class LocalHttpProxy {
     this.injectedStreams.clear();
     // 3. 兜底清掉本机监听侧可能残留的空闲连接（keep-alive）
     this.server.closeAllConnections();
+    const handled = this._tunnelsHandled;
+    this._tunnelsHandled = 0;
     return new Promise<void>((resolve) => {
       this.server.close(() => {
         this._localPort = 0;
+        if (handled > 0) log.info(`本机 HTTP 代理已停止（本次共转发 ${handled} 条隧道）`);
         resolve();
       });
     });
@@ -188,11 +208,13 @@ export class LocalHttpProxy {
       return;
     }
 
-    log.debug(`CONNECT ${target}`);
-
-    // 建立到目标的上游 TCP 连接
+    // 建到目标的上游 TCP 连接。**握手超时只在建连阶段生效**：
+    // net.Socket.setTimeout 计的是「空闲时长」而非「建连时长」，若不解除，
+    // 隧道建立后的任何 30 秒空闲（npm keep-alive 的间隔、慢速服务器、aarch64
+    // 上耗时两分钟的 npm install）都会被当成超时打断在飞传输，客户端只看到
+    // EOF 并重连——表现为 CONNECT 反复刷屏而任务迟迟不结束。
     const upstream = netConnect({ host, port });
-    upstream.setTimeout(CONNECT_TIMEOUT_MS, () => {
+    upstream.setTimeout(this.connectTimeoutMs, () => {
       upstream.destroy(new Error(`连接 ${target} 超时`));
     });
 
@@ -205,6 +227,7 @@ export class LocalHttpProxy {
     let established = false;
 
     upstream.on('error', (error) => {
+      // 失败逐条留痕（成功不记，见文件头「不记请求目标」的约束与日志纪律）
       log.debug(`CONNECT ${target} 失败：${error.message}`);
       if (established) return;
       // 握手阶段失败：回复 502 让客户端知道目标不可达
@@ -215,8 +238,12 @@ export class LocalHttpProxy {
     upstream.on('connect', () => {
       // 上游连接就绪：回复 200，开始双向桥接
       established = true;
+      // 解除空闲超时——隧道建立后只剩数据搬运，时长由对端决定（npm install
+      // 可能持续数分钟）。残留的超时会在任何 30 秒静默期打断传输
+      upstream.setTimeout(0);
       clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       this.activeUpstreams.add(upstream);
+      this._tunnelsHandled += 1;
       // 双向 pipe——任一方关闭时另一方也关闭
       clientSocket.pipe(upstream);
       upstream.pipe(clientSocket);
