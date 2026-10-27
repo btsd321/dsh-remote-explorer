@@ -6,34 +6,31 @@
  *              - 反向端口冲突时换端口重试（不再固定 18890）
  */
 
-import { describe, it, after, mock } from 'node:test';
+import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { setupProvisionProxyTunnel } from '../../src/provision/provision-proxy-tunnel.js';
-import { LocalHttpProxy } from '../../src/tunnel/local-http-proxy.js';
 import { PORT_RANGE_START, PORT_RANGE_SIZE } from '../../src/tunnel/port-allocator.js';
 import type {
   ExecResult, RemoteChannel, RemotePlatform, RemoteTransport,
   ReverseConnection, ReverseHandle,
 } from '../../src/transport/types.js';
 
-/** 本机代理的 start/stop 调用计数（回归断言用；after 里恢复原型） */
-let startCalls = 0;
-let stopCalls = 0;
-const originalStart = LocalHttpProxy.prototype.start;
-const originalStop = LocalHttpProxy.prototype.stop;
-LocalHttpProxy.prototype.start = async function start(this: LocalHttpProxy): Promise<number> {
-  startCalls += 1;
-  return originalStart.call(this);
-};
-LocalHttpProxy.prototype.stop = async function stop(this: LocalHttpProxy): Promise<void> {
-  stopCalls += 1;
-  return originalStop.call(this);
-};
-
-after(() => {
-  LocalHttpProxy.prototype.start = originalStart;
-  LocalHttpProxy.prototype.stop = originalStop;
-});
+/**
+ * 统计当前进程里处于监听状态的 Server 句柄数。
+ *
+ * 用它断言「失败路径 / teardown 之后本机代理确实关掉了」——比改写
+ * LocalHttpProxy.prototype 计数更贴近要证明的事实（端口/句柄没泄漏），
+ * 也不必动被测类的原型。
+ *
+ * @returns 监听中的 Server 句柄数
+ */
+function countListeningServers(): number {
+  const handles = (process as unknown as { _getActiveHandles(): unknown[] })._getActiveHandles();
+  return handles.filter(handle => {
+    const record = handle as { listening?: unknown };
+    return typeof record.listening === 'boolean' && record.listening;
+  }).length;
+}
 
 /**
  * 构造 mock transport。
@@ -113,11 +110,11 @@ function assertInPortRange(port: number): void {
 
 describe('setupProvisionProxyTunnel', () => {
   it('off 模式：不建隧道、不探测、不碰代理', async () => {
-    startCalls = 0;
+    const baseline = countListeningServers();
     const { transport, commands } = mockTransport({ remoteReachable: false });
     const result = await setupProvisionProxyTunnel(transport, 'off');
     assert.equal(result.proxyUrl, undefined);
-    assert.equal(startCalls, 0, 'off 模式不应启动本机代理');
+    assert.equal(countListeningServers(), baseline, 'off 模式不应启动本机代理（无新增监听句柄）');
     assert.ok(!commands.some(c => c.includes('http_code')), 'off 模式不应探测远端网络');
     await result.teardown();
   });
@@ -147,6 +144,16 @@ describe('setupProvisionProxyTunnel', () => {
     await result.teardown();
   });
 
+  it('auto 模式：探测覆盖全部 npm 候选（回归：单点被墙不误判无网）', async () => {
+    const { transport, commands } = mockTransport({ remoteReachable: true });
+    await setupProvisionProxyTunnel(transport, 'auto');
+    const probe = commands.find(c => c.includes('http_code'));
+    assert.ok(probe !== undefined, 'auto 模式应探测远端网络');
+    for (const url of ['registry.npmmirror.com', 'registry.npmjs.org']) {
+      assert.ok(probe.includes(url), `探测脚本应包含候选 ${url}`);
+    }
+  });
+
   it('undefined 按 auto 处理', async () => {
     const { transport } = mockTransport({ remoteReachable: true });
     const result = await setupProvisionProxyTunnel(transport, undefined);
@@ -173,23 +180,23 @@ describe('setupProvisionProxyTunnel', () => {
   });
 
   it('两次绑定都失败时停掉本机代理并降级（回归：代理不泄漏）', async () => {
-    startCalls = 0;
-    stopCalls = 0;
+    const baseline = countListeningServers();
     const { transport } = mockTransport({ remoteReachable: false, forwardInFailures: 99 });
     const result = await setupProvisionProxyTunnel(transport, 'always');
     assert.equal(result.proxyUrl, undefined, '绑不上端口应降级为不建隧道');
-    assert.equal(startCalls, 1, '本机代理应被启动过一次');
-    assert.ok(stopCalls >= 1, '失败路径必须停掉本机代理，否则端口泄漏到进程退出');
+    // 代理起过又必须被关掉：监听句柄数回到基线，端口不泄漏到进程退出
+    assert.equal(countListeningServers(), baseline, '失败路径必须停掉本机代理，否则端口泄漏');
     await result.teardown();
   });
 
-  it('teardown 关隧道并停代理，且可重复调用', async () => {
-    stopCalls = 0;
+  it('teardown 关隧道并停代理（监听句柄回到基线），且可重复调用', async () => {
+    const baseline = countListeningServers();
     const { transport } = mockTransport({ remoteReachable: false });
     const result = await setupProvisionProxyTunnel(transport, 'always');
     assert.notEqual(result.proxyUrl, undefined);
+    assert.equal(countListeningServers(), baseline + 1, '隧道建立期间应有 1 个本机代理在监听');
     await result.teardown();
-    assert.ok(stopCalls >= 1, 'teardown 必须停掉本机代理');
+    assert.equal(countListeningServers(), baseline, 'teardown 必须停掉本机代理');
     await result.teardown(); // 幂等，不抛错
   });
 });

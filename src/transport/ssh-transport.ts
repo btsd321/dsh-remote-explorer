@@ -662,20 +662,30 @@ export class SshTransport implements RemoteTransport {
     };
     client.on('tcp connection', handler);
 
-    const actualPort = await new Promise<number>((resolve, reject) => {
-      client.forwardIn(REVERSE_BIND_ADDR, remotePort, (error, boundPort) => {
-        if (error) {
-          reject(new RemoteError(
-            'CONNECT_FAILED',
-            `请求主机 ${this.hostAlias} 反向监听 ${REVERSE_BIND_ADDR}:${remotePort} 失败: ${error.message}`
-              + '（若远端 sshd 禁用了端口转发，需检查 AllowTcpForwarding）',
-            { cause: error, hostAlias: this.hostAlias },
-          ));
-        } else {
-          resolve(boundPort === 0 ? remotePort : boundPort);
-        }
+    let actualPort: number;
+    try {
+      actualPort = await new Promise<number>((resolve, reject) => {
+        client.forwardIn(REVERSE_BIND_ADDR, remotePort, (error, boundPort) => {
+          if (error) {
+            reject(new RemoteError(
+              'CONNECT_FAILED',
+              `请求主机 ${this.hostAlias} 反向监听 ${REVERSE_BIND_ADDR}:${remotePort} 失败: ${error.message}`
+                + '（若远端 sshd 禁用了端口转发，需检查 AllowTcpForwarding）',
+              { cause: error, hostAlias: this.hostAlias },
+            ));
+          } else {
+            resolve(boundPort === 0 ? remotePort : boundPort);
+          }
+        });
       });
-    });
+    } catch (error) {
+      // 绑定失败必须撤掉刚挂的监听器：它是按 destPort 过滤的孤儿 handler，
+      // 留在共享 client 上会随每次失败累积；若该端口之后被释放又被别的
+      // forwardIn 绑定，两个 handler 会同时 accept 同一条连接（抢通道）。
+      // 调用方（如 provision 的代理隧道）会换端口重试，这条路径是常态而非异常
+      client.off('tcp connection', handler);
+      throw error;
+    }
     this.reversePorts.add(actualPort);
 
     return {

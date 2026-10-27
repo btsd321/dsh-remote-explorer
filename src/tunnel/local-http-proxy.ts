@@ -25,6 +25,13 @@
  * - **不设目标白名单**：远端同权限用户仍可通过本机出口访问任意站点（与凭据
  *   代理是同族已知残余风险——他们拿不到 key，但能借用你的网络出口）。这使
  *   代理只在引导期存活的理由之一；多用户远端主机上需自行评估。
+ * - **不设并发上限**：连接数由客户端的连接池决定（npm 默认 maxsockets=15），
+ *   本机不做额外限制。同上——靠「只在引导期存活」收窄暴露窗口
+ *
+ * 能力边界：**只实现 CONNECT**（HTTPS 代理隧道的标准形态）。普通 HTTP 的
+ * 绝对形式请求（`GET http://host/path`）回 405——内置的 Node/npm 候选镜像
+ * 全是 https，curl `-x` 与 npm 的 http_proxy 对它们一律走 CONNECT，因此不受
+ * 影响；若将来引入 http:// 镜像，需要在这里补转发逻辑。
  *
  * 分层约束：本文件属能力层（tunnel/），向下使用基础层（util/logger）；不依赖
  * 编排层（session/）或入口层。
@@ -114,6 +121,9 @@ export class LocalHttpProxy {
         this.server.off('error', onError);
         const addr = this.server.address();
         if (addr === null || typeof addr === 'string') {
+          // 理论不可达（listen 成功必有地址）：仍要收掉服务器再抛，
+          // 否则失败路径上留下一个半开的监听句柄
+          this.server.close();
           reject(new Error('本机 HTTP 代理监听地址异常'));
           return;
         }
@@ -195,15 +205,20 @@ export class LocalHttpProxy {
       clientSocket.destroy();
       return;
     }
-    // 解析 host:port
+    // 解析 host:port（IPv6 字面量形如 [::1]:443——最后一个冒号仍是端口分隔符）
     const colonIndex = target.lastIndexOf(':');
     if (colonIndex < 0) {
       clientSocket.destroy();
       return;
     }
-    const host = target.slice(0, colonIndex);
+    const rawHost = target.slice(0, colonIndex);
+    // 去方括号：net.connect 的 host 要裸地址，`[::1]` 交给 DNS 会解析失败
+    const host = rawHost.startsWith('[') && rawHost.endsWith(']')
+      ? rawHost.slice(1, -1)
+      : rawHost;
     const port = Number.parseInt(target.slice(colonIndex + 1), 10);
-    if (host === '' || !Number.isFinite(port) || port < 1 || port > 65535) {
+    // host 不含空白等形态异常一律拒绝：这些值直接交给 DNS/TCP，不做修复猜测
+    if (host === '' || /\s/.test(rawHost) || !Number.isFinite(port) || port < 1 || port > 65535) {
       clientSocket.destroy();
       return;
     }

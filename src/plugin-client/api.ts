@@ -126,6 +126,8 @@ export interface AdvancedPayload {
   proxy?: string;
   /** 直连主机跳板机条目（落盘子集，无密码）；未配置时缺省 */
   jumpHosts?: StoredJumpEntry[];
+  /** 本地资源下载模式（仅 SSH 域）；未配置时缺省（语义等同 auto） */
+  localResourceDownload?: LocalResourceDownloadMode;
 }
 
 /**
@@ -140,6 +142,8 @@ export interface AdvancedSaveBody {
   proxy?: string;
   /** 直连主机跳板机条目（落盘子集；空数组 = 清除） */
   jumpHosts?: StoredJumpEntry[];
+  /** 本地资源下载模式（仅 SSH 域；三值之一，无「清除」语义——auto 即默认） */
+  localResourceDownload?: LocalResourceDownloadMode;
 }
 
 /** 面板连接请求体（与宿主 /connect 的字段一致） */

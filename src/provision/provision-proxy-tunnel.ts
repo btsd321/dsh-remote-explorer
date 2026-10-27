@@ -34,17 +34,22 @@ import type { RemoteTransport } from '../transport/types.js';
 
 const log = createLogger('provision-proxy-tunnel');
 
-/** 远端网络可达性探测的超时（毫秒）：不可达时应快速失败 */
+/** 远端网络可达性探测的总超时（毫秒）：不可达时应快速失败 */
 const PROBE_TIMEOUT_MS = 10_000;
 
+/** 单个候选的建连超时与整体超时（秒）——两者相乘须留在总超时之内 */
+const PROBE_CONNECT_TIMEOUT_S = 3;
+const PROBE_MAX_TIME_S = 4;
+
 /**
- * 远端网络可达性探测的目标 URL。
+ * 远端网络可达性探测的候选 URL。
  *
- * 取 npm 候选镜像的首项——与真正要下载的 registry 同源：探到它可达就意味着
- * 后面 `selectMirror('npm')` 至少有一个候选可用，不会出现「探测说有网、
- * 下载却全不可达」的错配。
+ * 取全部 npm 候选镜像——与真正要下载的 registry 同源，且**逐个尝试直到有一个
+ * 响应**：只探单点的话，那一个镜像恰好被墙就会误判「远端无网」，白建一条
+ * 本不必需的隧道（功能不受损，但多一跳）。顺序与 `selectMirror('npm')` 的
+ * 候选顺序一致，首个成功即认为远端有网。
  */
-const PROBE_URL = getCandidates('npm')[0]!.baseUrl;
+const PROBE_URLS = getCandidates('npm').map(candidate => candidate.baseUrl);
 
 /** 反向端口绑定失败时的重试次数（每次换一个新分配的端口） */
 const BIND_MAX_ATTEMPTS = 2;
@@ -72,12 +77,12 @@ function noTunnel(): ProxyTunnelSetup {
 /**
  * 按模式决定是否建代理隧道，建隧道则返回注入值与清理函数。
  *
- * auto 模式的探测：远端 `curl --connect-timeout` 一个 registry 镜像 URL，成功
- * 则判定远端有网（不建隧道），失败则判定无网（建隧道）。探测只看连通性
- * （任何三位数 HTTP 状态码都算有网），避免把 404 等业务错误误判为无网。
+ * auto 模式的探测：远端逐个 registry 镜像跑 `curl --connect-timeout`，任一返回
+ * 三位数状态码即判定有网（不建隧道），全部失败才判定无网（建隧道）——只看
+ * 连通性，避免把 404 等业务错误误判为无网，也避免单点被墙导致误判。
  *
- * 代价：丢包型防火墙下探测要吃满 `--connect-timeout`（最坏约 5 秒），
- * 这是 auto 模式在有网机器上的固有开销。
+ * 代价：逐个候选在最坏情况下要吃满各自的 `--connect-timeout`（每候选 3 秒），
+ * 全失败约 6 秒，这是一台无网远端上 auto 模式的固有开销。
  *
  * @param transport - 已连接的传输实例
  * @param mode - 本地资源下载模式；undefined 按 auto 处理
@@ -109,21 +114,39 @@ export async function setupProvisionProxyTunnel(
 /**
  * 探测远端网络可达性。
  *
- * 远端 `curl --connect-timeout 5` 一个 registry 镜像 URL，任何 HTTP 响应
- * （2xx/3xx/4xx/5xx）都算可达——只看 TCP 连通性。连接超时、DNS 解析失败、
- * 连接被拒、以及 curl 本身缺失，都按不可达处理（此时建隧道是更可能有用的
- * 选择；隧道也建不成时会降级为原行为）。
+ * 远端逐个候选跑 `curl -o /dev/null -w '%{http_code}'`，**任一候选返回三位数
+ * HTTP 状态码即判定有网**（2xx/3xx/4xx/5xx 都算——只看 TCP 连通性）。连接
+ * 超时、DNS 解析失败、连接被拒、curl 本身缺失，都继续试下一个候选；全部
+ * 失败才判定不可达（此时建隧道是更可能有用的选择，隧道也建不成时降级为原行为）。
+ *
+ * 为什么不是一个 `curl` 打单点：单点恰好处在被墙状态时会误判「远端无网」，
+ * 白建一条不必需的隧道。逐候选用一条远端命令跑完，省掉多次 SSH 往返。
  *
  * @param transport - 已连接的传输实例
  * @returns 可达返回 true
  */
 async function probeRemoteConnectivity(transport: RemoteTransport): Promise<boolean> {
+  // 逐候选顺序尝试，首个非 000 的三位状态码即停
+  const script = [
+    'code=000',
+    ...PROBE_URLS.map(url => [
+      'if [ "$code" = 000 ]; then',
+      `  code=$(curl -s --connect-timeout ${PROBE_CONNECT_TIMEOUT_S}`
+      + ` --max-time ${PROBE_MAX_TIME_S} -o /dev/null -w '%{http_code}'`
+      + ` ${quote(url)} 2>/dev/null || true)`,
+      // 归一化：curl 失败时 $(...) 可能是空串（如远端没有 curl），
+      // 不归成 000 会让下一轮的 `[ "$code" = 000 ]` 为假、直接跳过后续候选
+      '  case "$code" in [0-9][0-9][0-9]) ;; *) code=000 ;; esac',
+      'fi',
+    ].join('\n')),
+    'printf %s "$code"',
+  ].join('\n');
+
   try {
-    const result = await transport.exec(
-      `curl -s --connect-timeout 5 --max-time ${Math.floor(PROBE_TIMEOUT_MS / 1000)}`
-      + ` -o /dev/null -w '%{http_code}' ${quote(PROBE_URL)} 2>/dev/null || true`,
-      { allowNonZeroExit: true, timeoutMs: PROBE_TIMEOUT_MS },
-    );
+    const result = await transport.exec(script, {
+      allowNonZeroExit: true,
+      timeoutMs: PROBE_TIMEOUT_MS,
+    });
     const code = result.stdout.trim();
     // 任何三位数 HTTP 状态码都算可达（2xx/3xx/4xx/5xx）——只要 TCP 连得上
     return /^\d{3}$/.test(code) && code !== '000';

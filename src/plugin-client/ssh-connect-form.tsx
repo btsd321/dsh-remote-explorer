@@ -24,7 +24,7 @@ import type { ReactNode } from 'react';
 import type { JumpEntry, SshHostSummary } from '../hosts/ssh-config-parser.js';
 import type { LocalResourceDownloadMode } from '../provision/local-download-mode.js';
 import type { RemoteExplorerLocaleKey } from './locales.js';
-import { messageOf, postConnect, type PanelSession } from './api.js';
+import { messageOf, fetchAdvanced, postAdvanced, postConnect, type PanelSession } from './api.js';
 import { HostPicker } from './host-picker.js';
 import { VersionPicker } from './version-picker.js';
 import { useDshVersions } from './use-dsh-versions.js';
@@ -90,11 +90,16 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
   });
   const [forceRestart, setForceRestart] = React.useState(false);
   const [refreshMirrors, setRefreshMirrors] = React.useState(false);
-  // 本地资源下载模式：空串 = 未设置（用 advanced-store 的持久化值或默认 auto）；
-  // 用户显式选值后记忆在 localStorage，下次连接恢复。仅 SSH 传输有效
-  const [localResourceDownload, setLocalResourceDownload] = React.useState(() => {
-    try { return localStorage.getItem('dsh-remote-explorer:localResourceDownload:ssh') ?? ''; } catch { return ''; }
-  });
+  /**
+   * 本地资源下载模式。
+   *
+   * 唯一持久化位置是宿主侧 advanced-store 的 SSH 域（与代理/环境变量/跳板机
+   * 三个弹窗同一份文件）：挂载时 GET /advanced 读回，用户改选时立即 POST 写回。
+   * 不用 localStorage——同一个设置有两份存储必然对不上（面板显示一个值、
+   * 命令入口连接时读到另一个值）。三值里 auto 就是默认语义，因此无需「清除」。
+   */
+  const [localResourceDownload, setLocalResourceDownload] =
+    React.useState<LocalResourceDownloadMode>('auto');
   const [busy, setBusy] = React.useState(false);
   const [formError, setFormError] = React.useState('');
 
@@ -115,6 +120,33 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
   // ---- 版本下拉列表（挂载时探测 registry/发行站填充 datalist） ----
   const dshVersions = useDshVersions();
   const nodeVersions = useNodeVersions();
+
+  // 挂载时读回宿主侧持久化的本地资源下载模式（SSH 域）
+  React.useEffect(() => {
+    let cancelled = false;
+    void fetchAdvanced('ssh')
+      .then(payload => {
+        if (cancelled) return;
+        if (payload.localResourceDownload !== undefined) {
+          setLocalResourceDownload(payload.localResourceDownload);
+        }
+      })
+      .catch(() => { /* 读取失败沿用默认 auto；不阻断表单填写 */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  /**
+   * 改选本地资源下载模式：先更新本地态（UI 立即响应），再写回宿主 side
+   * SSH 域。写失败只提示不阻断——连接请求本身也会带上当前值，用户看到的
+   * 选择在本次连接里照样生效。
+   *
+   * @param mode - 新选择的模式
+   */
+  const onLocalResourceDownloadChange = (mode: LocalResourceDownloadMode): void => {
+    setLocalResourceDownload(mode);
+    void postAdvanced('ssh', { localResourceDownload: mode })
+      .catch(error => { setFormError(`${t('dlgSaveError')}${messageOf(error)}`); });
+  };
 
   /**
    * 主机输入是否直连语法（跳板机携带判据：仅直连目标把面板跳板条目放进
@@ -156,7 +188,9 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
         ...(Number.isFinite(port) && port > 0 ? { localPort: port } : {}),
         ...(nodeVersion.trim() !== '' ? { nodeVersion: nodeVersion.trim() } : {}),
         ...(dshVersion.trim() !== '' ? { dshVersion: dshVersion.trim() } : {}),
-        ...(localResourceDownload !== '' ? { localResourceDownload: localResourceDownload as LocalResourceDownloadMode } : {}),
+        // 总是带上当前选择：写回 /advanced 失败时这里仍能保证「用户看到什么就
+        // 用什么」（请求值优先于宿主存储值）
+        localResourceDownload,
         forceRestart,
         refreshMirrors,
         // 跳板机条目：仅直连目标携带（分流规则见文件头）；面板未配置过弹窗
@@ -176,8 +210,6 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
         localStorage.setItem(DSH_VERSION_KEY, dshVersion.trim());
         // Node 版本同纪律（SSH 域独立记忆）
         localStorage.setItem(NODE_VERSION_KEY, nodeVersion.trim());
-        // 本地资源下载模式同纪律（SSH 域独立记忆）
-        localStorage.setItem('dsh-remote-explorer:localResourceDownload:ssh', localResourceDownload);
       } catch { /* 记忆失败不影响连接 */ }
       onConnected(session, mode);
     } catch (error) {
@@ -252,8 +284,8 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
           <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <span style={{ fontSize: 12, opacity: 0.75 }}>{t('localResourceDownload')}</span>
             <select value={localResourceDownload} style={inputStyle}
-              onChange={event => setLocalResourceDownload(event.target.value)}>
-              <option value="">{t('localResourceDownloadAuto')}</option>
+              onChange={event => { onLocalResourceDownloadChange(event.target.value as LocalResourceDownloadMode); }}>
+              <option value="auto">{t('localResourceDownloadAuto')}</option>
               <option value="always">{t('localResourceDownloadAlways')}</option>
               <option value="off">{t('localResourceDownloadOff')}</option>
             </select>
