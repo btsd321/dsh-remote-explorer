@@ -23,9 +23,6 @@ import { quote } from '../util/shell-quote.js';
 import { INSTALL_LOCK_WAIT_SECONDS, lockInstallCommand } from './install-lock.js';
 import { getCandidates, OFFICIAL_NODE_BASE_URL, type MirrorCandidate } from './mirror-selector.js';
 import { assertNodeStable, checkNodeStability } from './probe.js';
-import { downloadNodeTarballLocally } from './local-downloader.js';
-import { executeDownloadStrategy } from './local-download-strategy.js';
-import type { LocalResourceDownloadMode } from './local-download-mode.js';
 import type { RemoteContext } from './remote-context.js';
 import type { RemotePaths } from './remote-paths.js';
 import type { RemoteArch, RemoteOs, RemoteTransport } from '../transport/types.js';
@@ -95,8 +92,8 @@ export async function ensureNode(
     mirrorBaseUrl: string;
     /** 跳过稳定性自检（仅供 doctor 之类只读场景使用） */
     skipStabilityCheck?: boolean;
-    /** 本地资源下载模式（远端无网时本机下载 + SFTP 上传）；undefined = auto */
-    localResourceDownload?: LocalResourceDownloadMode;
+    /** HTTP 代理 URL（local_resource_download 建隧道时注入到 curl）；undefined = 不代理 */
+    proxyUrl?: string;
     /** 取消信号 */
     signal?: AbortSignal;
     /** 阶段进度回调 */
@@ -128,7 +125,7 @@ export async function ensureNode(
       );
     }
     options.onProgress?.(`下载 Node ${version}`);
-    await downloadAndExtract(ctx, version, mirrorBaseUrl, signal, options.localResourceDownload);
+    await downloadAndExtract(ctx, version, mirrorBaseUrl, signal, options.proxyUrl);
 
     // 装完立即验证版本，避免镜像给错文件时把问题留到后面
     const verify = await transport.exec(`${quote(nodeBin)} -v`, {
@@ -199,15 +196,14 @@ export function nodeMirrorChain(preferredBaseUrl: string): readonly MirrorCandid
  * 才汇总各次失败原因上抛。curl 加 `--connect-timeout`：不可达的源在
  * 连接期 15 秒内失败，不吃满整个下载超时。
  *
- * 本地资源下载模式（{@link localResourceDownload}）经
- * {@link executeDownloadStrategy} 编排：off 仅远端下载（原行为）、
- * always 仅本机下载 + SFTP 上传、auto 先远端失败回退本机。
+ * 代理注入：`proxyUrl` 非空时经 `curl -x` 参数注入（curl 原生支持 HTTP 代理），
+ * 让远端无网时 curl 经 SSH 反向隧道的代理走本机网络。
  *
  * @param ctx - 远端执行上下文
  * @param version - 目标版本
  * @param preferredBaseUrl - 首选镜像 baseUrl（候选链首项；空串时用默认链）
  * @param signal - 取消信号
- * @param localResourceDownload - 本地资源下载模式
+ * @param proxyUrl - HTTP 代理 URL（local_resource_download 建隧道时注入）；undefined = 不代理
  * @throws RemoteError('PLATFORM_UNSUPPORTED') 平台无对应发行版
  * @throws RemoteError('EXEC_FAILED') 候选链全部下载失败，或解包失败
  */
@@ -216,7 +212,7 @@ async function downloadAndExtract(
   version: string,
   preferredBaseUrl: string,
   signal?: AbortSignal,
-  localResourceDownload?: LocalResourceDownloadMode,
+  proxyUrl?: string,
 ): Promise<void> {
   const { transport, paths } = ctx;
   const platform = transport.platform;
@@ -228,85 +224,58 @@ async function downloadAndExtract(
   // 临时目录带本机 pid，避免多个 CLI 并发安装时互相覆盖（Zed 的做法）
   const tmpDir = paths.tmpDir(process.pid, 'node-install');
   const targetDir = paths.nodeDir(version);
-  const remoteTarballPath = `${tmpDir}/${tarball}`;
 
-  // 远端下载函数：候选链逐源 curl 下载到远端临时目录（原行为）
-  const remoteDownload = async (): Promise<void> => {
-    // 1. 候选链逐源下载。curl 用 -fL：跟随重定向（镜像常有 302），HTTP 错误码
-    //    要失败而非写出错误页；--connect-timeout 让不可达源快速失败
-    const attempts = nodeMirrorChain(preferredBaseUrl);
-    const failures: string[] = [];
-    let downloaded = false;
-    for (const candidate of attempts) {
-      const url = `${candidate.baseUrl}/${version}/${tarball}`;
-      const download = [
-        `mkdir -p ${quote(tmpDir)}`,
-        `cd ${quote(tmpDir)}`,
-        `curl -fsSL --connect-timeout 15 --max-time ${Math.floor(DOWNLOAD_TIMEOUT_MS / 1000)}`
-          + ` -o ${quote(tarball)} ${quote(url)}`,
-      ].join('\n');
-      try {
-        await transport.exec(download, {
-          timeoutMs: DOWNLOAD_TIMEOUT_MS,
-          ...(signal ? { signal } : {}),
-        });
-        downloaded = true;
-        if (failures.length > 0) {
-          log.info(
-            `Node ${version} 已从 ${candidate.name}（${candidate.baseUrl}）下载成功`
-            + `（前 ${failures.length} 个源失败后回退）`,
-            { hostAlias: transport.hostAlias },
-          );
-        }
-        break;
-      } catch (error) {
-        const reason = toErrorMessage(error);
-        failures.push(`${candidate.name}（${url}）：${reason}`);
-        // 单源失败不是终局：换下一候选（复盘日志按源留痕）
-        log.warn(`Node 下载失败：${url}（${reason}），换下一源`, {
-          hostAlias: transport.hostAlias,
-        });
-      }
-    }
+  // curl 代理参数：proxyUrl 非空时加 -x 让 curl 走 HTTP 代理
+  const proxyArg = proxyUrl !== undefined ? ` -x ${quote(proxyUrl)}` : '';
 
-    if (!downloaded) {
-      // 清理残留的临时目录，避免下次误判
-      await cleanup(transport, tmpDir);
-      throw new RemoteError(
-        'EXEC_FAILED',
-        `Node ${version} 下载失败：已尝试全部镜像与官方源，均不可用——\n`
-          + failures.map(f => `  ${f}`).join('\n')
-          + `\n若并非网络问题，请确认 ${platform.os}/${platform.arch} 有对应构建`,
-        { hostAlias: transport.hostAlias },
-      );
-    }
-  };
-
-  // 本机下载函数：本机 fetch 下载 tarball → SFTP 上传到远端临时目录
-  const localDownload = async (): Promise<void> => {
-    const downloaded = await downloadNodeTarballLocally(version, platform, preferredBaseUrl);
+  // 1. 候选链逐源下载。curl 用 -fL：跟随重定向（镜像常有 302），HTTP 错误码
+  //    要失败而非写出错误页；--connect-timeout 让不可达源快速失败
+  const attempts = nodeMirrorChain(preferredBaseUrl);
+  const failures: string[] = [];
+  let downloaded = false;
+  for (const candidate of attempts) {
+    const url = `${candidate.baseUrl}/${version}/${tarball}`;
+    const download = [
+      `mkdir -p ${quote(tmpDir)}`,
+      `cd ${quote(tmpDir)}`,
+      `curl -fsSL --connect-timeout 15 --max-time ${Math.floor(DOWNLOAD_TIMEOUT_MS / 1000)}`
+        + `${proxyArg} -o ${quote(tarball)} ${quote(url)}`,
+    ].join('\n');
     try {
-      await transport.exec(`mkdir -p ${quote(tmpDir)}`);
-      await transport.uploadFile(downloaded.localPath, remoteTarballPath, signal);
-    } finally {
-      await downloaded.cleanup();
+      await transport.exec(download, {
+        timeoutMs: DOWNLOAD_TIMEOUT_MS,
+        ...(signal ? { signal } : {}),
+      });
+      downloaded = true;
+      if (failures.length > 0) {
+        log.info(
+          `Node ${version} 已从 ${candidate.name}（${candidate.baseUrl}）下载成功`
+            + `（前 ${failures.length} 个源失败后回退）`,
+          { hostAlias: transport.hostAlias },
+        );
+      }
+      break;
+    } catch (error) {
+      const reason = toErrorMessage(error);
+      failures.push(`${candidate.name}（${url}）：${reason}`);
+      // 单源失败不是终局：换下一候选（复盘日志按源留痕）
+      log.warn(`Node 下载失败：${url}（${reason}），换下一源`, {
+        hostAlias: transport.hostAlias,
+      });
     }
-  };
+  }
 
-  // 远端临时目录清理函数（auto 回退前调用，清理远端下载留下的半成品 tarball）
-  const cleanupRemoteTemp = async (): Promise<void> => {
+  if (!downloaded) {
+    // 清理残留的临时目录，避免下次误判
     await cleanup(transport, tmpDir);
-  };
-
-  // 策略决策：off / always / auto 三种模式的分支编排
-  await executeDownloadStrategy({
-    localResourceDownload,
-    transport,
-    resourceName: `Node ${version}`,
-    remoteDownload,
-    localDownload,
-    cleanupRemoteTemp,
-  });
+    throw new RemoteError(
+      'EXEC_FAILED',
+      `Node ${version} 下载失败：已尝试全部镜像与官方源，均不可用——\n`
+        + failures.map(f => `  ${f}`).join('\n')
+        + `\n若并非网络问题，请确认 ${platform.os}/${platform.arch} 有对应构建`,
+      { hostAlias: transport.hostAlias },
+    );
+  }
 
   // 2. 解包并原子地移到目标位置。
   // 先解到临时目录再 mv，避免中途失败留下半个安装被后续误判为"已装"。

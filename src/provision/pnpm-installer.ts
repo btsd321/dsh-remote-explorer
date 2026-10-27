@@ -34,9 +34,6 @@ import { RemoteError } from '../util/errors.js';
 import { createLogger } from '../util/logger.js';
 import { quote } from '../util/shell-quote.js';
 import { installLockHint, lockInstallCommand } from './install-lock.js';
-import { downloadNpmTarballLocally } from './local-downloader.js';
-import { executeDownloadStrategy } from './local-download-strategy.js';
-import type { LocalResourceDownloadMode } from './local-download-mode.js';
 import type { RemoteContext } from './remote-context.js';
 
 const log = createLogger('pnpm-installer');
@@ -136,8 +133,8 @@ export async function ensurePnpm(
     registryUrl: string;
     /** node bin 目录，会加进 PATH */
     nodeBinDir: string;
-    /** 本地资源下载模式（远端无网时本机下载 tarball + SFTP 上传 + npm install -g 本地包） */
-    localResourceDownload?: LocalResourceDownloadMode;
+    /** HTTP 代理 URL（local_resource_download 建隧道时注入到 npm install） */
+    proxyUrl?: string;
     /** 取消信号 */
     signal?: AbortSignal;
     /** 阶段进度回调 */
@@ -145,7 +142,6 @@ export async function ensurePnpm(
   },
 ): Promise<PnpmInstallResult> {
   const { registryUrl, nodeBinDir, signal } = options;
-  const localResourceDownload = options.localResourceDownload;
   const { transport, paths } = ctx;
   const version = DEFAULT_PNPM_VERSION;
   const packageJsonPath = pnpmPackageJsonOf(nodeBinDir);
@@ -174,55 +170,32 @@ export async function ensurePnpm(
 
   // 2. 全局装进 nodeDir prefix（可执行文件落 nodeBinDir）
   options.onProgress?.(`安装 pnpm ${version}`);
+  const install = lockInstallCommand(paths, [
+    `npm install -g --prefix ${quote(npmPrefixOf(nodeBinDir))}`,
+    `--registry=${quote(registryUrl)} --no-audit --no-fund ${quote(`pnpm@${version}`)}`,
+  ].join(' '));
 
-  // 远端下载安装函数：原行为——npm install -g 从 registry 下载
-  const remoteDownload = async (): Promise<void> => {
-    const install = lockInstallCommand(paths, [
-      `npm install -g --prefix ${quote(npmPrefixOf(nodeBinDir))}`,
-      `--registry=${quote(registryUrl)} --no-audit --no-fund ${quote(`pnpm@${version}`)}`,
-    ].join(' '));
-    await transport.exec(install, {
-      pathPrefix: nodeBinDir,
-      env: { npm_config_cache: paths.npmCache },
-      timeoutMs: INSTALL_TIMEOUT_MS + 60_000,
-      ...(signal ? { signal } : {}),
-    });
-  };
-
-  // 本机下载安装函数：本机下载 tarball → SFTP 上传 → npm install -g 本地包
-  const localDownload = async (): Promise<void> => {
-    const tmpDir = paths.tmpDir(process.pid, 'pnpm-install');
-    const remoteTarball = `${tmpDir}/pnpm.tgz`;
-    const downloaded = await downloadNpmTarballLocally('pnpm', version, registryUrl);
-    try {
-      await transport.exec(`mkdir -p ${quote(tmpDir)}`);
-      await transport.uploadFile(downloaded.localPath, remoteTarball, signal);
-      const install = lockInstallCommand(paths, [
-        `npm install -g --prefix ${quote(npmPrefixOf(nodeBinDir))}`,
-        `--no-audit --no-fund ${quote(remoteTarball)}`,
-      ].join(' '));
-      await transport.exec(install, {
-        pathPrefix: nodeBinDir,
-        env: { npm_config_cache: paths.npmCache },
-        timeoutMs: INSTALL_TIMEOUT_MS + 60_000,
-        ...(signal ? { signal } : {}),
-      });
-    } finally {
-      await downloaded.cleanup();
-      try {
-        await transport.exec(`rm -rf ${quote(tmpDir)}`, { allowNonZeroExit: true });
-      } catch { /* 清理失败无妨 */ }
-    }
-  };
+  // 代理 env：proxyUrl 非空时展开为 http_proxy/https_proxy/ALL_PROXY + no_proxy
+  // 四对（大小写各半），与 dsh-installer 的 npmEnv 同款。npm 认这些环境变量，
+  // 值指向 SSH 反向隧道的远端端口
+  const env: Record<string, string> = { npm_config_cache: paths.npmCache };
+  if (options.proxyUrl !== undefined && options.proxyUrl !== '') {
+    env.http_proxy = options.proxyUrl;
+    env.HTTP_PROXY = options.proxyUrl;
+    env.https_proxy = options.proxyUrl;
+    env.HTTPS_PROXY = options.proxyUrl;
+    env.ALL_PROXY = options.proxyUrl;
+    env.all_proxy = options.proxyUrl;
+    env.no_proxy = '127.0.0.1,localhost,::1';
+    env.NO_PROXY = '127.0.0.1,localhost,::1';
+  }
 
   try {
-    // 策略决策：off / always / auto 三种模式的分支编排
-    await executeDownloadStrategy({
-      localResourceDownload,
-      transport,
-      resourceName: `pnpm ${version}`,
-      remoteDownload,
-      localDownload,
+    await transport.exec(install, {
+      pathPrefix: nodeBinDir,
+      env,
+      timeoutMs: INSTALL_TIMEOUT_MS + 60_000,
+      ...(signal ? { signal } : {}),
     });
   } catch (error) {
     const hint = installLockHint(String((error as { stderr?: string }).stderr ?? ''));
