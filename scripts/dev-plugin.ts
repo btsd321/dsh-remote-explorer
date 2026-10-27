@@ -20,7 +20,9 @@
  *   pnpm exec tsx scripts/dev-plugin.ts --smoke    # 构建 → 安装/同步 → 启动 → 探针 → 杀掉（CI 用）
  *   pnpm exec tsx scripts/dev-plugin.ts --sync     # 只把 lib/ 覆盖进沙箱 profile（不启动）
  *   --fresh 清空沙箱重装；--port 默认 50599；--profile 默认 web；
- *   --dsh-version 默认 0.1.7-rc.2；--dsh-bin <路径> 跳过 npx 用本地 dsh；
+ *   --dsh-version 缺省时查 registry 自动取最大稳定版（无稳定版取最新 rc），
+ *     与远端引导同一套策略；离线时回退 devDependencies 钉的版本；
+ *   --dsh-bin <路径> 跳过 npx 用本地 dsh；
  *   --install-spec <pnpm spec> 换安装源（发布演练：npm pack 的 tgz 绝对路径）
  */
 
@@ -31,6 +33,8 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { bold, cyan, dim, green, println, printErr, red, yellow } from '../src/cli/output.js';
 import { toErrorMessage } from '../src/util/errors.js';
+import { parseSemver, selectDefaultDshVersion } from '../src/provision/dsh-installer.js';
+import { fetchDshVersions } from '../src/provision/dsh-version-fetch.js';
 import { buildPlugin } from './build-plugin.js';
 import { runChecks } from './check-plugin.js';
 
@@ -43,8 +47,53 @@ const SANDBOX_HOME = join(REPO_ROOT, '.dev-harness', 'home');
 /** 默认沙箱端口（避开常用端口；与参考插件的沙箱端口策略一致） */
 const DEFAULT_PORT = 50_599;
 
-/** 默认 dsh 版本（与本仓库远端引导用的 rc 线一致） */
-const DEFAULT_DSH_VERSION = '0.1.7-rc.2';
+/**
+ * 解析沙箱要用的 dsh 版本。
+ *
+ * 优先级：
+ * 1. `--dsh-version` 显式指定
+ * 2. 本机 registry 查询——**与远端引导完全同一套策略**：最大稳定版优先，无稳定版
+ *    才取最新 rc，alpha/beta 一律不选
+ * 3. devDependencies 里钉的 `@deepseek-ai/dsh-tools` 版本（离线兜底：那正是本仓库
+ *    编译插件所对照的版本）
+ *
+ * 为什么复用 `provision/` 的实现而不是在这里写死一个版本号：沙箱宿主与远端引导
+ * 选版本的口径必须一致，否则「本地冒烟通过、远端装的是另一个版本」这类偏差无从
+ * 发现。写死版本号还会随 devDependencies 升级而悄悄过期——宿主低于 peer 下限
+ * （`>=0.2.0-rc.2`）时插件挂不上，只表现为「带 Cookie 的 ping 返回 404」，看不出
+ * 根因是宿主版本。
+ *
+ * @param explicit - `--dsh-version` 的显式值
+ * @param pkg - 本仓库 package.json（读 devDependencies 兜底）
+ * @returns 解析到的具体版本号（不含 dist-tag）
+ * @throws Error 三条路径都拿不到版本（registry 不通且 devDependencies 无可用值）
+ */
+async function resolveSandboxDshVersion(
+  explicit: string | undefined,
+  pkg: { devDependencies?: Record<string, string> },
+): Promise<string> {
+  if (explicit !== undefined) return explicit;
+
+  // 复用面板版本下拉与本机探测的同一条链路：镜像竞速 + 缓存 + 门槛过滤
+  const list = await fetchDshVersions();
+  const picked = selectDefaultDshVersion(list.versions);
+  if (picked !== undefined) {
+    println(dim(`沙箱 dsh 版本：${picked}（最大稳定版优先，无稳定版取最新 rc）`));
+    return picked;
+  }
+
+  // 离线兜底：devDependencies 钉的版本就是插件编译所对照的版本
+  const pinned = pkg.devDependencies?.['@deepseek-ai/dsh-tools'];
+  if (pinned !== undefined && parseSemver(pinned) !== undefined) {
+    println(yellow(`! registry 查询无结果，回退 devDependencies 钉的 dsh 版本 ${pinned}`));
+    return pinned;
+  }
+
+  throw new Error(
+    '无法确定沙箱 dsh 版本：registry 查询无结果，且 devDependencies 里没有可用的 '
+    + '@deepseek-ai/dsh-tools 版本。请用 --dsh-version <版本> 显式指定',
+  );
+}
 
 /** 安装步骤超时（首次 npx 要下载整个 dsh 发行包，留足余量） */
 const INSTALL_TIMEOUT_MS = 600_000;
@@ -535,23 +584,30 @@ async function main(): Promise<number> {
       fresh: { type: 'boolean', default: false },
       port: { type: 'string', default: String(DEFAULT_PORT) },
       profile: { type: 'string', default: 'web' },
-      'dsh-version': { type: 'string', default: DEFAULT_DSH_VERSION },
+      'dsh-version': { type: 'string' },
       'dsh-bin': { type: 'string' },
       'install-spec': { type: 'string' },
     },
     strict: true,
   });
+  const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')) as {
+    name: string;
+    devDependencies?: Record<string, string>;
+  };
+  // 给了 --dsh-bin 就不用 npx，无需解析版本（省一次 registry 往返）
+  const dshVersion = values['dsh-bin'] !== undefined
+    ? (values['dsh-version'] ?? '')
+    : await resolveSandboxDshVersion(values['dsh-version'], pkg);
   const options: DevOptions = {
     smoke: values.smoke === true,
     sync: values.sync === true,
     fresh: values.fresh === true,
     port: Number.parseInt(values.port ?? String(DEFAULT_PORT), 10),
     profile: values.profile ?? 'web',
-    dshVersion: values['dsh-version'] ?? DEFAULT_DSH_VERSION,
+    dshVersion,
     ...(values['dsh-bin'] !== undefined ? { dshBin: values['dsh-bin'] } : {}),
     ...(values['install-spec'] !== undefined ? { installSpec: values['install-spec'] } : {}),
   };
-  const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')) as { name: string };
 
   // 1. 构建 + 护栏（--sync 也要重新构建，同步的才是最新产物）
   println(bold('构建插件产物'));
