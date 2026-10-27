@@ -35,6 +35,9 @@ import { RemoteError, toErrorMessage } from '../util/errors.js';
 import { createLogger } from '../util/logger.js';
 import { quote } from '../util/shell-quote.js';
 import { INSTALL_LOCK_WAIT_SECONDS, installLockHint, lockInstallCommand } from './install-lock.js';
+import { downloadNpmTarballLocally } from './local-downloader.js';
+import { executeDownloadStrategy } from './local-download-strategy.js';
+import type { LocalResourceDownloadMode } from './local-download-mode.js';
 import type { RemoteContext } from './remote-context.js';
 import type { RemotePaths } from './remote-paths.js';
 import type { RemoteTransport } from '../transport/types.js';
@@ -108,6 +111,8 @@ export async function ensureDsh(
     registryUrl: string;
     /** node bin 目录，会加进 PATH */
     nodeBinDir: string;
+    /** 本地资源下载模式（远端无网时本机下载 tarball + SFTP 上传 + npm install 本地包） */
+    localResourceDownload?: LocalResourceDownloadMode;
     /** 取消信号 */
     signal?: AbortSignal;
     /** 阶段进度回调 */
@@ -116,6 +121,7 @@ export async function ensureDsh(
 ): Promise<DshInstallResult> {
   const { transport, paths } = ctx;
   const { version, registryUrl, nodeBinDir, signal } = options;
+  const localResourceDownload = options.localResourceDownload;
   const installDir = paths.dshDir;
   const dshBin = paths.dshBin;
   // 降级链：首选在前，最多尝试 {@link MAX_DSH_INSTALL_CANDIDATES} 个；
@@ -144,21 +150,71 @@ export async function ensureDsh(
     //    该依赖而跳过实际重装、留下坏包。删除安装树强制 npm 从干净状态重装。
     options.onProgress?.(`安装 dsh ${candidate}（首次约需 1 分钟）`);
     const placeholder = JSON.stringify({ name: 'dsh-remote-explorer-install', private: true });
-    // 整段套 flock：npm 写 base 目录是临界区，多人同远端账号并发引导会写竞态
-    const install = lockInstallCommand(paths, [
-      buildDshCleanCommand(installDir),
-      `mkdir -p ${quote(installDir)}`,
-      `cd ${quote(installDir)}`,
-      `printf '%s' ${quote(placeholder)} > package.json`,
-      `npm install --registry=${quote(registryUrl)} --no-audit --no-fund ${quote(`@deepseek-ai/dsh@${candidate}`)}`,
-    ].join('\n'));
 
-    try {
+    // 远端下载安装函数：原行为——npm install 从 registry 下载（远端网络下载 + 安装合一）
+    const remoteDownload = async (): Promise<void> => {
+      // 整段套 flock：npm 写 base 目录是临界区，多人同远端账号并发引导会写竞态
+      const install = lockInstallCommand(paths, [
+        buildDshCleanCommand(installDir),
+        `mkdir -p ${quote(installDir)}`,
+        `cd ${quote(installDir)}`,
+        `printf '%s' ${quote(placeholder)} > package.json`,
+        `npm install --registry=${quote(registryUrl)} --no-audit --no-fund ${quote(`@deepseek-ai/dsh@${candidate}`)}`,
+      ].join('\n'));
       await transport.exec(install, {
         pathPrefix: nodeBinDir,
         env: npmEnv(paths),
         timeoutMs: INSTALL_TIMEOUT_MS + INSTALL_LOCK_WAIT_SECONDS * 1_000,
         ...(signal ? { signal } : {}),
+      });
+    };
+
+    // 本机下载安装函数：本机下载 tarball → SFTP 上传 → npm install 本地 tarball
+    //（远端只需能 npm install 本地包，不需要访问 registry）
+    const localDownload = async (): Promise<void> => {
+      const tmpDir = paths.tmpDir(process.pid, `dsh-install-${candidate}`);
+      const remoteTarball = `${tmpDir}/dsh.tgz`;
+      const downloaded = await downloadNpmTarballLocally('@deepseek-ai/dsh', candidate, registryUrl);
+      try {
+        await transport.exec(`mkdir -p ${quote(tmpDir)}`);
+        await transport.uploadFile(downloaded.localPath, remoteTarball, signal);
+        // npm install 本地 tarball：不访问 registry（--registry 仍给但不用于本地包），
+        // --no-audit --no-fund 与远端安装一致。整段套 flock 同上
+        const install = lockInstallCommand(paths, [
+          buildDshCleanCommand(installDir),
+          `mkdir -p ${quote(installDir)}`,
+          `cd ${quote(installDir)}`,
+          `printf '%s' ${quote(placeholder)} > package.json`,
+          `npm install --no-audit --no-fund ${quote(remoteTarball)}`,
+        ].join('\n'));
+        await transport.exec(install, {
+          pathPrefix: nodeBinDir,
+          env: npmEnv(paths),
+          timeoutMs: INSTALL_TIMEOUT_MS + INSTALL_LOCK_WAIT_SECONDS * 1_000,
+          ...(signal ? { signal } : {}),
+        });
+      } finally {
+        await downloaded.cleanup();
+        try {
+          await transport.exec(`rm -rf ${quote(tmpDir)}`, { allowNonZeroExit: true });
+        } catch { /* 清理失败无妨 */ }
+      }
+    };
+
+    // 远端临时目录清理函数（auto 回退前调用，清理 npm install 失败留下的半成品）
+    const cleanupRemoteTemp = async (): Promise<void> => {
+      await cleanupDshTree(transport, paths);
+    };
+
+    try {
+      // 策略决策：off / always / auto 三种模式的分支编排
+      await executeDownloadStrategy({
+        localResourceDownload,
+        transport,
+        resourceName: `dsh ${candidate}`,
+        remoteDownload,
+        localDownload,
+        cleanupRemoteTemp,
       });
     } catch (error) {
       // 装不上就清掉半成品退到下一个候选：留下半个安装会让后续版本检查

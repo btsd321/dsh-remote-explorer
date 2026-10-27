@@ -78,6 +78,7 @@ function printHelp(): void {
   println(`  --node-version <版本>     Node 版本（默认 ${versions.node}）`);
   println(`  --dsh-version <版本>      dsh 版本或 dist-tag（默认${versions.dsh}）`);
   println('  --refresh-mirrors         强制重测镜像延迟，忽略缓存');
+  println('  --local-resource-download <mode>  本地资源下载：远端无网时本机下载 + SFTP 传输（auto/always/off，默认 auto）');
   println('  --wsl <发行版>            连接 WSL 发行版（与主机别名互斥）');
   println('  --wsl-user <用户>         WSL 用户名（仅 --wsl 时有效）');
   println();
@@ -173,6 +174,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       cwd: { type: 'string' },
       'node-version': { type: 'string' },
       'dsh-version': { type: 'string' },
+      'local-resource-download': { type: 'string' },
       'local-port': { type: 'string' },
       'no-open': { type: 'boolean', default: false },
       'force-restart': { type: 'boolean', default: false },
@@ -250,6 +252,21 @@ export async function main(argv: readonly string[]): Promise<number> {
   const effectivePassword = privateKey === undefined ? password : undefined;
 
   const refreshMirrors = values['refresh-mirrors'] === true;
+
+  // 本地资源下载模式（仅 SSH 有效；WSL 无此选项）：校验合法值
+  const lrdRaw = values['local-resource-download'];
+  let localResourceDownload: 'auto' | 'always' | 'off' | undefined;
+  if (lrdRaw !== undefined) {
+    if (lrdRaw !== 'auto' && lrdRaw !== 'always' && lrdRaw !== 'off') {
+      printErr(red(`--local-resource-download 需要 auto/always/off，实际为 ${lrdRaw}`));
+      return 64;
+    }
+    localResourceDownload = lrdRaw;
+    if (wslDistro !== undefined) {
+      printErr(red('--local-resource-download 仅支持 SSH 主机，不支持 WSL 发⾏版'));
+      return 64;
+    }
+  }
 
   // 未指定工作目录时用空串：它同样参与会话 id 计算，
   // 保证"不带 --cwd"这一情形有稳定且唯一的会话标识
@@ -348,6 +365,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       localPort,
       ...(values['node-version'] ? { nodeVersion: values['node-version'] } : {}),
       ...(values['dsh-version'] ? { dshVersion: values['dsh-version'] } : {}),
+      ...(localResourceDownload !== undefined ? { localResourceDownload } : {}),
       noOpen: values['no-open'] === true,
       forceRestart: values['force-restart'] === true,
       keepRemote: values['keep-remote'] === true,
@@ -363,6 +381,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     cwd,
     ...(values['node-version'] ? { nodeVersion: values['node-version'] } : {}),
     ...(values['dsh-version'] ? { dshVersion: values['dsh-version'] } : {}),
+    ...(localResourceDownload !== undefined ? { localResourceDownload } : {}),
     refreshMirrors,
     ...transportOpts,
   });

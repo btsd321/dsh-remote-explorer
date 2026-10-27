@@ -348,4 +348,46 @@ describe('损坏文件容错', () => {
     writeRawFile('{"version": 2, "ssh": {"proxy": "http://127.0.0.1:18890"}, "wsl": {"env": {}}}');
     assert.deepEqual(readAdvancedConfig('ssh', BASE_DIR), { env: {} });
   });
+
+  // ─── localResourceDownload（SSH 域专属字段） ────────────────────────────
+
+  it('ssh 域 localResourceDownload 写入读回同值', () => {
+    writeAdvancedConfig('ssh', { env: {}, localResourceDownload: 'always' }, BASE_DIR);
+    assert.deepEqual(readAdvancedConfig('ssh', BASE_DIR), { env: {}, localResourceDownload: 'always' });
+  });
+
+  it('ssh 域 localResourceDownload 三值合法', () => {
+    for (const mode of ['auto', 'always', 'off'] as const) {
+      writeAdvancedConfig('ssh', { env: {}, localResourceDownload: mode }, BASE_DIR);
+      assert.equal(readAdvancedConfig('ssh', BASE_DIR).localResourceDownload, mode);
+    }
+  });
+
+  it('ssh 域 localResourceDownload 非法值读取侧跳过', () => {
+    // 手工编辑塞入非法值——读取侧过滤为 undefined，不报错
+    writeRawFile('{"version": 2, "ssh": {"env": {}, "localResourceDownload": "invalid"}, "wsl": {"env": {}}}');
+    const cfg = readAdvancedConfig('ssh', BASE_DIR);
+    assert.equal(cfg.localResourceDownload, undefined);
+  });
+
+  it('wsl 域出现 localResourceDownload 被忽略', () => {
+    writeRawFile('{"version": 2, "ssh": {"env": {}}, "wsl": {"env": {}, "localResourceDownload": "auto"}}');
+    assert.deepEqual(readAdvancedConfig('wsl', BASE_DIR), { env: {} });
+  });
+
+  it('wsl 域写入带 localResourceDownload 抛错', () => {
+    assert.throws(() => writeAdvancedConfig('wsl', { env: {}, localResourceDownload: 'auto' } as never));
+  });
+
+  it('ssh 域全空但 localResourceDownload 有值时不删除文件', () => {
+    writeAdvancedConfig('ssh', { env: {}, localResourceDownload: 'off' }, BASE_DIR);
+    assert.ok(existsSync(join(BASE_DIR, FILE_NAME)));
+  });
+
+  it('ssh 域 localResourceDownload 为 off 时清空整个 ssh 域会删文件', () => {
+    writeAdvancedConfig('ssh', { env: {}, localResourceDownload: 'off' }, BASE_DIR);
+    // 再写空 env 且无 localResourceDownload → 两域全空 → 删文件
+    writeAdvancedConfig('ssh', { env: {} }, BASE_DIR);
+    assert.ok(!existsSync(join(BASE_DIR, FILE_NAME)));
+  });
 });

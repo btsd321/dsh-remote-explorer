@@ -89,6 +89,11 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
   });
   const [forceRestart, setForceRestart] = React.useState(false);
   const [refreshMirrors, setRefreshMirrors] = React.useState(false);
+  // 本地资源下载模式：空串 = 未设置（用 advanced-store 的持久化值或默认 auto）；
+  // 用户显式选值后记忆在 localStorage，下次连接恢复。仅 SSH 传输有效
+  const [localResourceDownload, setLocalResourceDownload] = React.useState(() => {
+    try { return localStorage.getItem('dsh-remote-explorer:localResourceDownload:ssh') ?? ''; } catch { return ''; }
+  });
   const [busy, setBusy] = React.useState(false);
   const [formError, setFormError] = React.useState('');
 
@@ -150,6 +155,7 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
         ...(Number.isFinite(port) && port > 0 ? { localPort: port } : {}),
         ...(nodeVersion.trim() !== '' ? { nodeVersion: nodeVersion.trim() } : {}),
         ...(dshVersion.trim() !== '' ? { dshVersion: dshVersion.trim() } : {}),
+        ...(localResourceDownload !== '' ? { localResourceDownload: localResourceDownload as 'auto' | 'always' | 'off' } : {}),
         forceRestart,
         refreshMirrors,
         // 跳板机条目：仅直连目标携带（分流规则见文件头）；面板未配置过弹窗
@@ -169,6 +175,8 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
         localStorage.setItem(DSH_VERSION_KEY, dshVersion.trim());
         // Node 版本同纪律（SSH 域独立记忆）
         localStorage.setItem(NODE_VERSION_KEY, nodeVersion.trim());
+        // 本地资源下载模式同纪律（SSH 域独立记忆）
+        localStorage.setItem('dsh-remote-explorer:localResourceDownload:ssh', localResourceDownload);
       } catch { /* 记忆失败不影响连接 */ }
       onConnected(session, mode);
     } catch (error) {
@@ -239,6 +247,15 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
             <span style={{ fontSize: 12, opacity: 0.75 }}>{t('dshVersion')}</span>
             <VersionPicker value={dshVersion} onChange={setDshVersion}
               versions={dshVersions} />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <span style={{ fontSize: 12, opacity: 0.75 }}>{t('localResourceDownload')}</span>
+            <select value={localResourceDownload} style={inputStyle}
+              onChange={event => setLocalResourceDownload(event.target.value)}>
+              <option value="">{t('localResourceDownloadAuto')}</option>
+              <option value="always">{t('localResourceDownloadAlways')}</option>
+              <option value="off">{t('localResourceDownloadOff')}</option>
+            </select>
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
             <input type="checkbox" checked={forceRestart}

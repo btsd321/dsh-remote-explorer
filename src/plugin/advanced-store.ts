@@ -51,6 +51,7 @@ import { join } from 'node:path';
 import { toErrorMessage } from '../util/errors.js';
 import { createLogger } from '../util/logger.js';
 import { isSafeEnvKey } from '../session/proxy-env.js';
+import { DEFAULT_LOCAL_RESOURCE_DOWNLOAD, isValidLocalResourceDownloadMode, type LocalResourceDownloadMode } from '../provision/local-download-mode.js';
 import type { TransportType } from '../session/options.js';
 
 const log = createLogger('advanced-store');
@@ -77,6 +78,19 @@ export interface AdvancedConfig {
   proxy?: string;
   /** 直连主机的跳板机条目（**落盘子集**：只有标识与私钥路径）；undefined = 未配置 */
   jumpHosts?: StoredJumpEntry[];
+  /**
+   * 本地资源下载模式（local_resource_download，**仅 SSH 域**）。
+   *
+   * 远端无网络时用本机网络下载资源包再经 SFTP 传到远端的模式选择，
+   * 类似 VS Code Remote.SSH: Local Server Download。三值：
+   * - `auto`（默认）：先远端下载，失败回退本机下载 + SFTP 传输
+   * - `always`：始终本机下载 + SFTP 传输
+   * - `off`：仅远端下载（恢复原行为）
+   *
+   * undefined = 未配置（连接时回落 {@link DEFAULT_LOCAL_RESOURCE_DOWNLOAD}）。
+   * **仅 SSH 连接生效**——WSL 域不含此字段（WSL 有本地文件系统访问，无需此选项）
+   */
+  localResourceDownload?: LocalResourceDownloadMode;
 }
 
 /**
@@ -92,7 +106,7 @@ export interface StoredJumpEntry {
   identityFile?: string;
 }
 
-/** v2 落盘文件里的 SSH 域（三项齐备） */
+/** v2 落盘文件里的 SSH 域（四项齐备） */
 interface SshDomainFile {
   /** 环境变量键值对 */
   env: Record<string, string>;
@@ -100,6 +114,8 @@ interface SshDomainFile {
   proxy?: string;
   /** 直连主机跳板机条目（落盘子集，无密码；未配置时缺省） */
   jumpHosts?: StoredJumpEntry[];
+  /** 本地资源下载模式（未配置时缺省；连接时回落 auto） */
+  localResourceDownload?: LocalResourceDownloadMode;
 }
 
 /** v2 落盘文件里的 WSL 域（只有 env——WSL 无代理、无跳板机概念） */
@@ -160,10 +176,11 @@ export function writeAdvancedConfig(
   config: AdvancedConfig,
   baseDir?: string,
 ): void {
-  // WSL 域只有 env：带 proxy/jumpHosts 进来属于调用方程序错误（路由层已
-  // 400 拦截），这里显式抛错防御绕过路由的调用
-  if (transportType === 'wsl' && (config.proxy !== undefined || config.jumpHosts !== undefined)) {
-    throw new Error('WSL 高级选项域仅支持环境变量，不支持 proxy/jumpHosts 字段（调用方不应传递）');
+  // WSL 域只有 env：带 proxy/jumpHosts/localResourceDownload 进来属于调用方程序
+  // 错误（路由层已 400 拦截），这里显式抛错防御绕过路由的调用
+  if (transportType === 'wsl'
+    && (config.proxy !== undefined || config.jumpHosts !== undefined || config.localResourceDownload !== undefined)) {
+    throw new Error('WSL 高级选项域仅支持环境变量，不支持 proxy/jumpHosts/localResourceDownload 字段（调用方不应传递）');
   }
   const error = validateAdvancedConfig(config);
   if (error !== undefined) {
@@ -210,6 +227,10 @@ export function validateAdvancedConfig(config: AdvancedConfig): string | undefin
       const error = storedJumpEntryError(entry);
       if (error !== undefined) return error;
     }
+  }
+  if (config.localResourceDownload !== undefined
+    && !isValidLocalResourceDownloadMode(config.localResourceDownload)) {
+    return `本地资源下载模式必须是 'auto'、'always' 或 'off'，收到 '${String(config.localResourceDownload)}'`;
   }
   return undefined;
 }
@@ -330,10 +351,18 @@ function filterSshDomain(domain: SshDomainFile): AdvancedConfig {
   if (domain.jumpHosts !== undefined && jumpHosts !== undefined && jumpHosts.length !== domain.jumpHosts.length) {
     log.warn('高级选项文件 ssh 域的 jumpHosts 含非法条目，已跳过对应项');
   }
+  const localResourceDownload = domain.localResourceDownload !== undefined
+    && isValidLocalResourceDownloadMode(domain.localResourceDownload)
+    ? domain.localResourceDownload
+    : undefined;
+  if (domain.localResourceDownload !== undefined && localResourceDownload === undefined) {
+    log.warn('高级选项文件 ssh 域的 localResourceDownload 字段非法，已跳过');
+  }
   return {
     env,
     ...(proxy !== undefined ? { proxy } : {}),
     ...(jumpHosts !== undefined && jumpHosts.length > 0 ? { jumpHosts } : {}),
+    ...(localResourceDownload !== undefined ? { localResourceDownload } : {}),
   };
 }
 
@@ -369,14 +398,18 @@ function sshDomainToFile(config: AdvancedConfig): SshDomainFile {
     ...(config.jumpHosts !== undefined && config.jumpHosts.length > 0
       ? { jumpHosts: config.jumpHosts }
       : {}),
+    ...(config.localResourceDownload !== undefined
+      ? { localResourceDownload: config.localResourceDownload }
+      : {}),
   };
 }
 
-/** SSH 域是否全空（env 空、代理未配、跳板列表空） */
+/** SSH 域是否全空（env 空、代理未配、跳板列表空、localResourceDownload 未配） */
 function sshDomainIsEmpty(domain: SshDomainFile): boolean {
   return Object.keys(domain.env).length === 0
     && (domain.proxy === undefined || domain.proxy === '')
-    && (domain.jumpHosts === undefined || domain.jumpHosts.length === 0);
+    && (domain.jumpHosts === undefined || domain.jumpHosts.length === 0)
+    && domain.localResourceDownload === undefined;
 }
 
 /** WSL 域是否全空（只有 env 一个面） */
@@ -463,7 +496,7 @@ function extractSshDomain(raw: unknown): SshDomainFile {
     log.warn('高级选项文件 v2 的 ssh 域形状不对，按空处理');
     return { env: {} };
   }
-  const record = raw as { env?: unknown; proxy?: unknown; jumpHosts?: unknown };
+  const record = raw as { env?: unknown; proxy?: unknown; jumpHosts?: unknown; localResourceDownload?: unknown };
   const env = extractEnv(record);
   if (env === undefined) {
     log.warn('高级选项文件 v2 的 ssh 域缺 env 结构，按空处理');
@@ -474,10 +507,14 @@ function extractSshDomain(raw: unknown): SshDomainFile {
     && record.jumpHosts.every(item => typeof item === 'object' && item !== null && !Array.isArray(item))
     ? record.jumpHosts as StoredJumpEntry[]
     : undefined;
+  const localResourceDownload = isValidLocalResourceDownloadMode(record.localResourceDownload)
+    ? record.localResourceDownload
+    : undefined;
   return {
     env,
     ...(proxy !== undefined ? { proxy } : {}),
     ...(jumpHosts !== undefined ? { jumpHosts } : {}),
+    ...(localResourceDownload !== undefined ? { localResourceDownload } : {}),
   };
 }
 
@@ -493,10 +530,10 @@ function extractWslDomain(raw: unknown): WslDomainFile {
     log.warn('高级选项文件 v2 的 wsl 域形状不对，按空处理');
     return { env: {} };
   }
-  const record = raw as { env?: unknown; proxy?: unknown; jumpHosts?: unknown };
-  if (record.proxy !== undefined || record.jumpHosts !== undefined) {
-    // wsl 域只有 env：手工编辑塞进来的 proxy/jumpHosts 一律忽略（告警留痕）
-    log.warn('高级选项文件 v2 的 wsl 域出现 proxy/jumpHosts 字段，已忽略（WSL 仅支持环境变量）');
+  const record = raw as { env?: unknown; proxy?: unknown; jumpHosts?: unknown; localResourceDownload?: unknown };
+  if (record.proxy !== undefined || record.jumpHosts !== undefined || record.localResourceDownload !== undefined) {
+    // wsl 域只有 env：手工编辑塞进来的 proxy/jumpHosts/localResourceDownload 一律忽略（告警留痕）
+    log.warn('高级选项文件 v2 的 wsl 域出现 proxy/jumpHosts/localResourceDownload 字段，已忽略（WSL 仅支持环境变量）');
   }
   const env = extractEnv(record);
   if (env === undefined) {

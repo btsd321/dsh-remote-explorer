@@ -18,6 +18,7 @@ import type { LifecycleConfig, SessionState } from './lifecycle-state.js';
 import type { PasswordPromptFn } from '../util/password-prompt.js';
 import type { ManageHandlers } from '../handoff/protocol.js';
 import type { JumpEntry } from '../hosts/ssh-config-parser.js';
+import type { LocalResourceDownloadMode } from '../provision/local-download-mode.js';
 
 /** 传输类型标识 */
 export type TransportType = 'ssh' | 'wsl';
@@ -106,6 +107,20 @@ export interface OpenSessionOptions {
    * 绝不落盘**（每次连接由用户输入，会话结束丢弃引用）
    */
   jumpHosts?: JumpEntry[];
+  /**
+   * 本地资源下载模式（local_resource_download，**仅 SSH 连接**）。
+   *
+   * 远端无网络时用本机网络下载资源包再经 SFTP 传到远端的模式选择，类似
+   * VS Code Remote.SSH: Local Server Download。三值：
+   * - `auto`（默认）：先远端下载，失败回退本机下载 + SFTP 传输
+   * - `always`：始终本机下载 + SFTP 传输
+   * - `off`：仅远端下载（恢复原行为）
+   *
+   * undefined = 未配置（provision 层按 `auto` 处理——与 advanced-store
+   * 的默认值同源，见 {@link DEFAULT_LOCAL_RESOURCE_DOWNLOAD}）。
+   * **仅 SSH 连接生效**——WSL 有本地文件系统访问（UNC 路径），无需此选项
+   */
+  localResourceDownload?: LocalResourceDownloadMode;
   /**
    * 转发失败告警回调（插件形态接进会话日志缓冲）。
    * 不传时 LocalForward 直写 stderr（CLI 形态既有行为）

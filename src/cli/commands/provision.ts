@@ -32,6 +32,8 @@ export interface ProvisionCommandOptions {
   dshVersion?: string;
   /** 强制重测镜像 */
   refreshMirrors: boolean;
+  /** 本地资源下载模式（auto/always/off）；仅 SSH 有效 */
+  localResourceDownload?: 'auto' | 'always' | 'off';
   /** 传输类型；默认 'ssh' */
   transportType?: TransportType;
   /** WSL 发行版名称（transportType='wsl' 时必需） */
@@ -93,6 +95,7 @@ export async function runProvision(options: ProvisionCommandOptions): Promise<nu
       ...(options.offline ? { offline: true } : {}),
       ...(options.nodeVersion ? { nodeVersion: options.nodeVersion } : {}),
       ...(options.dshVersion ? { dshVersion: options.dshVersion } : {}),
+      ...(options.localResourceDownload ? { localResourceDownload: options.localResourceDownload } : {}),
       refreshMirrors: options.refreshMirrors,
       onStageStart: (stage) => progress.start(stage),
       onStageDone: (detail) => progress.done(detail),

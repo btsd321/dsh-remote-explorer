@@ -22,6 +22,7 @@ import { prepareSessionProfile, type PatchEntry, type ProfileResult } from './pr
 import { createRemotePaths, type RemotePaths } from './remote-paths.js';
 import { createLogger } from '../util/logger.js';
 import { toErrorMessage } from '../util/errors.js';
+import type { LocalResourceDownloadMode } from './local-download-mode.js';
 import type { RemoteContext } from './remote-context.js';
 import type { RemoteTransport } from '../transport/types.js';
 
@@ -49,6 +50,15 @@ export interface ProvisionOptions {
   patches?: readonly PatchEntry[];
   /** 强制重测镜像，忽略缓存 */
   refreshMirrors?: boolean;
+  /**
+   * 本地资源下载模式（local_resource_download，**仅 SSH 传输**）。
+   *
+   * 远端无网络时用本机网络下载资源包再经 SFTP 传到远端，类似 VS Code
+   * Remote.SSH: Local Server Download。三值 auto/always/off，默认 auto。
+   * undefined = auto（与 advanced-store 默认值同源）。严格离线模式下忽略
+   * （离线不下载任何东西，只复用预装运行时）
+   */
+  localResourceDownload?: LocalResourceDownloadMode;
   /** 跳过 Node 稳定性自检（只读诊断场景用） */
   skipStabilityCheck?: boolean;
   /** 取消信号 */
@@ -179,6 +189,10 @@ export async function provision(
     // 已装时不会用到 URL，给个占位避免把 undefined 传下去
     mirrorBaseUrl: nodeMirrorUrl ?? '',
     ...(options.skipStabilityCheck ? { skipStabilityCheck: true } : {}),
+    // 严格离线不走下载路径（离线只复用预装），不传模式让 installer 用默认 auto
+    ...(!offline && options.localResourceDownload !== undefined
+      ? { localResourceDownload: options.localResourceDownload }
+      : {}),
     ...(signal ? { signal } : {}),
   });
   options.onStageDone?.(node.reused ? '复用已有安装' : '已安装');
@@ -246,6 +260,9 @@ export async function provision(
     candidates: dshCandidates,
     registryUrl: npmSelection.selected.baseUrl,
     nodeBinDir: node.binDir,
+    ...(options.localResourceDownload !== undefined
+      ? { localResourceDownload: options.localResourceDownload }
+      : {}),
     ...(signal ? { signal } : {}),
   });
   options.onStageDone?.(dsh.reused ? '复用已有安装' : '已安装');
@@ -256,6 +273,9 @@ export async function provision(
   const pnpm = await ensurePnpm(ctx, {
     registryUrl: npmSelection.selected.baseUrl,
     nodeBinDir: node.binDir,
+    ...(options.localResourceDownload !== undefined
+      ? { localResourceDownload: options.localResourceDownload }
+      : {}),
     ...(signal ? { signal } : {}),
   });
   // pnpm 11 启用前提：host profile 的 pnpm-workspace.yaml 幂等补齐

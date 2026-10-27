@@ -14,6 +14,7 @@ export type RemoteExplorerLocaleKey =
   | 'cwd' | 'cwdPlaceholder'
   | 'advanced' | 'localPort' | 'forceRestart' | 'refreshMirrors'
   | 'nodeVersion' | 'dshVersion' | 'privateKey'
+  | 'localResourceDownload' | 'localResourceDownloadAuto' | 'localResourceDownloadAlways' | 'localResourceDownloadOff'
   | 'password' | 'passwordWarning'
   | 'connect' | 'connecting' | 'connectCurrent' | 'connectNew'
   | 'enterCurrent' | 'openNew' | 'countdown' | 'cancelCountdown'
@@ -63,6 +64,10 @@ export const zh: Record<RemoteExplorerLocaleKey, string> = {
   nodeVersion: 'Node 版本（留空 = 默认）',
   dshVersion: 'dsh 版本（留空 = 默认）',
   privateKey: '私钥路径（留空 = 用 ssh config）',
+  localResourceDownload: '本地资源下载（远端无网时本机下载 + SFTP 传输）',
+  localResourceDownloadAuto: 'auto（先远端下载，失败回退本机）',
+  localResourceDownloadAlways: 'always（始终本机下载 + SFTP）',
+  localResourceDownloadOff: 'off（仅远端下载）',
   password: 'SSH 密码',
   passwordWarning: '密码仅存宿主 dsh 进程内存，不落盘、不进日志；留空则要求主机已配置 IdentityFile',
   connect: '连接',
@@ -181,6 +186,10 @@ export const en: Record<RemoteExplorerLocaleKey, string> = {
   nodeVersion: 'Node version (empty = default)',
   dshVersion: 'dsh version (empty = default)',
   privateKey: 'Private key path (empty = ssh config)',
+  localResourceDownload: 'Local resource download (download locally + SFTP when remote has no network)',
+  localResourceDownloadAuto: 'auto (try remote first, fall back to local)',
+  localResourceDownloadAlways: 'always (always download locally + SFTP)',
+  localResourceDownloadOff: 'off (remote download only)',
   password: 'SSH password',
   passwordWarning: 'The password stays in the host dsh process memory only — never written to disk or logged; leave empty to require an IdentityFile on the host',
   connect: 'Connect',
