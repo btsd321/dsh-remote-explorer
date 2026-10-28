@@ -104,16 +104,22 @@ export interface RemotePaths {
   /**
    * 主机级 agent 能力根目录（`DSH_AGENTS_HOME` 的指向）。
    *
-   * 与本机 `~/.agents` 同形，刻意不放在会话目录下：dsh 的
-   * skill-filesystem 把 `<agentsHome>/skills` 当作**用户级**根（rank 500），
-   * 语义上属于「这台机器的使用者」而非「这一次会话」。
+   * 直接指向**远端账号的真实 `~/.agents`**，也就是 dsh 的默认值：原生 dsh
+   * 在同一台机器上读的就是这个根，本工具的会话与它共享同一份技能与全局
+   * 指令。dsh 有两个消费方——`dsh-agent-instructions` 从这里读
+   * `AGENTS.md`（用户级全局指令）、`dsh-skill-filesystem` 把
+   * `<agentsHome>/skills` 当 `user-agents` 根（rank 500）。
    *
-   * 共享边界 = 远端账号：本工具的根目录就在该账号家目录下，持有该账号者
-   * 本就共享这棵树里的一切。不按本机指纹分桶。
+   * 历史：旧版本把这里指到本工具私有的 `base/.agents`，换取「不读远端别人
+   * 放的 skills」；代价是用户在同一台机器上早已维护的技能与 `AGENTS.md`
+   * 在远端会话里全部不可见（且远端窗口装的技能原生 dsh 又看不到）。共享
+   * 边界本就是「远端账号」——同账号下的原生 dsh、本工具会话、会话根、凭据
+   * 代理都共享，技能单独隔离与这个粒度不一致。多人共用同一远端账号时彼此
+   * 可见，与直接在该账号下跑 dsh 一致；文档建议每人独立远程账号。
    */
   readonly agentsHome: string;
   /**
-   * 主机级技能目录（`<agentsHome>/skills`）。
+   * 账号级技能目录（`<agentsHome>/skills`）。
    *
    * dsh 的本地技能提供方只扫一层：`<root>/<name>/SKILL.md` 或
    * `<root>/<name>.md`。该根为 `user-agents` 源、rank 500，低于项目级
@@ -121,11 +127,23 @@ export interface RemotePaths {
    */
   readonly agentsSkills: string;
   /**
-   * 主机级 agent 能力写临界区锁文件（flock）。
+   * 旧版机器级 agent 能力根目录（`<base>/.agents`）。
    *
-   * `.agents/` 共享后新增的风险：技能安装器的 `.skill-lock.json` 是**目录级
-   * 单文件**，多会话并发装技能会互相覆盖。本工具自己发起的写入经此锁串行化，
-   * 见 agents-lock.ts。
+   * 只作为**一次性迁移**的来源与识别对象，不再写进 `DSH_AGENTS_HOME`。
+   * 迁移把其中的技能与 `AGENTS.md` 并入真实 `~/.agents`，同名冲突项不迁移
+   * （保留新版、旧副本原地不动），见 agents-migrate.ts。
+   */
+  readonly legacyAgentsHome: string;
+  /**
+   * 旧版技能目录（`<legacyAgentsHome>/skills`），迁移来源。
+   */
+  readonly legacyAgentsSkills: string;
+  /**
+   * agent 能力写临界区锁文件（flock）。
+   *
+   * 新根是用户自己的 `~/.agents`，内部锁文件不该再写进去；改用本工具 base
+   * 下的 `tmp/agents.lock`（与 install.lock 同目录）。本锁只串行化**本工具
+   * 自己发起**的写入（旧版迁移），第三方技能安装器不读它，见 agents-lock.ts。
    */
   readonly agentsLockFile: string;
   /**
@@ -293,9 +311,12 @@ export function createRemotePaths(homeDir: string): RemotePaths {
     npmCache: `${base}/npm-cache`,
     tmpRoot: `${base}/tmp`,
     installLockFile: `${base}/tmp/install.lock`,
-    agentsHome: `${base}/.agents`,
-    agentsSkills: `${base}/.agents/skills`,
-    agentsLockFile: `${base}/.agents/.lock`,
+    // 真实用户级 root（与原生 dsh 一致）；旧版私有根只留迁移来源
+    agentsHome: `${home}/.agents`,
+    agentsSkills: `${home}/.agents/skills`,
+    legacyAgentsHome: `${base}/.agents`,
+    legacyAgentsSkills: `${base}/.agents/skills`,
+    agentsLockFile: `${base}/tmp/agents.lock`,
     hostProfileDir: (platform) => `${base}/profiles/${platform}`,
     hostProfileManifest: (platform) => `${base}/profiles/${platform}/package.json`,
     hostProfileNodeModules: (platform) => `${base}/profiles/${platform}/node_modules`,

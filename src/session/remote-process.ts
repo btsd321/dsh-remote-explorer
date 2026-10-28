@@ -18,9 +18,10 @@
  *    `/` 与 `/api` 无令牌时 401。所以探活靠「pid 存活 + 端口在监听」的组合判据，
  *    真正的 HTTP 探活要等 `dsh-remote-guard`（P5）。
  *
- * 5. **`DSH_AGENTS_HOME` 指机器级 `.agents`，不指会话目录。** agent 能力
- *    （技能等）按机器共享，详见 envAssignments 处的说明与 remote-paths.ts
- *    的 `agentsHome`。启动前预建该目录，让远端 watcher 能立即附加。
+ * 5. **`DSH_AGENTS_HOME` 指远端账号真实的 `~/.agents`（dsh 默认值）。** 与
+ *    原生 dsh 共享同一份技能与全局 `AGENTS.md`；详见 envAssignments 处的说明
+ *    与 remote-paths.ts 的 `agentsHome`。启动前预建 `<agentsHome>/skills`，
+ *    让远端 watcher 能立即附加。
  */
 
 import { execFile } from 'node:child_process';
@@ -148,12 +149,12 @@ export async function startRemoteDsh(
     // 会话级 .runtime 目录路径——handoff 宿主半从这里读反向隧道材料
     // （DSH_HOME = base 是机器级，.runtime 在 sessions/<id>/.runtime/）
     `DSH_SESSION_RUNTIME=${quote(paths.sessionRuntime(sessionId))}`,
-    // agent 能力目录按**机器**共享，不按会话：dsh 的 skill-filesystem 把
-    // `<agentsHome>/skills` 当用户级根（rank 500），语义是"这台机器的使用者"，
-    // 不是"这一次会话"。早期版本指向 sessions/<id>/agents 换取隔离，代价是
-    // 同一台远端换个工作目录就要把技能重装一遍——与 opencode / Claude Code 的
-    // 单一用户级根模型相悖，也与本目录下 node、dsh、host profile 早已全账号
-    // 共享的粒度不一致。共享边界 = 远端账号（本工具的根就在该账号家目录下）。
+    // agent 能力目录跟**远端账号真实的 ~/.agents** 走（dsh 的默认值）：
+    // 原生 dsh 读的就是这个根，这样用户在同一台机器上已装的技能与
+    // `~/.agents/AGENTS.md` 全局指令在远端会话里直接生效，远端窗口装的技能
+    // 原生 dsh 也看得到。旧版本指到本工具私有的 `<base>/.agents`，会把
+    // 这些既有能力藏起来（那次隔离换来的只是「不读同一账号下别人的
+    // skills」——而那个账号本来就共享会话根、store 与凭据代理）。
     `DSH_AGENTS_HOME=${quote(paths.agentsHome)}`,
     ...Object.entries(options.extraEnv ?? {}).map(([key, value]) => `${key}=${quote(value)}`),
     // PATH 特殊处理："$PATH" 必须留在引号外由 shell 展开，见 shell-quote 的说明
@@ -176,11 +177,14 @@ export async function startRemoteDsh(
   const runner = runnerLines.join('\n');
 
   // 1. 写 runner 脚本 + 清理旧文件（同步 exec，快速返回）
-  //    顺带建机器级技能目录：dsh 的 skill-filesystem 对**不存在**的根只能用
-  //    fs.watchFile 逐个路径段轮询等它出现，预建好则 Chokidar 直接挂上，
-  //    装完技能当即进入下一次目录（省掉一轮轮询延迟）。
+  //    顺带建用户级技能目录（`<agentsHome>/skills` = 账号的 ~/.agents/skills）：
+  //    dsh 的 skill-filesystem 对**不存在**的根只能用 fs.watchFile 逐个路径段
+  //    轮询等它出现，预建好则 Chokidar 直接挂上，装完技能当即进入下一次目录
+  //    （省掉一轮轮询延迟）。建空目录是幂等操作，不会覆盖用户已有内容。
+  //    **失败不阻断启动**：这个根现在归用户（可能被改成只读、软链或普通文件），
+  //    预建只是优化；mkdir 失败时 dsh 自己会退化为轮询，不该连会话一起挂掉。
   const prepareLaunch = [
-    `mkdir -p ${quote(paths.agentsSkills)}`,
+    `mkdir -p ${quote(paths.agentsSkills)} 2>/dev/null || true`,
     `printf '%s' ${quote(runner)} > ${quote(runnerFile)}`,
     `rm -f ${quote(logFile)} ${quote(pidFile)}`,
   ].join('\n');
