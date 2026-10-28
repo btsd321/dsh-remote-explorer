@@ -163,7 +163,10 @@ export async function provisionAndConfigure(
   // 5.6 profile manifest 自愈（必须在远端启动前）。DSH_HOME = base，
   //     dsh 启动时 --profile web 直接读 base/profiles/web/，
   //     不再需要会话级 symlink。
-  await syncHostProfileManifest(transportIo(transport), paths);
+  // pathPrefix 让自愈里的 pnpm 锁文件收敛命令找到管理目录下的 node/pnpm
+  await syncHostProfileManifest(
+    transportIo(transport, { pathPrefix: provisioned.node.binDir }), paths,
+  );
 
   // 6. pi-ai 供应商路由 patch：追加到会话 patch 文件（.runtime/patch.yml）末尾。
   //    pi-ai 的 patch 结构含 providers 嵌套对象，provisioner 的 renderPatchYaml
