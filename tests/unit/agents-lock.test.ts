@@ -1,9 +1,9 @@
 /**
  * @file provision/agents-lock.ts 单元测试
- * @description 覆盖 `.agents` 写临界区锁的命令构造与超时提示归一：
- *              flock 参数顺序与超时取值、锁文件落在所保护的那棵树内、
- *              命令体经单引号字面量化（含注入尝试）、以及 stderr 判据
- *              只认 flock 相关报错。
+ * @description 覆盖 agent 能力目录写临界区锁的命令构造与超时提示归一：
+ *              flock 参数顺序与超时取值、锁文件落在本工具 base 下（不写用户
+ *              `~/.agents`）、命令体经单引号字面量化（含注入尝试）、以及
+ *              stderr 判据只认 flock 相关报错。
  *
  * 不覆盖远端 flock 实跑（内核行为已在 install-lock 的 P0 阶段实测）。
  */
@@ -25,10 +25,15 @@ describe('lockAgentsCommand', () => {
       assert.ok(out.startsWith(`flock -w ${AGENTS_LOCK_WAIT_SECONDS} `), out);
     });
 
-    it('锁文件是机器级 .agents/.lock（在所保护的那棵树内）', () => {
+    it('锁文件在 base/tmp/agents.lock（本工具自有目录）', () => {
       const out = lockAgentsCommand(paths, 'true');
       assert.ok(out.includes(paths.agentsLockFile), out);
-      assert.ok(out.includes(`${BASE}/.agents/.lock`), out);
+      assert.ok(out.includes(`${BASE}/tmp/agents.lock`), out);
+    });
+
+    it('锁文件不写进用户 ~/.agents（那是用户数据）', () => {
+      const out = lockAgentsCommand(paths, 'true');
+      assert.ok(!out.includes(`${paths.agentsHome}/`), out);
     });
 
     it('锁文件不含会话段——并发方必须是同一把锁', () => {

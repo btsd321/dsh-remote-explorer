@@ -1,8 +1,8 @@
 /**
  * @file provision/remote-paths.ts 单元测试
  * @description 覆盖 createRemotePaths() 的家目录校验、POSIX 拼接不变量，
- *              以及机器级 .agents（DSH_AGENTS_HOME 指向）与机器级 DSH_HOME
- *              和会话级 .runtime 的归属划分。
+ *              以及账号级 ~/.agents（DSH_AGENTS_HOME 指向）、旧版 base/.agents
+ *              迁移来源、机器级 DSH_HOME 与会话级 .runtime 的归属划分。
  *
  * 不覆盖远端读写动作（本模块是纯字符串拼接，无 IO）。
  */
@@ -55,11 +55,12 @@ describe('createRemotePaths', () => {
     });
   });
 
-  // ─── 机器级 .agents ────────────────────────────────────────
-  describe('机器级 agent 能力根目录', () => {
-    it('agentsHome 落在 base 下，与本机 ~/.agents 同形', () => {
+  // ─── 账号级 ~/.agents ─────────────────────────────────────
+  describe('账号级 agent 能力根目录', () => {
+    it('agentsHome 就是远端账号真实的 ~/.agents（与原生 dsh 同根）', () => {
       const paths = createRemotePaths(HOME);
-      assert.equal(paths.agentsHome, `${BASE}/.agents`);
+      assert.equal(paths.agentsHome, `${HOME}/.agents`);
+      assert.ok(!paths.agentsHome.startsWith(`${BASE}/`), '不应落在本工具私有根下');
     });
 
     it('agentsSkills 是 agentsHome 的 skills 子目录', () => {
@@ -67,14 +68,24 @@ describe('createRemotePaths', () => {
       assert.equal(paths.agentsSkills, `${paths.agentsHome}/skills`);
     });
 
-    it('agentsLockFile 落在 agentsHome 内', () => {
+    it('agentsLockFile 在本工具 base/tmp 下，不写进用户 ~/.agents', () => {
       const paths = createRemotePaths(HOME);
-      assert.equal(paths.agentsLockFile, `${paths.agentsHome}/.lock`);
+      assert.equal(paths.agentsLockFile, `${BASE}/tmp/agents.lock`);
+      assert.ok(!paths.agentsLockFile.startsWith(`${paths.agentsHome}/`));
+    });
+
+    it('旧版技能根在 base 下，作为迁移来源保留', () => {
+      const paths = createRemotePaths(HOME);
+      assert.equal(paths.legacyAgentsHome, `${BASE}/.agents`);
+      assert.equal(paths.legacyAgentsSkills, `${BASE}/.agents/skills`);
     });
 
     it('agents 路径不含任何会话段——否则换会话即丢技能', () => {
       const paths = createRemotePaths(HOME);
-      for (const path of [paths.agentsHome, paths.agentsSkills, paths.agentsLockFile]) {
+      for (const path of [
+        paths.agentsHome, paths.agentsSkills, paths.agentsLockFile,
+        paths.legacyAgentsHome, paths.legacyAgentsSkills,
+      ]) {
         assert.ok(!path.includes('/sessions/'), `${path} 不应落在 sessions/ 下`);
       }
     });
@@ -103,6 +114,7 @@ describe('createRemotePaths', () => {
         paths.base, paths.dshHome, paths.credentialsFile,
         paths.mirrorCache, paths.npmCache, paths.tmpRoot,
         paths.installLockFile, paths.agentsHome, paths.agentsSkills, paths.agentsLockFile,
+        paths.legacyAgentsHome, paths.legacyAgentsSkills,
         paths.hostProfileDir('web'), paths.hostProfileManifest('web'),
         paths.hostProfileNodeModules('web'),
         paths.nodeDir('v24.21.0'), paths.nodeBin('v24.21.0'), paths.nodeBinDir('v24.21.0'),
@@ -120,10 +132,10 @@ describe('createRemotePaths', () => {
       }
     });
 
-    it('每条路径都在 base 之下（完全卸载 = rm -rf base 的前提）', () => {
+    it('本工具自有路径都在 base 之下（完全卸载 = rm -rf base 的前提）', () => {
       const paths = createRemotePaths(HOME);
       for (const path of [
-        paths.agentsHome, paths.agentsSkills, paths.agentsLockFile,
+        paths.agentsLockFile, paths.legacyAgentsHome, paths.legacyAgentsSkills,
         paths.hostProfileDir('web'), paths.nodeDir('v24.21.0'),
         paths.dshBin, paths.credentialsFile,
         paths.sessionRuntime('s1'), paths.tmpDir(1, 'x'),
@@ -132,6 +144,14 @@ describe('createRemotePaths', () => {
       }
       // dshDir === base 本身（dsh 装在 base/node_modules 下，dshDir 就是 base）
       assert.equal(paths.dshDir, paths.base);
+    });
+
+    it('账号级 ~/.agents 不在 base 之下（用户数据，clean 与卸载都不处置）', () => {
+      const paths = createRemotePaths(HOME);
+      for (const path of [paths.agentsHome, paths.agentsSkills]) {
+        assert.ok(!path.startsWith(`${paths.base}/`), `${path} 不应落在 base 下`);
+        assert.ok(path.startsWith(`${HOME}/.agents`), `${path} 应在账号 ~/.agents 下`);
+      }
     });
   });
 });

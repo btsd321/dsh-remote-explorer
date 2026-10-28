@@ -143,24 +143,29 @@ dsh itself passes proxy variables through to the `git`/`pnpm` child processes it
 
 ## Remote disk isolation
 
-Modeled after VS Code's `~/.vscode-server` single-root self-contained model: everything this tool writes on the remote is inside `~/.dsh-remote-explorer/btsd321/` (installations, per-session state, the skill directory, npm cache, temporary files). It **never writes to** remote `~/.dsh` (official dsh's home) or `~/.npm` (shared npm cache), and never reads the machine-global `~/.agents`.
+Modeled after VS Code's `~/.vscode-server` single-root self-contained model: everything this tool **installs or manages** on the remote is inside `~/.dsh-remote-explorer/btsd321/` (installations, per-session state, npm cache, temporary files). It **never writes** remote `~/.dsh` (official dsh's home) or `~/.npm` (shared npm cache).
 
-- Other users running official dsh on the same machine are not affected; `doctor`'s isolation check section reports usage.
-- Full uninstall = `rm -rf ~/.dsh-remote-explorer/btsd321`, one command, clean.
+The one deliberate exception is the remote account's own `~/.agents` — the user-level agent root that native dsh uses too. Remote sessions read skills and the global `AGENTS.md` from it (on purpose: it connects the capabilities you already maintain on that machine). This tool writes there in only two places: an idempotent empty `skills/` pre-create before launch (so dsh's watcher attaches immediately), and the one-time legacy migration.
+
+- Other users running official dsh on the same machine are unaffected (you share the same `~/.agents`, which is exactly native dsh's semantics); `doctor`'s isolation check reports usage.
+- Full uninstall = `rm -rf ~/.dsh-remote-explorer/btsd321`; your `~/.agents` (skills and global instructions) is user data, so neither uninstall nor `clean` touches it.
 - Known low-risk sharing: remote pnpm store — only touched if someone actively runs `dsh plugin` on the remote; content-addressed and concurrency-safe.
 
 ## Machine-level sharing and skills
 
-Resources under this root fall into two classes:
+Resources fall into three classes:
 
-- **Machine-level** (one per remote account, shared by every session): the Node and dsh version installations, `profiles/` (the single source of truth for plugins), and `.agents/` (agent capabilities, including skills)
+- **Machine-level** (one per remote account, shared by every session): the Node and dsh installations and `profiles/` (the single source of truth for plugins)
+- **Account-level** (`~/.agents`, shared with native dsh): skills and the global `AGENTS.md`; user-owned, outside this tool's root
 - **Session-private** (one per remote working directory): conversation history, storages, attachments, caches, and runtime material under `sessions/<session id>/`
 
-`DSH_AGENTS_HOME` points at `btsd321/.agents`, mirroring `~/.agents` on a local machine. dsh treats `<agentsHome>/skills` as a **user-level** skill root (rank 500, below project-level ranks 100/200) — it means "this machine's user", not "this session". So **opening a session in a different working directory on the same remote keeps your installed skills**; nothing needs reinstalling. Skills in a project's `.dsh/skills` or `.agents/skills` still travel with the repository and take precedence.
+`DSH_AGENTS_HOME` points at the remote account's **real `~/.agents`** (dsh's default), so sessions see the skills and `~/.agents/AGENTS.md` global instructions you already have on that machine — and skills installed from the remote window are visible to native dsh as well. dsh treats `<agentsHome>/skills` as a **user-level** skill root (rank 500, below project-level ranks 100/200) — it means "this machine's user", not "this session". So **opening a session in a different working directory on the same remote keeps your installed skills**; nothing needs reinstalling. Skills in a project's `.dsh/skills` or `.agents/skills` still travel with the repository and take precedence.
 
-Concurrent writes to the skill directory are serialized by a flock at `.agents/.lock`. That lock only covers writes this tool initiates — third-party skill installers do not read it, so concurrently installing skills with an external tool from several sessions can still clobber `.skill-lock.json`.
+This tool writes into `~/.agents` in only two places: an idempotent empty `skills/` pre-create before launch (a failure does not block startup) and the legacy migration. Both are serialized by a flock at `base/tmp/agents.lock`. That lock only covers writes this tool initiates — third-party skill installers do not read it, so concurrently installing skills with an external tool can still clobber `.skill-lock.json`.
 
-When upgrading from an earlier version, skills under `sessions/<session id>/agents/` are **not carried over automatically** — they are no longer read, but they are not deleted either. `mv` them into `.agents/skills/` by hand, or simply reinstall (less work); leftovers disappear when `clean` removes the dead session directory.
+When upgrading from the old layout (`DSH_AGENTS_HOME` used to point at this tool's private `btsd321/.agents`), the **first connect migrates automatically**: skills and `AGENTS.md` from the old root are merged into `~/.agents`; **same-name entries are not migrated** (the new copy wins and the old one stays in place), and external installer metadata (`.skill-lock.json`) is not carried over. The migration is idempotent; a failure only skips the stage and never blocks the session. A reused remote dsh process still runs with the old `DSH_AGENTS_HOME`, so restart the remote session to let it read the migrated skills.
+
+Session-level skill copies from even older versions under `sessions/<session id>/agents/` are still **not migrated** — they are unmaintained historical copies. `mv` what you want by hand, or let `clean` remove them together with the dead session directory.
 
 **When writing remote paths in Git Bash, use double slashes** (`--cwd //home/xxx`) or set `MSYS_NO_PATHCONV=1` first. MSYS rewrites `/home/xxx` into something like `D:/SoftWare/Git/home/xxx` before the argument reaches the program, which the CLI can only detect and reject.
 
@@ -173,7 +178,7 @@ The multi-user model follows VS Code Remote-SSH:
 - **Different remote OS accounts** on the same host = fully isolated (separate remote roots, sessions, plugins)
 - **Same remote account** = shared session root: same (host, remote directory) means the same remote session (multiple views), sessions see each other and the credential proxy belongs to the first view — expected behavior (VS Code shares one server per account likewise). Use separate remote accounts per person for full isolation
 - `kill --all` and `clean` default to acting only on **sessions started from this machine** (owner fingerprint written to remote `.runtime/owner` at session start) plus process-less leftovers; other owners' sessions are skipped and listed, `--include-others` restores the old full-scope behavior
-- **Exception: `clean` does not owner-scope the machine-level `.agents`** — it is a single account-wide directory, so `clean` removes it entirely (installed skills included) regardless of fingerprint. Skills are reinstallable; the next connection sets them up again
+- **`clean` never touches agent directories**: `~/.agents` (skills and global `AGENTS.md`) is user data outside the tool's root, and the old `<base>/.agents` is kept so unmigrated same-name conflicts stay available; neither is owner-scoped or deleted
 
 Remote plugins are managed entirely by **the remote dsh itself**. The plugin store is **user-level** (one per remote OS account, shared by all its sessions — the counterpart of `~/.vscode-server/extensions/`; session profiles attach via symlink with zero copies).
 
