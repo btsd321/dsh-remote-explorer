@@ -56,7 +56,7 @@
 **11. 远端落盘隔离契约（对标 VS Code 的 `~/.vscode-server` 单根自治模型）。** 本工具在远端的一切落盘都在 `~/.dsh-remote-explorer/btsd321/` 内；远端 `~/.dsh`（官方 dsh 的家）、`~/.npm`（远端 npm 使用者共享的缓存）**从不被本工具写入**。完全卸载 = `rm -rf ~/.dsh-remote-explorer/btsd321`。为此做的三件事，改相关代码时别破坏：
 
 - 装机的 npm 命令带 `npm_config_cache=~/.dsh-remote-explorer/btsd321/npm-cache`（[src/provision/dsh-installer.ts](../src/provision/dsh-installer.ts) 的 `npmEnv`）——npm 的缓存与 `_logs` 一并收进我们的根
-- runner 脚本给远端 dsh 设 `DSH_AGENTS_HOME=<base>/.agents`——dsh 的 skill-filesystem 默认会读机器全局 `~/.agents`，必须显式指到我们的根内，否则会加载远端别人放在 `~/.agents/skills` 的 skills（**注意：指到 base 下的机器级目录，不是会话目录——见第 22 条**）
+- runner 脚本给远端 dsh 设 `DSH_AGENTS_HOME=<远端账号真实的 ~/.agents>`——这是本工具根之外的**唯一有意共享**：dsh 的 agent-instructions 与 skill-filesystem 只读这个根，用户在同一台机器上已有的技能与 `~/.agents/AGENTS.md` 必须生效（旧版指到 `base/.agents` 导致二者全部不可见，见第 22 条）。`~/.agents` 是用户数据，本工具只在旧版迁移时写入，`clean` 与卸载都不处置
 - 每会话 `DSH_HOME` 是会话实例的隔离边界：dsh 契约是「所有用户数据在一个根」，对话历史/附件/缓存/.runtime 全随之走（源码逐一核实过；唯一例外 `~/.agents` 已用 env 接管，见第 22 条）
 
 已知低风险共享：远端 pnpm store（`~/.local/share/pnpm`）——仅当有人主动在远端跑 `dsh plugin` 才触及，内容寻址并发安全，文档说明即可，不做隔离。`doctor` 的「隔离检查」段会报告占用与官方 `~/.dsh` 的存在性。
@@ -69,7 +69,7 @@
 
 **20. dsh 用「升级管理」而非 Node 的「多版本管理」：单一安装点 + 损坏/版本不符时删除重装。** Node 官方做法是「多版本并存、各自独立安装」，故 Node 继续按 `node/<版本>/` 多版本隔离、旧版保留（`clean` 手工清理）。dsh 则装在 `base/node_modules/` 的单一安装点（`DSH_HOME` 根下），版本不一致或二进制损坏时**删除安装树再重装**——npm 可能因 `package.json` 已声明该依赖而跳过实际重装、留下坏包。三个必须显式处理的点：
 - **安装前清空 dsh 安装树。** [ensureDsh](../src/provision/dsh-installer.ts) 在 flock 临界区内先 `rm -rf base/node_modules base/package-lock.json` 再 `npm install`，保证从干净状态重装。
-- **清理绝不碰 base 根目录。** base 是 `DSH_HOME`，还承载 Node 版本目录、profiles、sessions、.agents、credentials.yaml。历史事故就是误写 `cleanup(transport, installDir)`（`installDir === base`）把整台远端状态清空。现收口到 `buildDshCleanCommand`（带绝对路径断言）与 `cleanupDshTree`，路径形状异常时宁可不删。
+- **清理绝不碰 base 根目录。** base 是 `DSH_HOME`，还承载 Node 版本目录、profiles、sessions、旧版 `.agents`（迁移来源，见第 22 条）、credentials.yaml。历史事故就是误写 `cleanup(transport, installDir)`（`installDir === base`）把整台远端状态清空。现收口到 `buildDshCleanCommand`（带绝对路径断言）与 `cleanupDshTree`，路径形状异常时宁可不删。
 - **探测要能区分「未安装」与「存在但不可运行」。** 旧探测脚本 glob 的是 0.4.0 之前的 `versions/dsh-<ver>/` 旧布局，而现行布局是 `base/node_modules/.bin/dsh`——glob 恒不命中，`doctor` 在 dsh 已装时也误报「尚未安装」。现改为：标记 `DSHBIN=`（入口存在）后跑 `dsh --version` 输出 `DSH=`；两者分开解析，`doctor` 对「入口存在但版本探测失败」单独提示「已安装但不可运行，引导会删除重装」，并新增 `parseInstalledRuntimes` 纯函数锁定该契约。
 
 ## 隧道与网络
@@ -146,15 +146,24 @@
 
 ## agent 能力（技能）
 
-**22. agent 能力目录按机器共享，不按会话——`DSH_AGENTS_HOME=<base>/.agents`（这是对第 11 条早期做法的**有意反转**）。** 早期版本把它指向 `sessions/<id>/agents` 换取「不读别人的 skills」，代价是同一台远端换个工作目录开会话就等于一台新机器，技能要重装一遍——用户诉求正是「不要反复配置」。判据来自 dsh 源码：skill-filesystem 的六个根里，`<agentsHome>/skills` 是 **`user-agents` 源、rank 500**，语义是「这台机器的使用者」，和 `<dshHome>/skills`（rank 400）同属用户级；项目级 `.dsh/skills`（100）与 `.agents/skills`（200）优先级更高且随仓库走，**不该也不能**接到机器级（会污染用户仓库、且破坏项目覆盖机器的既定语义）。共享边界 = 远端账号：本工具的根就在该账号家目录下，持有者本就共享这棵树里的 node、dsh、host profile，技能单独做指纹隔离会与同目录其他资源的粒度不一致。三个配套，改相关代码时别破坏：
+**22. agent 能力根指向远端账号真实的 `~/.agents`，不隔离进本工具根（对前两代做法的最终修订）。** 演进：`sessions/<id>/agents`（会话级隔离，代价是「换个工作目录就要重装技能」）→ `base/.agents`（机器级共享，但仍是本工具私有根）→ **`~/.agents`（当前，dsh 默认值）**。最后一步的判据是三处实测：
 
-- **目录名用 `.agents` 而非 `shared/agents`**：与本机 `~/.agents` 同形，且避开两个坑——`resolveDshHome` 不解析软链而 `canonicalizeWatchPath` 取 realpath，走 symlink 接法时两者可能比对不上（表现为「装完技能要重开会话才可见」）；`user-dsh` 根会跳过 `.system` 子目录而 `user-agents` 根不会，走 `.agents` 落在不受该规则影响的桶里
-- **启动前预建 `.agents/skills`**（[remote-process.ts](../src/session/remote-process.ts)）：skill-filesystem 对**不存在**的根只能用 `fs.watchFile` 逐个路径段轮询等它出现，预建好则 Chokidar 直接附加，装完技能当即进入下一次目录
-- **写临界区用 flock**（[agents-lock.ts](../src/provision/agents-lock.ts)，锁 `.agents/.lock`）：共享后新增的风险是技能安装器的 `.skill-lock.json` 为**目录级单文件整写**，并发装技能后者覆盖前者。超时取 90s（护的是秒级目录操作，不是第 11 条引导锁的分钟级下载）。**能力边界：只锁本工具发起的写入**，第三方安装器不读我们的锁——不做拦截任意进程写入的全局串行化，文档说明即可
+- dsh 只有两个用户级全局根：`$DSH_HOME` 与 `$DSH_AGENTS_HOME`。`dsh-agent-instructions` 从 `<agentsHome>/AGENTS.md` 读全局指令、`dsh-skill-filesystem` 从 `<agentsHome>/skills` 读 `user-agents` 根（rank 500）。把根钉在私有目录 = 用户 `~/.agents` 里已有的技能和全局规则在远端会话里**全部不可见**（用户机器实测：5 个技能 + 一段全局 AGENTS.md 规则都没生效，会话落盘数据里搜不到那段规则）。
+- 反过来，远端窗口里装的技能落进私有根，同一台机器上的原生 dsh 又看不到——双向割裂。
+- 旧版 `clean` 会把私有根整个删掉，而那里面是用户装过的技能。
 
-**不做老会话技能迁移（有意决策，别再补回来）。** 曾实现过一版 `agents-migrate.ts`：首连时把 `sessions/<id>/agents/` 并入 `.agents`，同名保留机器级版本、迁完改名留痕、幂等、失败不抛错。用户否决，理由是这样没用——该目录承载的是**上一代的会话级技能副本**，而本机 `~/.agents` 才是用户实际维护技能的地方（带 `.skill-lock.json` 的来源与 hash 记录）；搬过来的是一批陈旧且无人维护的副本，远不如让用户在新位置重装一次干净。真要保留旧技能的场合，手工 `mv` 的成本远低于为此维护一条幂等迁移路径（还得处理同名裁决、留痕、并发锁、部分失败五种情形）。旧目录**不删也不读**：不删是为了不擅自处置用户数据，不读是因为 `DSH_AGENTS_HOME` 已不再指向它；它随 `clean` 清理死会话目录时自然消失。
+共享边界 = 远端账号：同账号的原生 dsh、本工具会话、会话根、凭据代理本就共享；「不读同一账号下别人的 skills」这点收益只对**多人共用一个账号**成立，而文档已建议每人独立远程账号——共享账号下互相可见与直接在那台机器跑 dsh 一致。项目级 `.dsh/skills`（100）与 `.agents/skills`（200）仍随仓库走、优先级更高，不受影响。
 
-与第 15 条的 store 相反，**`.agents` 会被 `clean` 整个清除**（[clean.ts](../src/cli/commands/clean.ts)）：它是单一目录没有「保留最新 N 个」的概念，技能属可重装资源；也不按 owner 指纹 scope、不按活会话保护——活会话读同一目录，删掉只影响它后续**发现**到的技能（skill-filesystem 的根缺失属于有效空状态，不会让进程崩）。顺带一处语义更正：保留键 `DSH_AGENTS_HOME` 禁止用户配置的理由从「护会话隔离契约」变成「护技能共享契约」——被改走会让该会话看不到机器上已装的技能，还把新技能装到下次就找不到的地方。
+配套（改相关代码时别破坏）：
+
+- **启动前预建 `<agentsHome>/skills`**（[remote-process.ts](../src/session/remote-process.ts)）：skill-filesystem 对**不存在**的根只能用 `fs.watchFile` 逐个路径段轮询等它出现，预建好则 Chokidar 直接附加，装完技能当即进入下一次目录。
+- **旧版私有根一次性迁移**（[agents-migrate.ts](../src/provision/agents-migrate.ts)）：首连把 `<base>/.agents` 的技能与 `AGENTS.md` 并入 `~/.agents`，**同名冲突不迁移**（保留新版、旧副本原地不动），**不搬 `.skill-lock.json`**（第三方安装器的版本化元数据，dsh 发现只看目录，本工具不伪造来源/hash）；幂等，失败降级为阶段跳过。写入经 [agents-lock.ts](../src/provision/agents-lock.ts) 的 flock（`base/tmp/agents.lock`）串行化；锁文件留在本工具根内，不写进用户 `~/.agents`。
+- **`clean` 不处置任何 agent 目录**（[clean.ts](../src/cli/commands/clean.ts)）：`~/.agents` 是用户数据；旧 `base/.agents` 里可能还有未迁移的同名冲突项，删掉等于擅自处置没迁走的部分。
+- **不要用 symlink 把 `~/.agents` 接进 base**：`resolveDshHome` 不解析软链而 `canonicalizeWatchPath` 取 realpath，两者可能对不上（表现为「装完技能要重开会话才可见」）；直接指真实路径。
+
+**仍然不自动迁移更早的 `sessions/<id>/agents/`（旧决策不变）。** 那是上一代会话级技能副本、无人维护；用户否决过迁移（搬过来是一批陈旧副本，不如重装）。需要就手工 `mv`，否则随 `clean` 清理死会话目录消失。与本次 `base/.agents` 迁移的区别：后者是本工具旧版的**机器级私有根**，里面是用户经远端窗口实际装的技能，值得自动并入。
+
+保留键 `DSH_AGENTS_HOME` 仍然禁止用户配置：被改走会让会话看不到账号里已装的技能，还会把新技能装到下次就找不到的地方。
 
 ## 构建产物与离线分发
 

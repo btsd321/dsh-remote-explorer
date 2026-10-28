@@ -17,6 +17,7 @@
 
 import { provision } from '../../provision/provisioner.js';
 import { installHandoffBundle } from '../../provision/handoff-installer.js';
+import { migrateLegacyAgentsHome } from '../../provision/agents-migrate.js';
 import {
   syncHostProfileManifest, transportIo,
 } from '../../provision/plugin-store.js';
@@ -131,6 +132,32 @@ export async function provisionAndConfigure(
     options.onStageDone?.(installed ? '已安装交接组件（远端窗口获得管理菜单）' : '交接组件已就位');
   } catch (error) {
     options.onStageSkip?.(`交接组件安装失败（不影响会话）：${toErrorMessage(error)}`);
+  }
+
+  // 5.55 旧版技能根迁移（幂等、失败不阻断）：旧版本把 DSH_AGENTS_HOME 指到
+  //      本工具私有的 base/.agents，新版本改指账号真实的 ~/.agents（与原生
+  //      dsh 共享）。把旧根里多出来的技能与 AGENTS.md 并进去——同名冲突不迁移
+  //      （保留新版、旧副本原地不动），升级用户不丢既有能力。
+  options.onStageStart?.('迁移旧版技能目录');
+  try {
+    const migration = await migrateLegacyAgentsHome(ctx);
+    const skippedCount = migration.skippedSkills.length + (migration.skippedAgentsMd ? 1 : 0);
+    if (!migration.hadLegacy) {
+      options.onStageDone?.('无旧版技能目录');
+    } else if (migration.migratedSkills.length === 0 && !migration.migratedAgentsMd) {
+      const skipped = [...migration.skippedSkills, ...(migration.skippedAgentsMd ? ['AGENTS.md'] : [])];
+      options.onStageDone?.(skipped.length > 0
+        ? `旧版技能与新根重名，未迁移：${skipped.join('、')}`
+        : '旧版技能目录为空');
+    } else {
+      options.onStageDone?.(
+        `已迁移 ${migration.migratedSkills.length} 个技能`
+        + `${migration.migratedAgentsMd ? ' 与 AGENTS.md' : ''}`
+        + `${skippedCount > 0 ? `（跳过重名 ${skippedCount} 项）` : ''}`,
+      );
+    }
+  } catch (error) {
+    options.onStageSkip?.(`旧版技能迁移失败（不影响会话）：${toErrorMessage(error)}`);
   }
 
   // 5.6 profile manifest 自愈（必须在远端启动前）。DSH_HOME = base，

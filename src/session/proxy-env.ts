@@ -37,9 +37,10 @@ const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
  *
  * - `DSH_HOME`：remote-process.ts 的 envAssignments 在 extraEnv 之前赋值，
  *   用户值会覆盖会话隔离契约（远端落盘隔离，见 docs/lessons.md 第 11 条）
- * - `DSH_AGENTS_HOME`：同样先赋值，但护的是**共享**契约——它指向机器级
- *   `.agents`，被用户值改走会让该会话看不到机器上已装的技能，也让技能装到
- *   别处去（下次连接又不见了）。见 remote-paths.ts 的 `agentsHome`
+ * - `DSH_AGENTS_HOME`：同样先赋值，但护的是**共享**契约——它指向远端账号
+ *   真实的 `~/.agents`（dsh 的用户级根，与原生 dsh 同一份），被用户值改走
+ *   会让该会话看不到账号里已装的技能与全局 `AGENTS.md`，也让新技能装到别处去
+ *   （下次连接又不见了）。见 remote-paths.ts 的 `agentsHome`
  * - `PATH`：启动器要保证 node bin 目录在最前（`quote(nodeBinDir):"$PATH"`），
  *   用户覆盖会破坏 dsh 与子进程的命令查找
  */
