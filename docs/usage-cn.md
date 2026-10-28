@@ -176,9 +176,11 @@ pnpm exec tsx src/cli/bin.ts provision <别名> --cwd //home/user
 
 远端 dsh 的 `DSH_AGENTS_HOME` 指向远端账号**真实的 `~/.agents`**（dsh 的默认值），所以会话里能直接看到你在那台机器上已有的技能，以及 `~/.agents/AGENTS.md` 全局指令；远端窗口里装的技能原生 dsh 也共享同一份。dsh 把 `<agentsHome>/skills` 当作**用户级**技能根（rank 500），所以**在同一台远端换个工作目录开会话，已装技能依然可用**，不需要重装。项目内 `.dsh/skills`、`.agents/skills` 的技能仍随仓库走，且优先级（rank 100/200）高于账号级。
 
-本工具唯一会写 `~/.agents` 的动作是旧版迁移，经 `base/tmp/agents.lock`（flock）串行化。该锁只覆盖本工具发起的写入——第三方技能安装器不读它，跨会话用外部工具并发装技能仍可能互相覆盖 `.skill-lock.json`。
+本工具对 `~/.agents` 只有两处写操作：启动前幂等预建空的 `skills/` 目录（让 dsh 的 watcher 立即附加，失败不影响启动），以及旧版迁移；两者都经 `base/tmp/agents.lock`（flock）串行化。该锁只覆盖本工具发起的写入——第三方技能安装器不读它，跨会话用外部工具并发装技能仍可能互相覆盖 `.skill-lock.json`。
 
 从旧版本升级（当时 `DSH_AGENTS_HOME` 指到本工具私有的 `btsd321/.agents`）时，**首次连接会自动迁移**：旧根里的技能与 `AGENTS.md` 并入 `~/.agents`；**同名冲突项不迁移**（保留新版，旧副本原地留下），第三方安装器元数据（`.skill-lock.json`）不搬运。幂等、失败只跳过、不影响会话。
+
+迁移在连接时执行。若旧远端 dsh 进程还在被复用（它的 `DSH_AGENTS_HOME` 仍是旧值），被迁走的技能要等远端会话**重启**后才会从新根读到。
 
 更早版本留在 `sessions/<会话 id>/agents/` 下的会话级技能副本仍**不自动迁移**——那是没人维护的历史副本，需要就手工 `mv`，不需要就随 `clean` 清理死会话目录时一并消失。
 

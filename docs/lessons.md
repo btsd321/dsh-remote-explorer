@@ -53,7 +53,7 @@
 
 **10. 镜像测速在远端执行，必须带 `-L` 并校验响应内容。** 测的是远端到镜像的连通性，本机测没意义。阿里源对 `index.json` 返回 302，只测时间会把重定向页当成成功并选出错误的"最快"镜像。腾讯与华为镜像已从候选移除（DNS 解析失败）。
 
-**11. 远端落盘隔离契约（对标 VS Code 的 `~/.vscode-server` 单根自治模型）。** 本工具在远端的一切落盘都在 `~/.dsh-remote-explorer/btsd321/` 内；远端 `~/.dsh`（官方 dsh 的家）、`~/.npm`（远端 npm 使用者共享的缓存）**从不被本工具写入**。完全卸载 = `rm -rf ~/.dsh-remote-explorer/btsd321`。为此做的三件事，改相关代码时别破坏：
+**11. 远端落盘隔离契约（对标 VS Code 的 `~/.vscode-server` 单根自治模型）。** 本工具的安装与状态落盘都在 `~/.dsh-remote-explorer/btsd321/` 内（唯一例外是远端账号自己的 `~/.agents`，见第 22 条）；远端 `~/.dsh`（官方 dsh 的家）、`~/.npm`（远端 npm 使用者共享的缓存）**从不被本工具写入**。完全卸载 = `rm -rf ~/.dsh-remote-explorer/btsd321`（`~/.agents` 属用户数据，卸载不碰）。为此做的三件事，改相关代码时别破坏：
 
 - 装机的 npm 命令带 `npm_config_cache=~/.dsh-remote-explorer/btsd321/npm-cache`（[src/provision/dsh-installer.ts](../src/provision/dsh-installer.ts) 的 `npmEnv`）——npm 的缓存与 `_logs` 一并收进我们的根
 - runner 脚本给远端 dsh 设 `DSH_AGENTS_HOME=<远端账号真实的 ~/.agents>`——这是本工具根之外的**唯一有意共享**：dsh 的 agent-instructions 与 skill-filesystem 只读这个根，用户在同一台机器上已有的技能与 `~/.agents/AGENTS.md` 必须生效（旧版指到 `base/.agents` 导致二者全部不可见，见第 22 条）。`~/.agents` 是用户数据，本工具只在旧版迁移时写入，`clean` 与卸载都不处置

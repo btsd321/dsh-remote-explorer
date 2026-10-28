@@ -26,6 +26,7 @@ import { RemoteError } from '../util/errors.js';
 import { createLogger } from '../util/logger.js';
 import { quote } from '../util/shell-quote.js';
 import { agentsLockHint, lockAgentsCommand } from './agents-lock.js';
+import type { ExecResult } from '../transport/types.js';
 import type { RemoteContext } from './remote-context.js';
 
 const log = createLogger('agents-migrate');
@@ -96,6 +97,28 @@ export function planAgentsMigration(input: {
     moveAgentsMd: input.legacyHasAgentsMd && !input.targetHasAgentsMd,
     skippedAgentsMd: input.legacyHasAgentsMd && input.targetHasAgentsMd,
   };
+}
+
+/**
+ * 在 agent 能力目录的 flock 临界区内执行一段脚本。
+ *
+ * 所有对 `~/.agents` 的写入都必须经过它（迁移、旧根收尾），保证同一远端账号
+ * 下的多个会话串行化。锁文件父目录先建好——`flock` 会创建锁文件，但不建目录。
+ *
+ * @param ctx - 远端执行上下文
+ * @param command - 待执行的 shell 脚本
+ * @param signal - 取消信号
+ * @returns 执行结果（不因非零退出码抛错，由调用方判断）
+ */
+async function execLocked(
+  ctx: RemoteContext,
+  command: string,
+  signal: AbortSignal | undefined,
+): Promise<ExecResult> {
+  const { transport, paths } = ctx;
+  const options = { allowNonZeroExit: true, ...(signal ? { signal } : {}) };
+  await transport.exec(`mkdir -p ${quote(paths.tmpRoot)}`, options);
+  return transport.exec(lockAgentsCommand(paths, command), options);
 }
 
 /**
@@ -174,11 +197,11 @@ export async function migrateLegacyAgentsHome(
   //    本工具的残留（旧版的 `.lock`）与空目录——收干净后下次连接直接短路，
   //    不必每次重扫。`rmdir` 只删空目录，重名冲突项不会被碰。
   if (plan.moveSkills.length === 0 && !plan.moveAgentsMd) {
-    await transport.exec([
+    await execLocked(ctx, [
       `rm -f ${quote(`${paths.legacyAgentsHome}/.lock`)}`,
       `rmdir ${quote(paths.legacyAgentsSkills)} 2>/dev/null || true`,
       `rmdir ${quote(paths.legacyAgentsHome)} 2>/dev/null || true`,
-    ].join('\n'), execOptions);
+    ].join('\n'), signal);
     return {
       hadLegacy: true,
       migratedSkills: [],
@@ -205,10 +228,12 @@ export async function migrateLegacyAgentsHome(
   if (plan.moveAgentsMd) {
     const from = quote(legacyAgentsMd);
     const to = quote(targetAgentsMd);
+    // 用独立标签（MA/SA/FA）而不是把 'AGENTS.md' 塞进技能名通道——技能根里
+    // 可以存在同名平铺技能文件 `AGENTS.md`，共用通道会把它误记成全局指令
     lines.push(
-      `if [ -e ${to} ]; then printf 'S\\t%s\\n' 'AGENTS.md'; `
-      + `elif mv ${from} ${to} 2>/dev/null; then printf 'M\\t%s\\n' 'AGENTS.md'; `
-      + `else printf 'F\\t%s\\n' 'AGENTS.md'; fi`,
+      `if [ -e ${to} ]; then printf 'SA\\n'; `
+      + `elif mv ${from} ${to} 2>/dev/null; then printf 'MA\\n'; `
+      + `else printf 'FA\\n'; fi`,
     );
   }
   // 旧版 `.lock` 是本工具自己的残留（现在的锁在 base/tmp），删掉才能让空旧根
@@ -217,8 +242,7 @@ export async function migrateLegacyAgentsHome(
   lines.push(`rmdir ${quote(paths.legacyAgentsSkills)} 2>/dev/null || true`);
   lines.push(`rmdir ${quote(paths.legacyAgentsHome)} 2>/dev/null || true`);
 
-  await transport.exec(`mkdir -p ${quote(paths.tmpRoot)}`, execOptions);
-  const moved = await transport.exec(lockAgentsCommand(paths, lines.join('\n')), execOptions);
+  const moved = await execLocked(ctx, lines.join('\n'), signal);
   if (moved.exitCode !== 0) {
     const detail = agentsLockHint(moved.stderr) ?? (moved.stderr.trim() || '未知错误');
     throw new RemoteError(
@@ -235,14 +259,16 @@ export async function migrateLegacyAgentsHome(
   let migratedAgentsMd = false;
   let skippedAgentsMd = false;
   for (const raw of moved.stdout.split('\n')) {
-    const [tag, name] = raw.trim().split('\t');
+    const line = raw.trim();
+    if (line === 'MA') { migratedAgentsMd = true; continue; }
+    if (line === 'SA') { skippedAgentsMd = true; continue; }
+    if (line === 'FA') { failed.push('AGENTS.md'); continue; }
+    const [tag, name] = line.split('\t');
     if (name === undefined || name === '') continue;
     if (tag === 'M') {
-      if (name === 'AGENTS.md') migratedAgentsMd = true;
-      else migratedSkills.push(name);
+      migratedSkills.push(name);
     } else if (tag === 'S') {
-      if (name === 'AGENTS.md') skippedAgentsMd = true;
-      else if (!skippedSkills.includes(name)) skippedSkills.push(name);
+      if (!skippedSkills.includes(name)) skippedSkills.push(name);
     } else if (tag === 'F') {
       failed.push(name);
     }

@@ -176,9 +176,11 @@ pnpm exec tsx src/cli/bin.ts provision <alias> --cwd //home/user
 
 The remote dsh's `DSH_AGENTS_HOME` points at the remote account's **real `~/.agents`** (dsh's default), so sessions see the skills and `~/.agents/AGENTS.md` global instructions you already have on that machine, and skills installed from the remote window are shared with native dsh. dsh treats `<agentsHome>/skills` as a **user-level** skill root (rank 500), so **opening a session in a different working directory on the same remote keeps your installed skills** — no reinstall needed. Skills in a project's `.dsh/skills` or `.agents/skills` still travel with the repository and outrank account-level ones (rank 100/200).
 
-The only time this tool writes into `~/.agents` is the legacy migration, serialized by a flock at `base/tmp/agents.lock`. That lock only covers writes this tool initiates — third-party skill installers do not read it, so installing skills with an external tool concurrently can still clobber `.skill-lock.json`.
+This tool writes into `~/.agents` in only two places: an idempotent empty `skills/` pre-create before launch (so dsh's watcher attaches immediately; a failure does not block startup) and the legacy migration. Both are serialized by a flock at `base/tmp/agents.lock`. That lock only covers writes this tool initiates — third-party skill installers do not read it, so installing skills with an external tool concurrently can still clobber `.skill-lock.json`.
 
 When upgrading from the old layout (`DSH_AGENTS_HOME` used to point at this tool's private `btsd321/.agents`), the **first connect migrates automatically**: skills and `AGENTS.md` from the old root are merged into `~/.agents`; **same-name entries are not migrated** (the new copy wins, the old one stays in place), and external installer metadata (`.skill-lock.json`) is not carried over. It is idempotent, and a failure only skips the stage.
+
+The migration runs at connect time. If the old remote dsh process is still being reused (its `DSH_AGENTS_HOME` still points at the old root), the moved skills become visible only after the remote session is **restarted**.
 
 Session-level skill copies from even older versions under `sessions/<session id>/agents/` are still **not migrated** — they are unmaintained historical copies. `mv` what you want by hand, or let `clean` remove them together with the dead session directory.
 

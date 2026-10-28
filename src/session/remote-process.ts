@@ -181,8 +181,10 @@ export async function startRemoteDsh(
   //    dsh 的 skill-filesystem 对**不存在**的根只能用 fs.watchFile 逐个路径段
   //    轮询等它出现，预建好则 Chokidar 直接挂上，装完技能当即进入下一次目录
   //    （省掉一轮轮询延迟）。建空目录是幂等操作，不会覆盖用户已有内容。
+  //    **失败不阻断启动**：这个根现在归用户（可能被改成只读、软链或普通文件），
+  //    预建只是优化；mkdir 失败时 dsh 自己会退化为轮询，不该连会话一起挂掉。
   const prepareLaunch = [
-    `mkdir -p ${quote(paths.agentsSkills)}`,
+    `mkdir -p ${quote(paths.agentsSkills)} 2>/dev/null || true`,
     `printf '%s' ${quote(runner)} > ${quote(runnerFile)}`,
     `rm -f ${quote(logFile)} ${quote(pidFile)}`,
   ].join('\n');
