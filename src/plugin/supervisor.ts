@@ -25,6 +25,7 @@ import { readAdvancedConfig } from './advanced-store.js';
 import { renderConnectSummary } from './connect-summary.js';
 import { planJumpHosts } from '../session/transport/factory.js';
 import type { JumpEntry } from '../hosts/ssh-config-parser.js';
+import { refreshConfig } from '../hosts/ssh-config-parser.js';
 import type { LocalResourceDownloadMode } from '../provision/local-download-mode.js';
 import { INITIAL_STATE, transition, type SessionState } from '../session/lifecycle-state.js';
 import { computeSessionId } from '../util/session-id.js';
@@ -459,9 +460,13 @@ export class SessionSupervisor {
       // 连接选项日志（用户排查「连的是什么」的一手资料）：渲染纪律见
       // connect-summary（键名/打码/途径种类，绝不打值）；双落——面板日志
       // 缓冲（this.push）与宿主进程日志（log.info）
+      // 刷新 ssh config 缓存：DSH 宿主长驻运行，用户编辑 ~/.ssh/config 后
+      // 缓存里仍是旧值，连接日志与实际连接都会用错误的主机/跳板机信息。
+      // 在此刷新一次，保证日志展示与后续 resolveSshHost 用同一份最新内容
       let jumpPlan;
       let jumpPlanError;
       if (record.transportType === 'ssh') {
+        refreshConfig();
         try {
           jumpPlan = planJumpHosts(request.hostAlias, jumpHosts);
         } catch (error) {

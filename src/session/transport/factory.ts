@@ -13,7 +13,7 @@
  */
 
 import {
-  assertConnectable, isConfigHost, resolveHostWithAuth, resolveJumpChain,
+  assertConnectable, isConfigHost, refreshConfig, resolveHostWithAuth, resolveJumpChain,
   type AuthOverrides, type JumpEntry, type ResolvedHost, type ResolvedHostWithJump,
 } from '../../hosts/ssh-config-parser.js';
 import { SshTransport } from '../../transport/ssh-transport.js';
@@ -108,6 +108,11 @@ export function planJumpHosts(hostAlias: string, panelJumps?: JumpEntry[]): Jump
 /**
  * 解析 SSH 主机配置并校验可连接性。
  *
+ * 入口处刷新 ssh config 缓存：DSH 宿主等长驻进程在用户编辑 ~/.ssh/config
+ * 后，缓存中仍是旧值，导致连接用错误的跳板机/地址（实测：ProxyJump 改了
+ * 但插件仍用旧链连接，报「Connection lost before handshake」）。每次连接
+ * 刷新一次，开销可忽略（config 文件通常几 KB），确保读到最新内容。
+ *
  * 只做主机解析，不涉及密码提供器的生命周期管理（密码提供器由调用方持有，
  * 需要在会话关闭时清理引用）。跳板机按 {@link planJumpHosts} 的分流规则
  * 生效——直连主机应用面板覆盖，config 主机维持 config 链。
@@ -116,6 +121,8 @@ export function planJumpHosts(hostAlias: string, panelJumps?: JumpEntry[]): Jump
  * @returns SSH 主机解析结果
  */
 export function resolveSshHost(options: OpenSessionOptions): ResolvedHostWithJump {
+  // 刷新 config 缓存，确保用最新内容解析（见函数头注释）
+  refreshConfig();
   const auth = authOverridesOf(options);
   const resolved = resolveHostWithAuth(options.hostAlias, auth);
   // 面板跳板机覆盖：仅直连主机生效（分流与告警语义见 planJumpHosts）

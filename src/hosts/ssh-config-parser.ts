@@ -186,7 +186,13 @@ export function setConfigPath(path: string): void {
   cachedConfig = undefined;
 }
 
-/** 刷新缓存（config 文件变更后必须调用） */
+/**
+ * 刷新 config 缓存（config 文件变更后必须调用）。
+ *
+ * 连接入口（transport/factory 的 resolveSshHost、plugin/supervisor 的 runOpen）
+ * 已在每次连接发起时自动调用此函数，用户无需手动刷新。仅 listHosts 等
+ * 只读展示路径仍按需调用（面板刷新按钮）。
+ */
 export function refreshConfig(): void {
   cachedConfig = undefined;
 }
