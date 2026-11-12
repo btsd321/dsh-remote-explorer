@@ -180,6 +180,31 @@ export function deepseekRoute(): ProxyRoute {
 }
 
 /**
+ * DeepSeek 模型列表（`/models`）的路由。
+ *
+ * dsh 的模型发现取 **baseURL 的 origin** 再拼 `/models`（`modelListingURL`），
+ * 而不是 `${baseURL}/models`——baseURL 被 patch 成 `<隧道>/anthropic` 后，
+ * 列表请求落在 `<隧道>/models`，没有这条路由就 404，远端只能回落到内置目录
+ * （日志：`model listing from .../models failed ... answered HTTP 404`）。
+ *
+ * 上游 `https://api.deepseek.com/models` 同时接受两种凭据（实测）：
+ * `x-api-key`（API key 通道，401 表示 key 失效）与 `x-dsh-auth-token`
+ * （账号 grant 通道）。所以本路由与 `/anthropic` 一样按请求头各自替换，
+ * 不区分通道。
+ *
+ * @returns 固定的模型列表路由
+ */
+export function deepseekModelsRoute(): ProxyRoute {
+  return {
+    prefix: '/models',
+    upstreamOrigin: 'https://api.deepseek.com',
+    upstreamPath: '/models',
+    keyEnv: 'DEEPSEEK_API_KEY',
+    label: 'DeepSeek Models',
+  };
+}
+
+/**
  * 读取本机供应商配置文本（归一化为 settings.yaml 格式）。
  *
  * 按运行形态精确读取对应配置源：
