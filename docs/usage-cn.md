@@ -233,7 +233,7 @@ DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect <别名> --cwd //ho
 本机 dsh（桌面版或 CLI）登录了 DeepSeek 账号时，远端会话**无需任何额外配置**即可使用账号模型（模型选择器里的「DeepSeek Account」供应商）：
 
 - **凭据链路**：连接时读取本机 `$DSH_HOME/.credentials.yaml` 的 grant token（只在内存），向远端写一条**占位** grant record（token = 代理令牌，issuer = 隧道代理地址）让远端 dsh 认为已登录；远端的模型请求经反向隧道回到本机代理，替换为真实 token 转发 `api.deepseek.com`。真实 token 从不离开本机，远端磁盘上只有占位令牌。
-- **账号 patch**：会话 patch 同时重定向 `llm-deepseek-account` 的 `baseURL` 与 `deepseek-account` 平台插件的 `platformOrigin`/`inferenceOrigin` 进隧道——后者是账号模型能出现在远端模型选择器里的成立条件。
+- **账号 patch**：会话 patch 同时重定向 `llm-deepseek-account` 的 `baseURL` 与 `deepseek-account` 账号插件的 `platformOrigin`/`inferenceOrigin`/`harnessOrigin` 进隧道——后两者是账号模型能出现在远端模型选择器、且账号通知不误判「凭据失效」的成立条件（dsh 0.2.2-rc.2 起通知走独立的 `harnessOrigin`，直连生产地址会拿占位令牌换回 40003 并删除占位登录态）。
 - **远端 web 界面没有头像/登录按钮是正常现象**：dsh 的账号 UI（左下角头像 pill、登录对话框）只在官方桌面端渲染器注册（检测 `dshDesktop` 桥），web 前端一律不渲染。账号是否生效看模型选择器与实际对话，不要在远端界面找登录入口——远端登录会把真实 token 落到远端磁盘，违背本工具「凭据不出本机」的设计，隧道代理也会拦截登录流程的未认证请求。
 - **账号过期**：上游返回 401 时远端会退出登录态（任务提示「已因退出 DeepSeek 登录而停止」）。修复方式：**在本机 dsh 重新登录账号，再重连远端会话**——重连会自动重写占位凭据恢复登录态。
 - 未在本机登录账号时此通道静默关闭：不写占位凭据、不打账号 patch，API key 通道不受影响。

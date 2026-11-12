@@ -31,8 +31,9 @@
  *
  * 3. **路由按路径前缀匹配，前缀换上游路径。** 远端 baseURL 的路径部分
  *    标识供应商（`/anthropic` 或 `/r/<名>`），转发时把前缀替换成上游
- *    自己的路径，
- *    剩余子路径原样保留。
+ *    自己的路径，剩余子路径原样保留。换算实现与 `upstreamPath` 的取值纪律
+ *    见 [proxy-route-match.ts](proxy-route-match.ts)——平台/通知路由把
+ *    upstreamPath 写成与 prefix 同值，漏写会静默丢掉前缀。
  */
 
 import { createConnection, type Socket } from 'node:net';
@@ -44,6 +45,8 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { MANAGE_PREFIX, type ManageHandlers } from '../handoff/protocol.js';
 import { tokenEquals } from './token.js';
+import { deepseekAccountRoutes } from './deepseek-routes.js';
+import { buildUpstreamUrl, matchRoute } from './proxy-route-match.js';
 import { createLogger } from '../util/logger.js';
 import type { ProxyRoute } from './provider-routes.js';
 import type { CredentialPatchEntry, CredentialStrategy } from './types.js';
@@ -99,13 +102,6 @@ const DEEPSEEK_ACCOUNT_PATCH_ID = 'llm-deepseek-account';
 
 /** DeepSeek 平台通道的 patch 条目 id 与路由前缀 */
 const DEEPSEEK_ACCOUNT_PLATFORM_PATCH_ID = 'deepseek-account';
-/**
- * Platform API 的路径前缀。`platformOrigin` 必须是纯 origin（不含路径），
- * 所以隧道代理根据请求路径前缀来路由：`/auth-api/` 和 `/api/v0/` 开头的
- * 请求转发到 `https://platform.deepseek.com`。
- */
-const PLATFORM_PREFIXES = ['/auth-api', '/api/v0'];
-const PLATFORM_ORIGIN = 'https://platform.deepseek.com';
 
 /** 三种代理令牌可出现的认证头（extractToken 的覆盖面，诊断日志用） */
 const AUTH_HEADER_KINDS = ['authorization', 'x-api-key', 'x-dsh-auth-token'] as const;
@@ -174,10 +170,10 @@ export class TunnelProxyCredential implements CredentialStrategy {
     private readonly accountToken?: string,
   ) {
     this._reverseHost = reverseHost;
-    // 本机已登录 DeepSeek 账号时，自动加 platform 路由——让 platform.deepseek.com
-    // 的 profile/balance/bonuses 请求也走隧道代理（占位令牌 → 真实 account token）
+    // 本机已登录 DeepSeek 账号时，自动加账号通道路由——平台（资料/余额/登出）
+    // 与通知（harnessOrigin）请求都走隧道代理（占位令牌 → 真实 account token）
     this.allRoutes = accountToken !== undefined
-      ? [...routes, ...platformRoutes()]
+      ? [...routes, ...deepseekAccountRoutes()]
       : routes;
     this.server = http.createServer((req, res) => { void this.handle(req, res); });
     // 客户端在请求中途断开属正常（会话取消），别让它掀翻进程
@@ -267,10 +263,13 @@ export class TunnelProxyCredential implements CredentialStrategy {
    *   → 代理替换为真实 account token（仅本机已登录时；未登录时不写此 patch，
    *   远端 account 适配器因 resolveToken 返回 undefined 而不发起请求）
    *
-   * - `deepseek-account`：平台通道（platformOrigin 指向隧道 /platform 前缀），
-   *   远端 dsh 的 `deepseek-account-platform` 插件用它请求 platform.deepseek.com
-   *   的 profile/balance/bonuses API——这些请求带 `x-dsh-auth-token`（占位令牌），
-   *   经隧道代理替换为真实 account token 转发上游。
+   * - `deepseek-account`：账号通道（patch 行 id；dsh 0.2.2 起包名
+   *   `dsh-deepseek-account`，此前为 `dsh-deepseek-account-platform`）。
+   *   platformOrigin 指向隧道 origin，远端用它请求 platform.deepseek.com 的
+   *   profile/balance 等 API——这些请求带 `x-dsh-auth-token`（占位令牌），
+   *   经隧道代理替换为真实 account token 转发上游；harnessOrigin 同样指向
+   *   隧道，承载账号通知（dsh 0.2.2-rc.2 起独立出来的通道，直连生产会让
+   *   远端删掉占位登录态）。
    *   同时 patch `inferenceOrigin`（同样指向隧道代理 origin）——这是
    *   `llm-deepseek-account` 适配器能取到 token 的**成立条件**：适配器每次请求
    *   调 `resolveToken(connection.baseURL)`，dsh 的实现要求「请求目标的 origin
@@ -306,12 +305,19 @@ export class TunnelProxyCredential implements CredentialStrategy {
       // 通道整体不可用（详见 remotePatches 的条目注释）。非生产 inferenceOrigin
       // 下 issuer 校验改查「issuer === platformOrigin」，占位 grant 的 issuer 与
       // platformOrigin 同为隧道地址，恰好闭环。
+      // harnessOrigin（dsh 0.2.2-rc.2 起）：账号通知通道的独立 origin。不 patch
+      // 时远端会拿占位 grant 直连生产 harness——无效 token 返回业务码 40003，
+      // 账号插件据此判定凭据失效并**删除 grant**（界面显示已退出登录）。旧版
+      // dsh 没有该字段，多出的配置项会被 Config 合并保留但不消费（非严格校验），
+      // 向后兼容。
+      const tunnelOrigin = `http://${this._reverseHost}:${this.reversePort}`;
       patches.push({
         id: DEEPSEEK_ACCOUNT_PLATFORM_PATCH_ID,
         config: {
-          platformOrigin: `http://${this._reverseHost}:${this.reversePort}`,
+          platformOrigin: tunnelOrigin,
+          harnessOrigin: tunnelOrigin,
           allowLoopbackHttp: true,
-          inferenceOrigin: `http://${this._reverseHost}:${this.reversePort}`,
+          inferenceOrigin: tunnelOrigin,
         },
       });
     }
@@ -512,8 +518,8 @@ export class TunnelProxyCredential implements CredentialStrategy {
       }
 
       // 5. 转发并流式回传。路径换算：请求前缀 → 上游自身路径，剩余子路径原样
-      const subPath = path.slice(route.prefix.length);
-      const upstreamUrl = `${route.upstreamOrigin}${route.upstreamPath}${subPath}${query}`;
+      //    （换算规则与 upstreamPath 取值纪律见 proxy-route-match.ts）
+      const upstreamUrl = buildUpstreamUrl(route, path, query);
       const upstream = await fetch(upstreamUrl, init);
       // 失败才告警：上游 4xx/5xx 是「真实凭据被上游拒绝」的第一手证据
       // （如本机账号 token 过期时上游回 401）；成功链路按高频路径纪律不打 info
@@ -620,38 +626,6 @@ export class TunnelProxyCredential implements CredentialStrategy {
     }
     return result;
   }
-}
-
-/**
- * DeepSeek 平台路由（profile/balance/bonuses 请求）。
- *
- * upstream = `https://platform.deepseek.com`，多个前缀（`/auth-api` 和 `/api/v0`）。
- * 请求带 `x-dsh-auth-token` 头（占位令牌），代理替换为真实 account token。
- * 无 keyEnv——不走 API key 替换路径。
- */
-function platformRoutes(): ProxyRoute[] {
-  return PLATFORM_PREFIXES.map(prefix => ({
-    prefix,
-    upstreamOrigin: PLATFORM_ORIGIN,
-    upstreamPath: '',
-    label: 'DeepSeek Platform',
-  }));
-}
-
-/**
- * 按最长前缀匹配路由。
- *
- * @param routes - 路由表
- * @param path - 请求路径（不含查询串）
- * @returns 匹配的路由；无匹配时 undefined
- */
-function matchRoute(routes: readonly ProxyRoute[], path: string): ProxyRoute | undefined {
-  let best: ProxyRoute | undefined;
-  for (const route of routes) {
-    if (path !== route.prefix && !path.startsWith(`${route.prefix}/`)) continue;
-    if (best === undefined || route.prefix.length > best.prefix.length) best = route;
-  }
-  return best;
 }
 
 /**

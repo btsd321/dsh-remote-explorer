@@ -115,6 +115,13 @@
 - **认证头门**：账号通道与平台路由**只**带 `x-dsh-auth-token` 头（不带 `authorization`/`x-api-key`）。代理的 extractToken 漏认这个头 → 401 → dsh 把「带 x-dsh-auth-token 却收到 401」判定为账号认证被拒 → 删 record、发退出登录事件 → **运行中任务报「已因退出 DeepSeek 登录而停止」**。三种头（`authorization: Bearer`/`x-api-key`/`x-dsh-auth-token`）都必须认。
 - 附带两条边界事实：① dsh 的账号 UI（头像 pill/登录对话框）只在官方桌面端渲染器注册（`ui-settings-account` 检测 `dshDesktop` 桥），**web 前端一律不渲染**——远端界面没有登录入口是常态不是故障；② dsh 原生支持「SSH `-L` 转发下在远端直接登录」（`loginOrigin` 接受任意转发回环端口），但那是「真实 token 落远端」的路线，与本工具「凭据不出本机」冲突，隧道代理对登录流程的未认证请求（auth_init 无认证头）一律 401——远端登录就该不可达，账号过期在本机重登再重连（重连会重写占位凭据自动恢复登录态）。
 
+**23b. dsh 0.2.2-rc.2 给账号通道加了第四道门（通知的 harnessOrigin），并暴露了平台路由的路径换算缺陷——两者都表现为「账号信息失效」。** 用户实测：升级到 0.2.2-rc.2 后连远端 Linux，远端界面里的 DeepSeek 账号像是被登出了。逐层核对（源码 + 真实接口）后定位到两处独立问题：
+
+- **通知通道（0.2.2-rc.2 新增，rc.1/0.2.1 均无）**：账号插件把「通知列表/内容/事件」拆到独立 `harnessOrigin`（默认 `https://harness.deepseek.com`，与 `platformOrigin` 分离），web 组合默认挂 `ui-account-notifications`——账号一呈 `credential-stored` 就**立即轮询**通知。本工具只 patch 了 `platformOrigin`/`inferenceOrigin`，于是远端拿占位 grant 直连生产 harness：该接口对无效 token 回 **HTTP 200 + 业务码 40003**（实测 `{"code":40003,"msg":"Authorization Failed (invalid token)"}`），dsh 的 `platformRequest` 把 40003 判为未授权，`getNotifications` 捕获后调 `expireCredential` **删除 grant** → 界面显示已退出登录。修复：`deepseek-account` patch 同时写 `harnessOrigin`（与其余两个 origin 同值，均为隧道），并把通知前缀 `/api/v0/users/notifications` 路由到 `https://harness.deepseek.com`。旧版 dsh 无该字段也不受影响——schemastery 非严格校验会把未知键合并保留而不报错（[src/credential/deepseek-routes.ts](../src/credential/deepseek-routes.ts)）。
+- **平台路由的前缀换算缺陷（自 0.2.0 起潜伏）**：上游 URL = `upstreamOrigin + upstreamPath + (请求路径去掉 route.prefix) + query`。平台路由的 `upstreamPath` 曾写成空串，于是 `/auth-api/v0/users/current` 被换算成 `https://platform.deepseek.com/v0/users/current`、`/api/v0/users/get_user_summary` 变成 `/users/get_user_summary`——上游对缺前缀路径回落到 **SPA HTML**（实测），dsh 侧 JSON 信封解析失败，资料/余额面板加载不出来。修复：凡是「远端与上游同路径」的路由，`upstreamPath` 必须与 `prefix` 同值（DeepSeek 原生通道 `/anthropic` 一直是这样写的，平台/通知对齐它）。换算与匹配已抽成纯函数 [proxy-route-match.ts](../src/credential/proxy-route-match.ts) 并由 `tests/unit/proxy-route-match.test.ts` 钉住。
+
+**排查提示**：账号「被登出」先看远端 `DSH_HOME` 的 `.credentials.yaml` 里 `deepseek-account-platform/default` 是否还在——被删=撞了 40003/401 路径（通知或平台/推理请求没用上真实 token）；还在但 UI 报错=路径换算错了（上游回 HTML）。不要靠「重新登录远端」掩盖：占位 grant 每次连接会重写，根因在代理路由。
+
 **24. 高级选项的持久化语义从 per-host 改为全局「上一次输入」，密码绝不落盘；三弹窗共写一份存储必须用部分更新。** 0.9.0 的设计拍板与依据：
 
 - **全局单条取代 per-host**（`~/.dsh/remote-advanced.json`，取代 `remote-host-env.json` 的按主机索引）：用户诉求是「换主机沿用同一份」，per-host 索引反而要求逐主机重配。代价是丢了按主机隔离——但 env/代理这类注入项本就是用户级偏好，与主机绑定的收益撑不起维护成本。旧文件**不读不迁不删**（留置由用户处置）。
