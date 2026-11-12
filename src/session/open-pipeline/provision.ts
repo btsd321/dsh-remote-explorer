@@ -24,7 +24,7 @@ import {
 import { readLocalCredentials, readLocalAccountToken } from '../../credential/local-credentials.js';
 import { TunnelProxyCredential } from '../../credential/tunnel-proxy.js';
 import {
-  deepseekRoute, extractProviderRoutes, readLocalSettings,
+  deepseekRoute, deepseekModelsRoute, extractProviderRoutes, readLocalSettings,
   renderProviderTunnelPatch,
 } from '../../credential/provider-routes.js';
 import { writeProxySecret, writePlaceholderAccountCredentials, writeSessionReverseHost } from '../../credential/proxy-secret.js';
@@ -86,7 +86,7 @@ export async function provisionAndConfigure(
   const credential = secret
     ? new TunnelProxyCredential(
       secret.token, secret.reversePort, secret.reverseHost,
-      [deepseekRoute(), ...providerRoutes],
+      [deepseekRoute(), deepseekModelsRoute(), ...providerRoutes],
       options.hostAlias,
       localCredentials,
       // manageHandlers 直接传（undefined 落到可选参数位）——**不能用条件

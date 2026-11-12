@@ -11,7 +11,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildUpstreamUrl, matchRoute } from '../../src/credential/proxy-route-match.js';
 import { deepseekAccountRoutes } from '../../src/credential/deepseek-routes.js';
-import { deepseekRoute } from '../../src/credential/provider-routes.js';
+import { deepseekModelsRoute, deepseekRoute } from '../../src/credential/provider-routes.js';
 
 describe('deepseekAccountRoutes', () => {
   const routes = deepseekAccountRoutes();
@@ -88,6 +88,12 @@ describe('buildUpstreamUrl 与既有路由的约定', () => {
       buildUpstreamUrl(route, '/anthropic/v1/messages', ''),
       'https://api.deepseek.com/anthropic/v1/messages',
     );
+  });
+
+  it('模型列表路由：/models 指向 api.deepseek.com/models', () => {
+    const route = deepseekModelsRoute();
+    assert.equal(route.upstreamPath, route.prefix);
+    assert.equal(buildUpstreamUrl(route, '/models', ''), 'https://api.deepseek.com/models');
   });
 
   it('pi-ai 路由：前缀被上游路径替换，剩余子路径保留', () => {
