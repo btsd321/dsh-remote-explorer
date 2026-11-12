@@ -338,6 +338,12 @@ async function installPlugin(options: DevOptions, pkgName: string): Promise<void
     'plugin', '--profile', options.profile, 'add', installSpec,
   ]);
   println(dim(`执行：${spec.command === process.execPath ? 'node npx-cli' : spec.command} ${spec.args.slice(-4).join(' ')}`));
+  // 首次跑某个 dsh 版本时 npx 要先装满整棵发行树（0.2.2-rc.2 实测约 1.1 GB /
+  // 9.4 万文件），期间没有任何进度输出，看起来像卡死。提前说明并给预热办法。
+  if (options.dshBin === undefined) {
+    println(dim('首次使用该 dsh 版本时 npx 需先下载整套发行树（0.2.2-rc.2 约 1.1 GB），'
+      + '可能数分钟且无进度输出；可先预热：npx -y @deepseek-ai/dsh@<版本> --version'));
+  }
   const runAdd = (): Promise<number> => new Promise<number>((resolveExit) => {
     const child = spawn(spec.command, spec.args, {
       cwd: REPO_ROOT,

@@ -150,8 +150,9 @@ export async function writeSessionReverseHost(
  * 写入机器级占位账号凭据（`base/.credentials.yaml`，DSH_HOME = base）。
  *
  * 仅本机已登录 DeepSeek 账号时调用：写一条占位 grant record（token = 代理
- * 令牌，issuer = 平台 origin）让远端 dsh 的 `deepseek-account-platform`
- * 插件认为已登录，`resolveToken` 返回占位令牌——请求带 `x-dsh-auth-token`
+ * 令牌，issuer = 平台 origin）让远端 dsh 的账号插件（dsh 0.2.2 起包名为
+ * `dsh-deepseek-account`，patch 行 id 恒为 `deepseek-account`；凭据作用域
+ * 字符串仍为 `deepseek-account-platform`）认为已登录，`resolveToken` 返回占位令牌——请求带 `x-dsh-auth-token`
  * 头经隧道回到本机代理，替换为真实 account token 转发上游。真实 token
  * 全程不出本机。
  *
