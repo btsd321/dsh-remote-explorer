@@ -122,6 +122,8 @@
 
 **排查提示**：账号「被登出」先看远端 `DSH_HOME` 的 `.credentials.yaml` 里 `deepseek-account-platform/default` 是否还在——被删=撞了 40003/401 路径（通知或平台/推理请求没用上真实 token）；还在但 UI 报错=路径换算错了（上游回 HTML）。不要靠「重新登录远端」掩盖：占位 grant 每次连接会重写，根因在代理路由。
 
+**23c. dsh 的模型列表请求落 baseURL 的 origin（`/models`），不是 `${baseURL}/models`——代理必须单独给 `/models` 一条路由。** dsh 的 `modelListingURL(baseURL)` 是 `new URL('/models', new URL(baseURL).origin)`（源码核实），baseURL 被 patch 成 `<隧道>/anthropic` 后列表请求落在 `<隧道>/models`；没这条路由时代理回 404，远端日志打印 `[llm-deepseek-account] model listing from .../models failed ... answered HTTP 404; using the bundled catalog`——功能上回落内置目录仍能对话，但模型列表不会跟随账号的真实目录。上游 `https://api.deepseek.com/models` 同时接受 `x-api-key`（API key 通道）与 `x-dsh-auth-token`（账号 grant 通道），实测账号令牌 200 返回完整目录、失效 API key 401，所以路由与 `/anthropic` 同款（按请求头各自替换，不区分通道），见 [provider-routes.ts](../src/credential/provider-routes.ts) 的 `deepseekModelsRoute`。另记一个高频误判：远端报「API 密钥无效」时先分清是哪条通道——代理日志的 `route=DeepSeek` 对 `/anthropic` 下两条通道都成立（同一路径前缀，靠请求头区分），要确认走的是 API key 还是账号：本机 `~/.dsh/.credentials.yaml` 的 `refs.DEEPSEEK_API_KEY` 可能早已失效（上游 401 会给出 `api key ****xxxx is invalid`），而 `records.deepseek-account-platform/default` 的 grant 仍然有效；两者是独立凭据，别把「账号有效」当成「API key 也有效」。
+
 **24. 高级选项的持久化语义从 per-host 改为全局「上一次输入」，密码绝不落盘；三弹窗共写一份存储必须用部分更新。** 0.9.0 的设计拍板与依据：
 
 - **全局单条取代 per-host**（`~/.dsh/remote-advanced.json`，取代 `remote-host-env.json` 的按主机索引）：用户诉求是「换主机沿用同一份」，per-host 索引反而要求逐主机重配。代价是丢了按主机隔离——但 env/代理这类注入项本就是用户级偏好，与主机绑定的收益撑不起维护成本。旧文件**不读不迁不删**（留置由用户处置）。
