@@ -24,7 +24,7 @@ import {
 import { readLocalCredentials, readLocalAccountToken } from '../../credential/local-credentials.js';
 import { TunnelProxyCredential } from '../../credential/tunnel-proxy.js';
 import {
-  deepseekRoute, deepseekModelsRoute, extractProviderRoutes, readLocalSettings,
+  deepseekRoute, deepseekModelsRoute, extractProviderRoutes, localDeepseekBaseURL, readLocalSettings,
   renderProviderTunnelPatch,
 } from '../../credential/provider-routes.js';
 import { writeProxySecret, writePlaceholderAccountCredentials, writeSessionReverseHost } from '../../credential/proxy-secret.js';
@@ -78,6 +78,8 @@ export async function provisionAndConfigure(
   //    在安全层面等价（都是模型调用认证密钥），走同一隧道代理替换，不出本机
   const localSettings = readLocalSettings();
   const providerRoutes = localSettings ? extractProviderRoutes(localSettings) : [];
+  // DeepSeek 官方模型也允许自定义 baseURL；不读这段会让远端固定走官方地址
+  const deepseekBaseURL = localDeepseekBaseURL(localSettings);
   const localCredentials = readLocalCredentials();
   const accountToken = readLocalAccountToken();
   if (accountToken !== undefined) {
@@ -86,7 +88,7 @@ export async function provisionAndConfigure(
   const credential = secret
     ? new TunnelProxyCredential(
       secret.token, secret.reversePort, secret.reverseHost,
-      [deepseekRoute(), deepseekModelsRoute(), ...providerRoutes],
+      [deepseekRoute(deepseekBaseURL), deepseekModelsRoute(deepseekBaseURL), ...providerRoutes],
       options.hostAlias,
       localCredentials,
       // manageHandlers 直接传（undefined 落到可选参数位）——**不能用条件

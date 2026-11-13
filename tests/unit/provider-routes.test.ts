@@ -6,7 +6,13 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractProviderRoutes, deepseekRoute } from '../../src/credential/provider-routes.js';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  extractProviderRoutes, deepseekRoute, deepseekModelsRoute, extractDeepseekBaseURL,
+  readLocalSettings, setProfilePatchPath,
+} from '../../src/credential/provider-routes.js';
 import type { ProxyRoute } from '../../src/credential/provider-routes.js';
 
 describe('deepseekRoute', () => {
@@ -39,6 +45,63 @@ describe('deepseekRoute', () => {
     const a = deepseekRoute();
     const b = deepseekRoute();
     assert.deepEqual(a, b);
+  });
+});
+
+describe('DeepSeek 官方模型自定义 baseURL', () => {
+  it('从 llm-deepseek 配置提取 baseURL', () => {
+    const yaml = `
+llm-deepseek:
+  baseURL: https://gateway.example.com/api
+`;
+    assert.equal(extractDeepseekBaseURL(yaml), 'https://gateway.example.com/api');
+  });
+
+  it('兼容 llm-deepseek.config.baseURL 包装层', () => {
+    const yaml = `
+llm-deepseek:
+  config:
+    baseURL: https://gateway.example.com/v1
+`;
+    assert.equal(extractDeepseekBaseURL(yaml), 'https://gateway.example.com/v1');
+  });
+
+  it('llm-deepseek 未配置时回退 llm-deepseek-account', () => {
+    const yaml = `
+llm-deepseek-account:
+  baseURL: https://account-gateway.example.com/v1
+`;
+    assert.equal(extractDeepseekBaseURL(yaml), 'https://account-gateway.example.com/v1');
+  });
+
+  it('自定义路径以 /v1 结尾时去掉 v1（远端仍会追加 /v1）', () => {
+    const route = deepseekRoute('https://gateway.example.com/api/v1');
+    assert.equal(route.prefix, '/anthropic');
+    assert.equal(route.upstreamOrigin, 'https://gateway.example.com');
+    assert.equal(route.upstreamPath, '/api');
+  });
+
+  it('自定义路径不以 /v1 结尾时原样保留', () => {
+    const route = deepseekRoute('https://gateway.example.com/api');
+    assert.equal(route.upstreamOrigin, 'https://gateway.example.com');
+    assert.equal(route.upstreamPath, '/api');
+  });
+
+  it('模型列表路由跟随自定义 origin', () => {
+    const route = deepseekModelsRoute('https://gateway.example.com/api/v1');
+    assert.equal(route.prefix, '/models');
+    assert.equal(route.upstreamOrigin, 'https://gateway.example.com');
+    assert.equal(route.upstreamPath, '/models');
+  });
+
+  it('默认仍为官方 api.deepseek.com', () => {
+    assert.deepEqual(deepseekRoute(), {
+      prefix: '/anthropic',
+      upstreamOrigin: 'https://api.deepseek.com',
+      upstreamPath: '/anthropic',
+      keyEnv: 'DEEPSEEK_API_KEY',
+      label: 'DeepSeek',
+    });
   });
 });
 
@@ -284,5 +347,34 @@ llm-pi-ai:
       assert.notEqual(routes[0].prefix, '/anthropic');
       assert.equal(routes[0].prefix, '/r/anthropic');
     });
+  });
+});
+
+describe('readLocalSettings（profile patch）', () => {
+  it('同时返回 llm-deepseek 与 llm-pi-ai 配置段', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'provider-routes-'));
+    const patchPath = join(dir, 'cordis.patch.yml');
+    try {
+      writeFileSync(patchPath, `
+- id: llm-deepseek
+  config:
+    baseURL: https://gateway.example.com/api
+- id: llm-pi-ai
+  config:
+    providers:
+      custom:
+        apiKeyEnv: CUSTOM_KEY
+        baseURL: https://custom.example.com/v1
+`);
+      setProfilePatchPath(patchPath);
+      const settings = readLocalSettings();
+      assert.ok(settings !== undefined);
+      assert.equal(extractDeepseekBaseURL(settings), 'https://gateway.example.com/api');
+      assert.equal(extractProviderRoutes(settings).length, 1);
+    } finally {
+      // 恢复为不存在的路径，避免影响同进程其他用例
+      setProfilePatchPath(join(dir, 'missing.yml'));
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
