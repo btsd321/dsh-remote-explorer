@@ -169,15 +169,54 @@ export async function prepareSessionProfile(
 /**
  * 把 patch 条目渲染成 YAML 文本。
  *
- * JSON 是 YAML 1.2 的严格子集：这里直接序列化为 JSON 文本，DSH 的 YAML
- * 解析器可无损读取，同时能自然表达 DeepSeek `models` 这类嵌套数组/对象。
- * 不再手写标量拼接——手写无法表达嵌套值，且字符串引号必须严格处理。
+ * 顶层保持 `- id:` 数组条目形态：`provisionAndConfigure` 之后会向同一文件
+ * 追加 `- id: llm-pi-ai`，如果用 JSON 数组包起来（`[...]`），追加的 YAML
+ * 条目会落在闭合括号之后，整份文件将无法解析。
+ *
+ * 标量沿用严格引号；嵌套对象/数组用 JSON 序列化——JSON 是 YAML 1.2 的
+ * 严格子集，`models: [{"id":"..."}]` 这类 flow style 可被 DSH 的 YAML
+ * 解析器直接读取，同时不必把整个 yaml 序列化库带进 profile-writer。
  *
  * @param patches - patch 条目
  * @returns YAML 文本
  */
 function renderPatchYaml(patches: readonly PatchEntry[]): string {
-  return `${JSON.stringify(patches.map(patch => ({ id: patch.id, config: patch.config })), null, 2)}\n`;
+  const lines: string[] = [];
+  for (const patch of patches) {
+    lines.push(`- id: ${patch.id}`);
+    lines.push('  config:');
+    for (const [key, value] of Object.entries(patch.config)) {
+      lines.push(`    ${key}: ${renderYamlValue(value)}`);
+    }
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+/**
+ * 渲染 patch 配置值，兼容嵌套对象/数组。
+ *
+ * @param value - 配置值
+ * @returns YAML 表示
+ */
+function renderYamlValue(value: unknown): string {
+  if (value === null) return 'null';
+  if (typeof value === 'string') return renderScalar(value);
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  // 嵌套对象/数组用 JSON flow style；JSON 是 YAML 1.2 的严格子集
+  return JSON.stringify(value) ?? 'null';
+}
+
+/**
+ * 渲染 YAML 标量值。
+ *
+ * 字符串一律加双引号并转义——未加引号的 YAML 标量会被隐式类型转换
+ * （`127.0.0.1` 尚可，但形如 `on`、`no`、`1.0` 的值会变成布尔或数字）。
+ *
+ * @param value - 标量值
+ * @returns YAML 表示
+ */
+function renderScalar(value: string): string {
+  return `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
 }
 
 /**
