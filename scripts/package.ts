@@ -25,7 +25,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -147,10 +147,13 @@ function runTar(rawArgs: string[], needsBsdtar: boolean): void {
       }
       // GNU tar 会把带盘符的路径（D:/x）当成远程主机规格（host:file 语法，
       // 报「Cannot connect to D」）；--force-local 关掉该解释。bsdtar 无此问题
-      // 且不认识该选项，只在 GNU tar 上加
-      const finalArgs = !isBsdtar && args.some(a => /^[A-Za-z]:/.test(a))
-        ? ['--force-local', ...args]
-        : args;
+      // 且不认识该选项，只在 GNU tar 上加。
+      // bsdtar 也不支持 --mode=755（macOS 自带 tar 即 bsdtar）；执行位已在
+      // archivePackage 里通过 chmod 落到 staging 文件上，过滤掉该参数即可。
+      const supportedArgs = isBsdtar ? args.filter(arg => !arg.startsWith('--mode=')) : args;
+      const finalArgs = !isBsdtar && supportedArgs.some(a => /^[A-Za-z]:/.test(a))
+        ? ['--force-local', ...supportedArgs]
+        : supportedArgs;
       execFileSync(candidate, finalArgs, { stdio: 'ignore' });
       return;
     } catch (error) {
@@ -340,6 +343,10 @@ function archivePackage(pkgDir: string, outDir: string, version: string, target:
     // bsdtar 的 -a 按扩展名自动选 zip 格式
     runTar(['-a', '-cf', outFile, '-C', dirname(pkgDir), 'dsh-remote-explorer'], true);
   } else {
+    // Windows 宿主机上 chmod 是 no-op；POSIX 宿主机上先把启动器与 node
+    // 标成可执行，bsdtar 不支持 --mode 时也能把执行位带进 tar
+    chmodSync(join(pkgDir, 'dsh-remote-explorer'), 0o755);
+    chmodSync(join(pkgDir, 'node'), 0o755);
     runTar(['-czf', outFile, '--mode=755', '-C', dirname(pkgDir), 'dsh-remote-explorer'], false);
   }
   return outFile;
