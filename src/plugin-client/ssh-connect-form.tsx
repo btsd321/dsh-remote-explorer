@@ -23,6 +23,7 @@ import * as React from 'react';
 import type { ReactNode } from 'react';
 import type { JumpEntry, SshHostSummary } from '../hosts/ssh-config-parser.js';
 import type { LocalResourceDownloadMode } from '../provision/local-download-mode.js';
+import type { DeploymentMode } from '../provision/intranet-runtime.js';
 import type { RemoteExplorerLocaleKey } from './locales.js';
 import { messageOf, fetchAdvanced, postAdvanced, postConnect, type PanelSession } from './api.js';
 import { HostPicker } from './host-picker.js';
@@ -100,6 +101,16 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
    */
   const [localResourceDownload, setLocalResourceDownload] =
     React.useState<LocalResourceDownloadMode>('auto');
+  /**
+   * 部署方式与内网运行时输入。
+   *
+   * undefined = 用户尚未在面板显式选择/存储过：连接请求不带该字段，让宿主
+   * 回落到插件配置（例如管理员把 offline 设为默认），避免表单默认值 auto
+   * 意外覆盖全局严格离线配置。
+   */
+  const [deploymentMode, setDeploymentMode] = React.useState<DeploymentMode | undefined>(undefined);
+  const [nodePath, setNodePath] = React.useState('');
+  const [npmRegistry, setNpmRegistry] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [formError, setFormError] = React.useState('');
 
@@ -130,6 +141,9 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
         if (payload.localResourceDownload !== undefined) {
           setLocalResourceDownload(payload.localResourceDownload);
         }
+        if (payload.deploymentMode !== undefined) setDeploymentMode(payload.deploymentMode);
+        if (payload.nodePath !== undefined) setNodePath(payload.nodePath);
+        if (payload.npmRegistry !== undefined) setNpmRegistry(payload.npmRegistry);
       })
       .catch(() => { /* 读取失败沿用默认 auto；不阻断表单填写 */ });
     return () => { cancelled = true; };
@@ -145,6 +159,17 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
   const onLocalResourceDownloadChange = (mode: LocalResourceDownloadMode): void => {
     setLocalResourceDownload(mode);
     void postAdvanced('ssh', { localResourceDownload: mode })
+      .catch(error => { setFormError(`${t('dlgSaveError')}${messageOf(error)}`); });
+  };
+
+  /**
+   * 改选部署方式：立即写回宿主侧 SSH 域（与本地资源下载同语义）。
+   *
+   * @param mode - 新选择
+   */
+  const onDeploymentModeChange = (mode: DeploymentMode): void => {
+    setDeploymentMode(mode);
+    void postAdvanced('ssh', { deploymentMode: mode })
       .catch(error => { setFormError(`${t('dlgSaveError')}${messageOf(error)}`); });
   };
 
@@ -176,10 +201,25 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
    */
   const onConnect = async (mode: 'current' | 'new' | 'window'): Promise<void> => {
     if (host.trim() === '' || busy) return;
+    if (deploymentMode === 'existing' && npmRegistry.trim() === '') {
+      setFormError(t('npmRegistryRequired'));
+      return;
+    }
     setBusy(true);
     setFormError('');
     try {
       const port = Number.parseInt(localPort, 10);
+      // 记住本次输入（宿主侧 SSH 域）：保存失败不阻断连接——连接请求本身
+      // 也携带同一组值，用户看到的配置在本次连接照样生效
+      try {
+        await postAdvanced('ssh', {
+          ...(deploymentMode !== undefined ? { deploymentMode } : {}),
+          // auto 模式不覆盖此前保存的 existing 配置，方便来回切换
+          ...(deploymentMode === 'existing'
+            ? { nodePath: nodePath.trim(), npmRegistry: npmRegistry.trim() }
+            : {}),
+        });
+      } catch { /* 持久化失败不影响本次连接 */ }
       const session = await postConnect({
         hostAlias: host.trim(),
         ...(cwd.trim() !== '' ? { cwd: cwd.trim() } : {}),
@@ -191,6 +231,9 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
         // 总是带上当前选择：写回 /advanced 失败时这里仍能保证「用户看到什么就
         // 用什么」（请求值优先于宿主存储值）
         localResourceDownload,
+        ...(deploymentMode !== undefined ? { deploymentMode } : {}),
+        ...(nodePath.trim() !== '' ? { nodePath: nodePath.trim() } : {}),
+        ...(npmRegistry.trim() !== '' ? { npmRegistry: npmRegistry.trim() } : {}),
         forceRestart,
         refreshMirrors,
         // 跳板机条目：仅直连目标携带（分流规则见文件头）；面板未配置过弹窗
@@ -281,6 +324,34 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
             <VersionPicker value={dshVersion} onChange={setDshVersion}
               versions={dshVersions} />
           </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <span style={{ fontSize: 12, opacity: 0.75 }}>{t('deploymentMode')}</span>
+            <select value={deploymentMode ?? 'auto'} style={inputStyle}
+              onChange={event => { onDeploymentModeChange(event.target.value as DeploymentMode); }}>
+              <option value="auto">{t('deploymentModeAuto')}</option>
+              <option value="existing">{t('deploymentModeExisting')}</option>
+              <option value="offline">{t('deploymentModeOffline')}</option>
+            </select>
+          </label>
+          {deploymentMode === 'existing'
+            ? (
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <span style={{ fontSize: 12, opacity: 0.75 }}>{t('existingNodePath')}</span>
+                <input value={nodePath} placeholder="/opt/node/bin/node（留空 = 从 PATH 探测）"
+                  style={inputStyle} onChange={event => setNodePath(event.target.value)} />
+              </label>
+            )
+            : null}
+          {deploymentMode !== 'offline'
+            ? (
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <span style={{ fontSize: 12, opacity: 0.75 }}>{t('npmRegistry')}</span>
+                <input value={npmRegistry}
+                  placeholder="https://nexus.example.com/repository/npm/（existing 必填）"
+                  style={inputStyle} onChange={event => setNpmRegistry(event.target.value)} />
+              </label>
+            )
+            : null}
           <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <span style={{ fontSize: 12, opacity: 0.75 }}>{t('localResourceDownload')}</span>
             <select value={localResourceDownload} style={inputStyle}

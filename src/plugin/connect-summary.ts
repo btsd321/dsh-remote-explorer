@@ -22,6 +22,7 @@
 import type { JumpPlan } from '../session/transport/factory.js';
 import type { ResolvedHost } from '../hosts/ssh-config-parser.js';
 import type { LocalResourceDownloadMode } from '../provision/local-download-mode.js';
+import type { DeploymentMode } from '../provision/intranet-runtime.js';
 
 /** 连接选项汇总的输入（生效值由调用方算好，本模块只渲染） */
 export interface ConnectSummaryInput {
@@ -54,6 +55,12 @@ export interface ConnectSummaryInput {
    * 仅 SSH 渲染该字段——WSL 域无此选项
    */
   localResourceDownload?: LocalResourceDownloadMode;
+  /** 生效的部署方式（auto/existing/offline） */
+  deploymentMode?: DeploymentMode;
+  /** existing 模式的显式 Node 路径（路径非秘密，可打） */
+  nodePath?: string;
+  /** 内网 npm 源（已校验不含凭据，可打） */
+  npmRegistry?: string;
   /** 是否带私钥路径覆盖（仅 SSH 渲染该段） */
   privateKey: boolean;
 }
@@ -111,6 +118,17 @@ export function renderConnectSummary(input: ConnectSummaryInput): string[] {
     + ` / 强制重启: ${input.forceRestart ? '是' : '否'}`
     + ` / 重测镜像: ${input.refreshMirrors ? '是' : '否'}`
     + (input.transportType === 'ssh' ? ` / 私钥覆盖: ${input.privateKey ? '有' : '无'}` : ''));
+
+  // 部署方式（三种模式都展示；existing 附带 Node 路径与内网源）
+  const deployment = input.deploymentMode ?? 'auto';
+  const deploymentLabel = deployment === 'existing'
+    ? 'existing（现有 Node + 内网 npm 源）'
+    : deployment === 'offline' ? 'offline（严格离线）' : 'auto（自动安装）';
+  lines.push(`  部署方式: ${deploymentLabel}`);
+  if (deployment === 'existing') {
+    lines.push(`  Node 路径: ${input.nodePath ?? '从远端 PATH 探测'}`);
+    lines.push(`  内网 npm 源: ${input.npmRegistry ?? '未配置'}`);
+  }
 
   // 本地资源下载（SSH 专属；WSL 域无此选项，不渲染占位行免误导）
   if (input.transportType === 'ssh') {

@@ -222,6 +222,40 @@ flowchart TD
 基础层      hosts/   util/
 ```
 
+## 现有 Node + 内网 npm 源（existing 部署）
+
+远端服务器已经有 Node 与 npm、但没有公网、只有一个内网 npm 私服时，可选择 `existing` 部署方式：**复用远端现成 Node，不下载 Node 发行版，也不访问公网 npm registry**，dsh 与 pnpm 只从指定内网源安装。
+
+| 部署方式 | 行为 |
+|------|------|
+| `auto`（默认） | 远端没有 Node 时从 Node 发行站下载；npm 走公共镜像 |
+| `existing` | 复用远端现有 Node/npm；`npmRegistry` 必填；不测速 Node 镜像、不查询公共 registry |
+| `offline` | 严格离线，只校验已导入的完整运行时，不安装任何东西 |
+
+安全与隔离约束：
+
+- **绝不修改系统 Node 目录**：existing 模式在 `~/.dsh-remote-explorer/btsd321/existing/` 建私有 bin（node/npm 符号链接）与私有 npm prefix，pnpm 装在这里
+- 内网源地址不允许带用户名/密码、查询串或片段（这些内容会进入日志与远端 `.npmrc`）
+- `DSH_REMOTE_OFFLINE=1` 是进程级硬开关，不能与 existing 同时使用
+
+```bash
+# CLI：使用远端现有 Node + 内网 npm 源
+pnpm exec tsx src/cli/bin.ts connect myhost \
+  --deployment-mode existing \
+  --node-path /opt/node/bin/node \
+  --npm-registry https://nexus.example.com/repository/npm/
+
+# 不指定 --node-path 时从远端非交互 SSH PATH 的 node 探测
+pnpm exec tsx src/cli/bin.ts provision myhost \
+  --deployment-mode existing \
+  --npm-registry https://nexus.example.com/repository/npm/
+```
+
+```text
+# 插件面板：高级选项 →「运行环境部署方式」选 existing，
+# 填写「远端 Node 路径」（可留空）与「内网 npm 源」；保存后下一次连接生效。
+```
+
 ## 本地资源下载（local_resource_download）
 
 远端主机无公网时，引导阶段的下载（Node tarball、npm 包）可经本机网络的 SSH 反向隧道 HTTP 代理完成。类似 VS Code 的 "Remote.SSH: Local Server Download" 设置，由 `local_resource_download` 选项控制（仅 SSH；WSL 有本地文件系统访问，无需此选项）：

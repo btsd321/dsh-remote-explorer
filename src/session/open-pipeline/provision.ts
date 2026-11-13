@@ -108,7 +108,10 @@ export async function provisionAndConfigure(
   const provisioned = await provision(transport, {
     sessionId,
     patches,
+    ...(options.deploymentMode ? { deploymentMode: options.deploymentMode } : {}),
     ...(options.offline ? { offline: true } : {}),
+    ...(options.nodePath ? { nodePath: options.nodePath } : {}),
+    ...(options.npmRegistry ? { npmRegistry: options.npmRegistry } : {}),
     ...(options.nodeVersion ? { nodeVersion: options.nodeVersion } : {}),
     ...(options.dshVersion ? { dshVersion: options.dshVersion } : {}),
     ...(options.refreshMirrors ? { refreshMirrors: true } : {}),

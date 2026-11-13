@@ -23,6 +23,9 @@ import { runClean } from './commands/clean.js';
 import { runOfflineTransfer } from './commands/offline.js';
 import { RemoteError, toErrorMessage } from '../util/errors.js';
 import { normalizeRemoteCwd, validateRemoteCwd } from '../util/remote-cwd.js';
+import {
+  isValidDeploymentMode, validateNodePath, validateNpmRegistry, type DeploymentMode,
+} from '../provision/intranet-runtime.js';
 import { bold, cyan, dim, printErr, println, red, yellow } from './output.js';
 
 /** 支持的子命令 */
@@ -70,6 +73,9 @@ function printHelp(): void {
   println();
   println(bold('connect 参数'));
   println('  --offline                 严格离线引导（也适用于 provision）；环境变量 DSH_REMOTE_OFFLINE=1 对插件同样生效');
+  println('  --deployment-mode <mode>  部署方式：auto（默认）/existing（现有 Node + 内网 npm 源）/offline（严格离线）');
+  println('  --node-path <绝对路径>    existing 模式的远端 Node 路径（留空 = 从远端非交互 PATH 探测）');
+  println('  --npm-registry <URL>      内网 npm 源（existing 必填；也适用于 provision/doctor）');
   println('  --cwd <远端路径>          远端工作目录，参与会话标识计算');
   println('  --local-port <端口>       本机监听端口（默认由系统分配）');
   println('  --no-open                 不自动打开浏览器');
@@ -175,6 +181,9 @@ export async function main(argv: readonly string[]): Promise<number> {
       'node-version': { type: 'string' },
       'dsh-version': { type: 'string' },
       'local-resource-download': { type: 'string' },
+      'deployment-mode': { type: 'string' },
+      'node-path': { type: 'string' },
+      'npm-registry': { type: 'string' },
       'local-port': { type: 'string' },
       'no-open': { type: 'boolean', default: false },
       'force-restart': { type: 'boolean', default: false },
@@ -268,6 +277,50 @@ export async function main(argv: readonly string[]): Promise<number> {
     }
   }
 
+  // 部署方式与内网运行时参数（connect/provision/doctor 共用）
+  const deploymentModeRaw = values['deployment-mode'];
+  let deploymentMode: DeploymentMode | undefined;
+  if (deploymentModeRaw !== undefined) {
+    if (!isValidDeploymentMode(deploymentModeRaw)) {
+      printErr(red(`--deployment-mode 需要 auto/existing/offline，实际为 ${deploymentModeRaw}`));
+      return 64;
+    }
+    deploymentMode = deploymentModeRaw;
+  }
+  const nodePathRaw = values['node-path'];
+  if (nodePathRaw !== undefined) {
+    const error = validateNodePath(nodePathRaw);
+    if (error !== undefined) {
+      printErr(red(error));
+      return 64;
+    }
+  }
+  const npmRegistryRaw = values['npm-registry'];
+  if (npmRegistryRaw !== undefined) {
+    const error = validateNpmRegistry(npmRegistryRaw);
+    if (error !== undefined) {
+      printErr(red(error));
+      return 64;
+    }
+  }
+  if (wslDistro !== undefined
+    && (deploymentMode !== undefined || nodePathRaw !== undefined || npmRegistryRaw !== undefined)) {
+    printErr(red('--deployment-mode/--node-path/--npm-registry 仅支持 SSH 主机，不支持 WSL 发行版'));
+    return 64;
+  }
+  if (deploymentMode === 'existing' && (npmRegistryRaw === undefined || npmRegistryRaw === '')) {
+    printErr(red('--deployment-mode existing 必须同时提供 --npm-registry <内网 npm 源>'));
+    return 64;
+  }
+  if (deploymentMode === 'existing' && values.offline) {
+    printErr(red('--deployment-mode existing 不能与 --offline 同用（existing 需要访问内网 npm 源）'));
+    return 64;
+  }
+  if ((deploymentMode === 'offline' || deploymentMode === 'existing') && refreshMirrors) {
+    printErr(red('严格离线/内网运行时模式不测速公共镜像，不能与 --refresh-mirrors 同用'));
+    return 64;
+  }
+
   // 未指定工作目录时用空串：它同样参与会话 id 计算，
   // 保证"不带 --cwd"这一情形有稳定且唯一的会话标识
   const rawCwd = values.cwd ?? '';
@@ -318,10 +371,17 @@ export async function main(argv: readonly string[]): Promise<number> {
     return 64;
   }
 
+  const deploymentOpts = {
+    ...(deploymentMode !== undefined ? { deploymentMode } : {}),
+    ...(nodePathRaw !== undefined && nodePathRaw !== '' ? { nodePath: nodePathRaw } : {}),
+    ...(npmRegistryRaw !== undefined && npmRegistryRaw !== '' ? { npmRegistry: npmRegistryRaw } : {}),
+  };
+
   if (command === 'doctor') {
     return runDoctor({
       alias,
       refreshMirrors,
+      ...deploymentOpts,
       ...transportOpts,
     });
   }
@@ -366,6 +426,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       ...(values['node-version'] ? { nodeVersion: values['node-version'] } : {}),
       ...(values['dsh-version'] ? { dshVersion: values['dsh-version'] } : {}),
       ...(localResourceDownload !== undefined ? { localResourceDownload } : {}),
+      ...deploymentOpts,
       noOpen: values['no-open'] === true,
       forceRestart: values['force-restart'] === true,
       keepRemote: values['keep-remote'] === true,
@@ -382,6 +443,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     ...(values['node-version'] ? { nodeVersion: values['node-version'] } : {}),
     ...(values['dsh-version'] ? { dshVersion: values['dsh-version'] } : {}),
     ...(localResourceDownload !== undefined ? { localResourceDownload } : {}),
+    ...deploymentOpts,
     refreshMirrors,
     ...transportOpts,
   });

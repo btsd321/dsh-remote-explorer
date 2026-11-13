@@ -390,4 +390,44 @@ describe('损坏文件容错', () => {
     writeAdvancedConfig('ssh', { env: {} }, BASE_DIR);
     assert.ok(!existsSync(join(BASE_DIR, FILE_NAME)));
   });
+
+  // ─── deploymentMode / nodePath / npmRegistry（内网运行时扩展） ───────────
+
+  it('ssh 域内网运行时三字段写入读回同值', () => {
+    writeAdvancedConfig('ssh', {
+      env: {},
+      deploymentMode: 'existing',
+      nodePath: '/opt/node/bin/node',
+      npmRegistry: 'https://nexus.example.com/repository/npm/',
+    }, BASE_DIR);
+    assert.deepEqual(readAdvancedConfig('ssh', BASE_DIR), {
+      env: {},
+      deploymentMode: 'existing',
+      nodePath: '/opt/node/bin/node',
+      npmRegistry: 'https://nexus.example.com/repository/npm/',
+    });
+  });
+
+  it('ssh 域 deploymentMode 非法值写入拒绝、读取跳过', () => {
+    assert.throws(() => writeAdvancedConfig('ssh', {
+      env: {}, deploymentMode: 'bogus' as never,
+    }));
+    writeRawFile('{"version": 2, "ssh": {"env": {}, "deploymentMode": "bogus"}, "wsl": {"env": {}}}');
+    assert.equal(readAdvancedConfig('ssh', BASE_DIR).deploymentMode, undefined);
+  });
+
+  it('ssh 域 nodePath/npmRegistry 非法值读取侧跳过', () => {
+    writeRawFile(JSON.stringify({
+      version: 2,
+      ssh: { env: {}, nodePath: 'C:/node/node.exe', npmRegistry: 'https://user:pass@nexus.example.com/npm' },
+      wsl: { env: {} },
+    }));
+    const cfg = readAdvancedConfig('ssh', BASE_DIR);
+    assert.equal(cfg.nodePath, undefined);
+    assert.equal(cfg.npmRegistry, undefined);
+  });
+
+  it('wsl 域写入内网运行时字段抛错', () => {
+    assert.throws(() => writeAdvancedConfig('wsl', { env: {}, deploymentMode: 'existing' } as never));
+  });
 });
