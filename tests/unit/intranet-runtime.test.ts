@@ -25,6 +25,7 @@ import {
   validateNpmRegistry,
   ensureProfileNpmRegistry,
 } from '../../src/provision/intranet-runtime.ts';
+import { installLockHint, lockInstallCommand } from '../../src/provision/install-lock.ts';
 import { provision } from '../../src/provision/provisioner.ts';
 import { createRemotePaths } from '../../src/provision/remote-paths.ts';
 import type { ExecOptions, RemoteTransport } from '../../src/transport/types.ts';
@@ -182,6 +183,15 @@ test('部署方式优先级：环境变量硬开关优先、显式值覆盖旧 o
     if (old === undefined) delete process.env.DSH_REMOTE_OFFLINE;
     else process.env.DSH_REMOTE_OFFLINE = old;
   }
+});
+
+test('安装锁先创建 tmp 父目录，且不会把 flock 缺命令误报成等锁', () => {
+  const paths = createRemotePaths('/home/tester');
+  const command = lockInstallCommand(paths, 'echo ok');
+  assert.ok(command.startsWith(`mkdir -p ${paths.tmpRoot} && flock -w `), command);
+  assert.match(installLockHint('/bin/sh: flock: command not found') ?? '', /缺少 flock/);
+  assert.match(installLockHint('flock: cannot open lock file /x: No such file or directory') ?? '', /锁文件不可写/);
+  assert.match(installLockHint('flock: failed to get lock') ?? '', /等锁超时/);
 });
 
 test('existing 模式创建私有 shim，不写系统 Node 目录', { skip: posixOnly }, async () => {
