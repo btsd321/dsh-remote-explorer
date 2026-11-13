@@ -158,6 +158,8 @@ export class TunnelProxyCredential implements CredentialStrategy {
    *                       层面等价（都是模型调用认证密钥），走同一隧道代理替换，不出本机。
    *                       undefined 表示本机未登录 DeepSeek 账号——account 通道不可用，
    *                       但 API key 通道不受影响。
+   * @param deepseekConfig - 本机 `llm-deepseek` 配置的附加字段（主要是自定义
+   *                        `models` 目录）；baseURL 会被隧道地址覆盖，不能原样透传
    */
   constructor(
     private readonly proxyToken: string,
@@ -168,6 +170,7 @@ export class TunnelProxyCredential implements CredentialStrategy {
     private readonly localCredentials: Map<string, string>,
     private readonly manage?: ManageHandlers,
     private readonly accountToken?: string,
+    private readonly deepseekConfig?: Record<string, unknown>,
   ) {
     this._reverseHost = reverseHost;
     // 本机已登录 DeepSeek 账号时，自动加账号通道路由——平台（资料/余额/登出）
@@ -283,10 +286,18 @@ export class TunnelProxyCredential implements CredentialStrategy {
    * 重定向（见 provider-routes 的 mirrorSettingsForTunnel）。
    */
   remotePatches(): CredentialPatchEntry[] {
+    // 本机 llm-deepseek 的 models 等配置要随 patch 一起带给远端；baseURL
+    // 永远覆盖为隧道地址。apiKeyEnv 不传递——远端默认 DEEPSEEK_API_KEY
+    // 与本工具的占位注入链路绑定，带自定义键名会导致远端找不到凭据。
+    const deepseekPatchConfig: Record<string, unknown> = {
+      ...(this.deepseekConfig ?? {}),
+      baseURL: `http://${this._reverseHost}:${this.reversePort}${DEEPSEEK_PREFIX}`,
+    };
+    delete deepseekPatchConfig['apiKeyEnv'];
     const patches: CredentialPatchEntry[] = [
       {
         id: DEEPSEEK_PATCH_ID,
-        config: { baseURL: `http://${this._reverseHost}:${this.reversePort}${DEEPSEEK_PREFIX}` },
+        config: deepseekPatchConfig,
       },
     ];
     // 本机已登录 DeepSeek 账号时才 patch account 通道——未登录时远端

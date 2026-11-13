@@ -56,8 +56,8 @@ export interface ProfileResult {
 export interface PatchEntry {
   /** 目标条目 id（从 `--dump-config` 输出里读，不能猜） */
   id: string;
-  /** 要覆盖的配置字段 */
-  config: Record<string, string | number | boolean>;
+  /** 要覆盖的配置字段；允许嵌套值（如 DeepSeek 自定义 models 目录） */
+  config: Record<string, unknown>;
 }
 
 /**
@@ -169,36 +169,15 @@ export async function prepareSessionProfile(
 /**
  * 把 patch 条目渲染成 YAML 文本。
  *
- * 只支持 `id` + 标量 `config` 字段——这是本工具实际需要的全部形态，
- * 不引入 YAML 序列化依赖。条目必须带 `id`，见文件头第 2 点。
+ * JSON 是 YAML 1.2 的严格子集：这里直接序列化为 JSON 文本，DSH 的 YAML
+ * 解析器可无损读取，同时能自然表达 DeepSeek `models` 这类嵌套数组/对象。
+ * 不再手写标量拼接——手写无法表达嵌套值，且字符串引号必须严格处理。
  *
  * @param patches - patch 条目
  * @returns YAML 文本
  */
 function renderPatchYaml(patches: readonly PatchEntry[]): string {
-  const lines: string[] = [];
-  for (const patch of patches) {
-    lines.push(`- id: ${patch.id}`);
-    lines.push('  config:');
-    for (const [key, value] of Object.entries(patch.config)) {
-      lines.push(`    ${key}: ${renderScalar(value)}`);
-    }
-  }
-  return `${lines.join('\n')}\n`;
-}
-
-/**
- * 渲染 YAML 标量值。
- *
- * 字符串一律加双引号并转义——未加引号的 YAML 标量会被隐式类型转换
- * （`127.0.0.1` 尚可，但形如 `on`、`no`、`1.0` 的值会变成布尔或数字）。
- *
- * @param value - 标量值
- * @returns YAML 表示
- */
-function renderScalar(value: string | number | boolean): string {
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  return `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
+  return `${JSON.stringify(patches.map(patch => ({ id: patch.id, config: patch.config })), null, 2)}\n`;
 }
 
 /**

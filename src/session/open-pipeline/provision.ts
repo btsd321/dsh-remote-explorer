@@ -24,7 +24,7 @@ import {
 import { readLocalCredentials, readLocalAccountToken } from '../../credential/local-credentials.js';
 import { TunnelProxyCredential } from '../../credential/tunnel-proxy.js';
 import {
-  deepseekRoute, deepseekModelsRoute, extractProviderRoutes, localDeepseekBaseURL, readLocalSettings,
+  deepseekRoute, deepseekModelsRoute, extractProviderRoutes, localDeepseekConfig, readLocalSettings,
   renderProviderTunnelPatch,
 } from '../../credential/provider-routes.js';
 import { writeProxySecret, writePlaceholderAccountCredentials, writeSessionReverseHost } from '../../credential/proxy-secret.js';
@@ -78,8 +78,12 @@ export async function provisionAndConfigure(
   //    在安全层面等价（都是模型调用认证密钥），走同一隧道代理替换，不出本机
   const localSettings = readLocalSettings();
   const providerRoutes = localSettings ? extractProviderRoutes(localSettings) : [];
-  // DeepSeek 官方模型也允许自定义 baseURL；不读这段会让远端固定走官方地址
-  const deepseekBaseURL = localDeepseekBaseURL(localSettings);
+  // DeepSeek 官方模型也允许自定义 baseURL 与 models 目录；不读这段会让远端
+  // 固定走官方地址和内置模型列表
+  const deepseekConfig = localDeepseekConfig(localSettings);
+  const deepseekBaseURL = typeof deepseekConfig?.['baseURL'] === 'string'
+    ? deepseekConfig['baseURL'] as string
+    : undefined;
   const localCredentials = readLocalCredentials();
   const accountToken = readLocalAccountToken();
   if (accountToken !== undefined) {
@@ -98,6 +102,7 @@ export async function provisionAndConfigure(
       // 报「本机未登录 DeepSeek 账号」502）
       options.manageHandlers,
       accountToken,
+      deepseekConfig,
     )
     : undefined;
 

@@ -19,7 +19,10 @@ import { deepseekRoute } from '../../src/credential/provider-routes.js';
  * @param accountToken - 本机账号 grant token；undefined = 未登录
  * @returns 代理实例
  */
-function makeProxy(accountToken: string | undefined): TunnelProxyCredential {
+function makeProxy(
+  accountToken: string | undefined,
+  deepseekConfig?: Record<string, unknown>,
+): TunnelProxyCredential {
   return new TunnelProxyCredential(
     'placeholder-token',
     40123,
@@ -29,6 +32,7 @@ function makeProxy(accountToken: string | undefined): TunnelProxyCredential {
     new Map(),
     undefined,
     accountToken,
+    deepseekConfig,
   );
 }
 
@@ -52,6 +56,20 @@ describe('TunnelProxyCredential.remotePatches', () => {
     const patches = makeProxy('real-account-token').remotePatches();
     const native = patches.find(patch => patch.id === 'llm-deepseek');
     assert.ok(native);
+    assert.equal(native.config['baseURL'], 'http://127.0.0.1:40123/anthropic');
+  });
+
+  it('DeepSeek 自定义 models 配置随原生通道 patch 带到远端', () => {
+    const models = [
+      { id: 'deepseek-v4.1-flash', name: 'DeepSeek-V4.1-Flash' },
+      { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro' },
+    ];
+    const patches = makeProxy(undefined, { models, reasoningEffort: 'high' }).remotePatches();
+    const native = patches.find(patch => patch.id === 'llm-deepseek');
+    assert.ok(native);
+    assert.deepEqual(native.config['models'], models);
+    assert.equal(native.config['reasoningEffort'], 'high');
+    // 自定义 baseURL 仍必须被隧道地址覆盖
     assert.equal(native.config['baseURL'], 'http://127.0.0.1:40123/anthropic');
   });
 });

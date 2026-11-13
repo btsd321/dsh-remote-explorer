@@ -201,7 +201,7 @@ const OFFICIAL_DEEPSEEK_BASE_URL = 'https://api.deepseek.com/anthropic';
  * @param settingsText - 本机 settings/profile 配置文本
  * @returns 自定义 baseURL；未配置时 undefined
  */
-export function extractDeepseekBaseURL(settingsText: string): string | undefined {
+export function extractDeepseekConfig(settingsText: string): Record<string, unknown> | undefined {
   let document: unknown;
   try {
     document = parse(settingsText);
@@ -215,18 +215,43 @@ export function extractDeepseekBaseURL(settingsText: string): string | undefined
     const section = record[id];
     if (section === null || typeof section !== 'object') continue;
     const sectionRecord = section as Record<string, unknown>;
-    const direct = sectionRecord['baseURL'];
-    if (typeof direct === 'string' && direct.trim() !== '') return direct.trim();
-    // 兼容 settings.yaml 里可能存在的 config 包装层
+    // 兼容 settings.yaml 里可能存在的 config 包装层；profile patch 归一化
+    // 后的 section 本身就是 config。
     const nested = sectionRecord['config'];
     if (nested !== null && typeof nested === 'object') {
-      const nestedBaseURL = (nested as Record<string, unknown>)['baseURL'];
-      if (typeof nestedBaseURL === 'string' && nestedBaseURL.trim() !== '') {
-        return nestedBaseURL.trim();
-      }
+      return { ...(nested as Record<string, unknown>) };
     }
+    return { ...sectionRecord };
   }
   return undefined;
+}
+
+/**
+ * 从归一化 settings 文本中提取 DeepSeek 原生通道的 baseURL。
+ *
+ * @param settingsText - 本机 settings/profile 配置文本
+ * @returns 自定义 baseURL；未配置时 undefined
+ */
+export function extractDeepseekBaseURL(settingsText: string): string | undefined {
+  const config = extractDeepseekConfig(settingsText);
+  const baseURL = config?.['baseURL'];
+  return typeof baseURL === 'string' && baseURL.trim() !== '' ? baseURL.trim() : undefined;
+}
+
+/**
+ * 返回本机生效的 DeepSeek 原生通道完整配置。
+ *
+ * 优先本机 profile/settings 的 `llm-deepseek` 配置；没有时用本机进程的
+ * `DEEPSEEK_BASE_URL` 合成 `{ baseURL }` 兜底（DSH 自身也用该环境变量）。
+ *
+ * @param settingsText - 本机配置文本；undefined 时只看环境变量
+ * @returns DeepSeek 配置；均未配置时 undefined
+ */
+export function localDeepseekConfig(settingsText?: string): Record<string, unknown> | undefined {
+  const fromSettings = settingsText === undefined ? undefined : extractDeepseekConfig(settingsText);
+  if (fromSettings !== undefined) return fromSettings;
+  const fromEnv = process.env.DEEPSEEK_BASE_URL?.trim();
+  return fromEnv !== undefined && fromEnv !== '' ? { baseURL: fromEnv } : undefined;
 }
 
 /**
@@ -240,10 +265,9 @@ export function extractDeepseekBaseURL(settingsText: string): string | undefined
  * @returns baseURL；均未配置时 undefined
  */
 export function localDeepseekBaseURL(settingsText?: string): string | undefined {
-  const fromSettings = settingsText === undefined ? undefined : extractDeepseekBaseURL(settingsText);
-  if (fromSettings !== undefined) return fromSettings;
-  const fromEnv = process.env.DEEPSEEK_BASE_URL?.trim();
-  return fromEnv !== undefined && fromEnv !== '' ? fromEnv : undefined;
+  const config = localDeepseekConfig(settingsText);
+  const baseURL = config?.['baseURL'];
+  return typeof baseURL === 'string' && baseURL.trim() !== '' ? baseURL.trim() : undefined;
 }
 
 /**
