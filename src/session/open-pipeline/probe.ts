@@ -17,7 +17,7 @@
  * 与传输层。
  */
 
-import { isOfflineMode } from '../../provision/offline-runtime.js';
+import { resolveDeploymentMode } from '../../provision/intranet-runtime.js';
 import { probeRemote } from '../../provision/probe.js';
 import { createRemotePaths } from '../../provision/remote-paths.js';
 import { generateProxyToken } from '../../credential/token.js';
@@ -64,7 +64,8 @@ export async function probeAndReadCredentials(
 ): Promise<ProbeStageContext> {
   const isWsl = options.transportType === 'wsl';
   // 家目录要先拿到：既有会话探测与凭据材料读取都需要路径
-  const probe = await probeRemote(transport, undefined, isOfflineMode(options.offline));
+  const mode = resolveDeploymentMode(options.deploymentMode, options.offline);
+  const probe = await probeRemote(transport, undefined, mode !== 'auto');
   log.info(`远端探测完成: homeDir=${probe.homeDir}`);
   const paths = createRemotePaths(probe.homeDir);
   const ctx: RemoteContext = { transport, paths };

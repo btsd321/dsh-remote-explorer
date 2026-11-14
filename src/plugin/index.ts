@@ -64,6 +64,9 @@ export function apply(ctx: Context, config: PluginConfig): void {
   // 会话监督器：命令、工具、面板路由三个消费面共享同一份簿记
   const supervisor = new SessionSupervisor({
     offline: config.offline,
+    deploymentMode: config.deploymentMode,
+    nodePath: config.nodePath,
+    npmRegistry: config.npmRegistry,
     cwd: config.cwd,
     localPort: config.localPort,
     nodeVersion: config.nodeVersion,

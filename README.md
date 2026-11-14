@@ -223,6 +223,41 @@ Transport    transport/
 Foundation   hosts/   util/
 ```
 
+## Existing Node + intranet npm registry (existing deployment)
+
+When the remote server already has Node and npm but has no public internet access and only an intranet npm registry, use the `existing` deployment mode: **reuse the remote Node, download no Node distribution, and never contact the public npm registry**; dsh and pnpm are installed only from the specified intranet registry.
+
+| Deployment mode | Behavior |
+|------|----------|
+| `auto` (default) | Download Node from the Node distribution site when missing; npm goes through public mirrors |
+| `existing` | Reuse the remote Node/npm; `npmRegistry` is required; no Node mirror speed test and no public registry query |
+| `offline` | Strict offline: only validate an imported complete runtime; install nothing |
+
+Isolation guarantees:
+
+- **The system Node directory is never modified.** The existing mode creates a private bin directory (`node`/`npm` symlinks) and npm prefix under `~/.dsh-remote-explorer/btsd321/existing/`; pnpm is installed there
+- Switching back to `auto` does not reuse saved existing-mode Node/registry inputs. An explicit `npmRegistry` (CLI or plugin defaults) still applies. Only unchanged tool-marked `.npmrc` overrides are removed to restore the original registry; legacy unmarked or user-edited settings are preserved.
+- Registry URLs with username/password, query strings, or fragments are rejected (those values would end up in logs and the remote `.npmrc`)
+- `DSH_REMOTE_OFFLINE=1` is a process-level hard switch and cannot be combined with existing mode
+
+```bash
+# CLI: reuse the remote Node and use an intranet npm registry
+pnpm exec tsx src/cli/bin.ts connect myhost \
+  --deployment-mode existing \
+  --node-path /opt/node/bin/node \
+  --npm-registry https://nexus.example.com/repository/npm/
+
+# Omit --node-path to probe node from the remote non-interactive SSH PATH
+pnpm exec tsx src/cli/bin.ts provision myhost \
+  --deployment-mode existing \
+  --npm-registry https://nexus.example.com/repository/npm/
+```
+
+```text
+# Plugin panel: Advanced options → "Runtime deployment" → existing;
+# fill in "Remote Node path" (optional) and "Intranet npm registry".
+```
+
 ## Local resource download (local_resource_download)
 
 When the remote host has no public internet access, the provisioning downloads (Node tarball, npm packages) can be routed through the local machine's network via an SSH reverse-tunnel HTTP proxy. This is similar to VS Code's "Remote.SSH: Local Server Download" setting and is controlled by the `local_resource_download` option (SSH only; WSL has direct filesystem access and does not need it):
