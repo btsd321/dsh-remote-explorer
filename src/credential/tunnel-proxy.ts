@@ -45,10 +45,11 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { MANAGE_PREFIX, type ManageHandlers } from '../handoff/protocol.js';
 import { tokenEquals } from './token.js';
+import { remoteDeepseekConfig } from './deepseek-config.js';
 import { deepseekAccountRoutes } from './deepseek-routes.js';
 import { buildUpstreamUrl, matchRoute } from './proxy-route-match.js';
 import { createLogger } from '../util/logger.js';
-import type { ProxyRoute } from './provider-routes.js';
+import { deepseekRoute, deepseekModelsRoute, type ProxyRoute } from './provider-routes.js';
 import type { CredentialPatchEntry, CredentialStrategy } from './types.js';
 
 const logProxy = createLogger('tunnel-proxy');
@@ -158,6 +159,8 @@ export class TunnelProxyCredential implements CredentialStrategy {
    *                       层面等价（都是模型调用认证密钥），走同一隧道代理替换，不出本机。
    *                       undefined 表示本机未登录 DeepSeek 账号——account 通道不可用，
    *                       但 API key 通道不受影响。
+   * @param deepseekConfig - 本机 `llm-deepseek` 配置的附加字段（主要是自定义
+   *                        `models` 目录）；baseURL 会被隧道地址覆盖，不能原样透传
    */
   constructor(
     private readonly proxyToken: string,
@@ -168,6 +171,7 @@ export class TunnelProxyCredential implements CredentialStrategy {
     private readonly localCredentials: Map<string, string>,
     private readonly manage?: ManageHandlers,
     private readonly accountToken?: string,
+    private readonly deepseekConfig?: Record<string, unknown>,
   ) {
     this._reverseHost = reverseHost;
     // 本机已登录 DeepSeek 账号时，自动加账号通道路由——平台（资料/余额/登出）
@@ -244,6 +248,8 @@ export class TunnelProxyCredential implements CredentialStrategy {
     for (const route of this.routes) {
       if (route.keyEnv !== undefined) env[route.keyEnv] = this.proxyToken;
     }
+    // 原生适配器仍使用默认变量名，真实 key 的引用只在本机路由中选择。
+    if (this.routes.some(route => route.prefix === DEEPSEEK_PREFIX)) env['DEEPSEEK_API_KEY'] = this.proxyToken;
     return env;
   }
 
@@ -254,9 +260,8 @@ export class TunnelProxyCredential implements CredentialStrategy {
    * NAT 模式下远端 dsh 连 127.0.0.1 是自己的 loopback，连不到 Windows 侧
    * 监听，必须走网关地址。
    *
-   * 两条通道共用 `/anthropic` 前缀——它们的请求最终都发往 `api.deepseek.com`，
-   * 认证头不同（`x-api-key` vs `x-dsh-auth-token`）但路径相同。代理按请求头
-   * 里实际出现的认证头各自替换，不冲突。
+   * 两条通道共用 `/anthropic` 前缀，但账号请求只匹配固定官方路由，
+   * 认证头不同（`x-api-key` vs `x-dsh-auth-token`）但路径相同。代理按认证类型选表，API key 自定义网关不影响账号上游。
    *
    * - `llm-deepseek`：API key 通道，远端发 `x-api-key`（占位令牌）→ 代理替换为真实 key
    * - `llm-deepseek-account`：账号 token 通道，远端发 `x-dsh-auth-token`（占位令牌）
@@ -283,10 +288,17 @@ export class TunnelProxyCredential implements CredentialStrategy {
    * 重定向（见 provider-routes 的 mirrorSettingsForTunnel）。
    */
   remotePatches(): CredentialPatchEntry[] {
+    // 本机 llm-deepseek 的 models 等配置要随 patch 一起带给远端；baseURL
+    // 永远覆盖为隧道地址。apiKeyEnv 不传递——远端默认 DEEPSEEK_API_KEY
+    // 与本工具的占位注入链路绑定，带自定义键名会导致远端找不到凭据。
+    const deepseekPatchConfig: Record<string, unknown> = {
+      ...remoteDeepseekConfig(this.deepseekConfig),
+      baseURL: `http://${this._reverseHost}:${this.reversePort}${DEEPSEEK_PREFIX}`,
+    };
     const patches: CredentialPatchEntry[] = [
       {
         id: DEEPSEEK_PATCH_ID,
-        config: { baseURL: `http://${this._reverseHost}:${this.reversePort}${DEEPSEEK_PREFIX}` },
+        config: deepseekPatchConfig,
       },
     ];
     // 本机已登录 DeepSeek 账号时才 patch account 通道——未登录时远端
@@ -436,7 +448,18 @@ export class TunnelProxyCredential implements CredentialStrategy {
         return;
       }
 
-      const route = matchRoute(this.allRoutes, path);
+      const hasApiKey = req.headers['x-api-key'] !== undefined || req.headers.authorization !== undefined;
+      const hasAccountToken = req.headers['x-dsh-auth-token'] !== undefined;
+      // 账号凭据与 API key 必须分流，混合认证不允许从任一通道借用凭据。
+      if (hasApiKey && hasAccountToken) {
+        res.writeHead(400);
+        res.end('dsh-remote-explorer proxy: 不允许混合账号与 API key 认证');
+        return;
+      }
+      // 账号请求只匹配固定官方路由，完全不读取可配置供应商路由。
+      // /models 按 origin 发现，无法单靠 baseURL 的不同路径隔离，故按认证类型选表。
+      const accountRoutes = [deepseekRoute(), deepseekModelsRoute(), ...deepseekAccountRoutes()];
+      const route = matchRoute(hasAccountToken ? accountRoutes : this.allRoutes, path);
       if (!route) {
         res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
         res.end(`dsh-remote-explorer proxy: 无匹配的供应商路由（${path}）。`
@@ -451,10 +474,8 @@ export class TunnelProxyCredential implements CredentialStrategy {
       //    两种凭据各自独立——用户可能只用其中一种。缺 API key 不阻断 account 通道
       //    （反之亦然），只有「请求带了这个头但本机没有对应真实值」时才报 502。
       //    platform 路由（/platform 前缀）无 keyEnv——只走 x-dsh-auth-token 替换路径。
-      const apiKey = route.keyEnv !== undefined ? this.resolveApiKey(route.keyEnv) : undefined;
+      const apiKey = hasApiKey && route.keyEnv !== undefined ? this.resolveApiKey(route.keyEnv) : undefined;
       const accountToken = this.accountToken;
-      const hasApiKey = req.headers['x-api-key'] !== undefined || req.headers.authorization !== undefined;
-      const hasAccountToken = req.headers['x-dsh-auth-token'] !== undefined;
 
       if (hasApiKey && apiKey === undefined) {
         proxyDiary('本机缺少 API key，无法代理该供应商调用', {
