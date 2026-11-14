@@ -35,6 +35,7 @@ import { EnvDialog } from './dialogs/env-dialog.js';
 import { ProxyDialog } from './dialogs/proxy-dialog.js';
 import { JumpHostDialog } from './dialogs/jump-host-dialog.js';
 import { inputStyle, buttonStyle } from './styles.js';
+import { formRuntimeOverrides } from './runtime-options.js';
 import { DESKTOP } from './constants.js';
 
 /** localStorage 里「上次远端目录」的键前缀（按主机别名记忆） */
@@ -111,6 +112,8 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
   const [deploymentMode, setDeploymentMode] = React.useState<DeploymentMode | undefined>(undefined);
   const [nodePath, setNodePath] = React.useState('');
   const [npmRegistry, setNpmRegistry] = React.useState('');
+  // auto 的显式源独立保存，避免把 existing 的历史输入当成本次覆盖。
+  const [autoNpmRegistry, setAutoNpmRegistry] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [formError, setFormError] = React.useState('');
 
@@ -232,8 +235,7 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
         // 用什么」（请求值优先于宿主存储值）
         localResourceDownload,
         ...(deploymentMode !== undefined ? { deploymentMode } : {}),
-        ...(nodePath.trim() !== '' ? { nodePath: nodePath.trim() } : {}),
-        ...(npmRegistry.trim() !== '' ? { npmRegistry: npmRegistry.trim() } : {}),
+        ...formRuntimeOverrides(deploymentMode, nodePath, npmRegistry, autoNpmRegistry),
         forceRestart,
         refreshMirrors,
         // 跳板机条目：仅直连目标携带（分流规则见文件头）；面板未配置过弹窗
@@ -346,9 +348,10 @@ export function SshConnectForm(props: SshConnectFormProps): ReactNode {
             ? (
               <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                 <span style={{ fontSize: 12, opacity: 0.75 }}>{t('npmRegistry')}</span>
-                <input value={npmRegistry}
+                <input value={deploymentMode === 'existing' ? npmRegistry : autoNpmRegistry}
                   placeholder="https://nexus.example.com/repository/npm/（existing 必填）"
-                  style={inputStyle} onChange={event => setNpmRegistry(event.target.value)} />
+                  style={inputStyle} onChange={event => deploymentMode === 'existing'
+                    ? setNpmRegistry(event.target.value) : setAutoNpmRegistry(event.target.value)} />
               </label>
             )
             : null}

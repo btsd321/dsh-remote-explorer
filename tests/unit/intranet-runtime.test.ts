@@ -224,6 +224,9 @@ test('ensureProfileNpmRegistry 保留其它 .npmrc 配置并幂等', { skip: pos
     assert.match(first, /registry=https:\/\/nexus\.example\.com\/repository\/npm/);
     assert.match(first, /old\.example\.com/);
     assert.equal(await ensureProfileNpmRegistry(ctx, 'https://nexus.example.com/repository/npm/'), false);
+    assert.equal(await ensureProfileNpmRegistry(ctx, undefined), true);
+    assert.equal(await readFile(join(profileDir, '.npmrc'), 'utf8'), 'strict-peer-dependencies=true\nregistry=https://old.example.com/\n');
+    assert.equal(await ensureProfileNpmRegistry(ctx, undefined), false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
