@@ -609,6 +609,9 @@ Override by entry id in the profile's `cordis.patch.yml`:
     forceRestart: false
     refreshMirrors: false
     panel: true               # false = skip panel routes, keep command and tools
+    deploymentMode: ""        # empty = follow offline; auto / existing / offline
+    nodePath: ""              # existing: absolute remote Node path (empty = probe remote PATH)
+    npmRegistry: ""           # custom npm registry; required for existing, skips public mirror probing in auto
 ```
 
 **There is no password field** — Config lands on disk with the patch layer; a password there would be plaintext on disk.

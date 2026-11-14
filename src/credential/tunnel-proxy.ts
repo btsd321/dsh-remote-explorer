@@ -54,6 +54,14 @@ import type { CredentialPatchEntry, CredentialStrategy } from './types.js';
 
 const logProxy = createLogger('tunnel-proxy');
 
+/**
+ * 账号 token 通道的固定官方路由表（与本机自定义网关无关，模块级常量即可，
+ * 不必每个请求重建）。
+ */
+const ACCOUNT_ROUTES: readonly ProxyRoute[] = [
+  deepseekRoute(), deepseekModelsRoute(), ...deepseekAccountRoutes(),
+];
+
 /** 代理诊断日志落盘路径（与 remote-advanced/remote-sessions 同目录同前缀） */
 const PROXY_LOG_PATH = join(homedir(), '.dsh', 'remote-proxy.log');
 
@@ -458,8 +466,7 @@ export class TunnelProxyCredential implements CredentialStrategy {
       }
       // 账号请求只匹配固定官方路由，完全不读取可配置供应商路由。
       // /models 按 origin 发现，无法单靠 baseURL 的不同路径隔离，故按认证类型选表。
-      const accountRoutes = [deepseekRoute(), deepseekModelsRoute(), ...deepseekAccountRoutes()];
-      const route = matchRoute(hasAccountToken ? accountRoutes : this.allRoutes, path);
+      const route = matchRoute(hasAccountToken ? ACCOUNT_ROUTES : this.allRoutes, path);
       if (!route) {
         res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
         res.end(`dsh-remote-explorer proxy: 无匹配的供应商路由（${path}）。`

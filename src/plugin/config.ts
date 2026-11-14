@@ -29,9 +29,9 @@ export const Config = z.object({
   /** 默认远端 Node 路径（existing 模式用；空 = 从远端 PATH 探测） */
   nodePath: z.string().default('')
     .description('existing 模式的远端 Node 绝对路径（空 = 从非交互 PATH 探测）'),
-  /** 默认内网 npm 源（existing 模式必填） */
+  /** 默认自定义 npm 源（existing 模式必填；auto 模式填写后跳过公共镜像测速） */
   npmRegistry: z.string().default('')
-    .description('existing 模式的内网 npm 源地址，如 https://nexus.example.com/repository/npm/'),
+    .description('自定义 npm 源地址，如 https://nexus.example.com/repository/npm/（existing 必填；auto 填写后不测速公共镜像）'),
   /** 默认主机别名（命令/面板未指定时用）；空串 = 不预选 */
   host: z.string().default('').description('默认 SSH 主机别名或 user@host[:port]'),
   /** 默认远端工作目录（POSIX 绝对路径）；空串 = 远端家目录 */

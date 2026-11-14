@@ -125,4 +125,31 @@ describe('renderConnectSummary', () => {
     assert.ok(optionsLine.includes('强制重启: 是'));
     assert.ok(optionsLine.includes('私钥覆盖: 有'));
   });
+
+  it('existing 模式展示 Node 路径与 npm 源', () => {
+    const lines = renderConnectSummary({
+      ...BASE, deploymentMode: 'existing', npmRegistry: 'https://nexus.example.com/repository/npm',
+    });
+    assert.ok(lines.some(line => line.includes('部署方式: existing')));
+    assert.ok(lines.some(line => line.includes('Node 路径: 从远端 PATH 探测')));
+    assert.ok(lines.some(line => line.includes('npm 源: https://nexus.example.com/repository/npm')));
+  });
+
+  it('auto 模式显式自定义源时展示 npm 源，未指定时不渲染', () => {
+    const custom = renderConnectSummary({
+      ...BASE, deploymentMode: 'auto', npmRegistry: 'https://registry.example.com',
+    });
+    assert.ok(custom.some(line => line.includes('npm 源: https://registry.example.com（自定义')));
+    assert.ok(!custom.some(line => line.includes('Node 路径')));
+    const plain = renderConnectSummary({ ...BASE, deploymentMode: 'auto' });
+    assert.ok(!plain.some(line => line.includes('npm 源')));
+  });
+
+  it('offline 模式不渲染 npm 源', () => {
+    const lines = renderConnectSummary({
+      ...BASE, deploymentMode: 'offline', npmRegistry: 'https://registry.example.com',
+    });
+    assert.ok(lines.some(line => line.includes('部署方式: offline')));
+    assert.ok(!lines.some(line => line.includes('npm 源')));
+  });
 });
