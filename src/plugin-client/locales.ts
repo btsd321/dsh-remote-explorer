@@ -15,6 +15,8 @@ export type RemoteExplorerLocaleKey =
   | 'advanced' | 'localPort' | 'forceRestart' | 'refreshMirrors'
   | 'nodeVersion' | 'dshVersion' | 'privateKey'
   | 'localResourceDownload' | 'localResourceDownloadAuto' | 'localResourceDownloadAlways' | 'localResourceDownloadOff'
+  | 'deploymentMode' | 'deploymentModeAuto' | 'deploymentModeExisting' | 'deploymentModeOffline'
+  | 'existingNodePath' | 'npmRegistry' | 'npmRegistryRequired'
   | 'password' | 'passwordWarning'
   | 'connect' | 'connecting' | 'connectCurrent' | 'connectNew'
   | 'enterCurrent' | 'openNew' | 'countdown' | 'cancelCountdown'
@@ -68,6 +70,13 @@ export const zh: Record<RemoteExplorerLocaleKey, string> = {
   localResourceDownloadAuto: 'auto（先探测远端网络，不可达才走本机代理）',
   localResourceDownloadAlways: 'always（始终走本机代理）',
   localResourceDownloadOff: 'off（远端直连下载）',
+  deploymentMode: '运行环境部署方式',
+  deploymentModeAuto: 'auto（自动安装 Node 与 dsh）',
+  deploymentModeExisting: 'existing（现有 Node + 内网 npm 源）',
+  deploymentModeOffline: 'offline（严格离线，仅复用预装运行时）',
+  existingNodePath: '远端 Node 路径（留空 = 从 PATH 探测）',
+  npmRegistry: '内网 npm 源（existing 必填）',
+  npmRegistryRequired: '「现有 Node + 内网 npm 源」模式必须填写内网 npm 源地址',
   password: 'SSH 密码',
   passwordWarning: '密码仅存宿主 dsh 进程内存，不落盘、不进日志；留空则要求主机已配置 IdentityFile',
   connect: '连接',
@@ -190,6 +199,13 @@ export const en: Record<RemoteExplorerLocaleKey, string> = {
   localResourceDownloadAuto: 'auto (probe the remote first; proxy only when unreachable)',
   localResourceDownloadAlways: 'always (always use this machine as proxy)',
   localResourceDownloadOff: 'off (download from the remote directly)',
+  deploymentMode: 'Runtime deployment',
+  deploymentModeAuto: 'auto (install Node and dsh automatically)',
+  deploymentModeExisting: 'existing (existing Node + intranet npm registry)',
+  deploymentModeOffline: 'offline (strict offline, reuse preinstalled runtime only)',
+  existingNodePath: 'Remote Node path (empty = probe from PATH)',
+  npmRegistry: 'Intranet npm registry (required for existing)',
+  npmRegistryRequired: 'The existing Node + intranet npm registry mode requires an intranet npm registry URL',
   password: 'SSH password',
   passwordWarning: 'The password stays in the host dsh process memory only — never written to disk or logged; leave empty to require an IdentityFile on the host',
   connect: 'Connect',

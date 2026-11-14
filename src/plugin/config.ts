@@ -23,6 +23,15 @@ import z from '@deepseek-ai/schemastery';
 export const Config = z.object({
   /** 严格离线引导及版本探测 */
   offline: z.boolean().default(false).description('严格离线模式（只复用预装运行时，不查询或下载）'),
+  /** 默认部署方式（auto/existing/offline；空 = 跟随 offline 字段） */
+  deploymentMode: z.string().default('')
+    .description('默认部署方式：auto（自动安装）、existing（现有 Node + 内网 npm 源）或 offline（严格离线）'),
+  /** 默认远端 Node 路径（existing 模式用；空 = 从远端 PATH 探测） */
+  nodePath: z.string().default('')
+    .description('existing 模式的远端 Node 绝对路径（空 = 从非交互 PATH 探测）'),
+  /** 默认内网 npm 源（existing 模式必填） */
+  npmRegistry: z.string().default('')
+    .description('existing 模式的内网 npm 源地址，如 https://nexus.example.com/repository/npm/'),
   /** 默认主机别名（命令/面板未指定时用）；空串 = 不预选 */
   host: z.string().default('').description('默认 SSH 主机别名或 user@host[:port]'),
   /** 默认远端工作目录（POSIX 绝对路径）；空串 = 远端家目录 */

@@ -15,6 +15,7 @@ import { openSession, type RemoteSession, type TransportType } from '../../sessi
 import { describeState, type SessionState } from '../../session/lifecycle-state.js';
 import { toErrorMessage } from '../../util/errors.js';
 import type { LocalResourceDownloadMode } from '../../provision/local-download-mode.js';
+import type { DeploymentMode } from '../../provision/intranet-runtime.js';
 import {
   bold, cyan, dim, green, println, printTable, red, yellow, ProgressReporter,
 } from '../output.js';
@@ -37,6 +38,12 @@ export interface ConnectCommandOptions {
   localPort: number;
   /** 严格离线引导 */
   offline?: boolean;
+  /** 部署方式（auto/existing/offline；优先于 offline） */
+  deploymentMode?: DeploymentMode;
+  /** existing 模式的远端 Node 路径 */
+  nodePath?: string;
+  /** 内网 npm 源 */
+  npmRegistry?: string;
   /** 目标 Node 版本 */
   nodeVersion?: string;
   /** 目标 dsh 版本或 dist-tag */
@@ -92,6 +99,9 @@ export async function runConnect(options: ConnectCommandOptions): Promise<number
     session = await openSession({
       hostAlias: options.alias,
       remoteCwd: options.cwd,
+      ...(options.deploymentMode ? { deploymentMode: options.deploymentMode } : {}),
+      ...(options.nodePath ? { nodePath: options.nodePath } : {}),
+      ...(options.npmRegistry ? { npmRegistry: options.npmRegistry } : {}),
       ...(options.offline ? { offline: true } : {}),
       localPort: options.localPort,
       ...(options.transportType ? { transportType: options.transportType } : {}),

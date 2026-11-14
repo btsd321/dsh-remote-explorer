@@ -20,6 +20,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 import { listHosts, refreshConfig } from '../hosts/ssh-config-parser.js';
 import { listWslDistros, refreshWslCache } from '../hosts/wsl-distro-parser.js';
 import { toErrorMessage } from '../util/errors.js';
+import { isValidDeploymentMode } from '../provision/intranet-runtime.js';
 import { SessionSupervisor, SupervisorError, type SessionSnapshot } from './supervisor.js';
 
 /** 统一错误出参：code 供模型分支，message 是中文定位信息 */
@@ -162,6 +163,9 @@ export function registerTools(ctx: Context, supervisor: SessionSupervisor): () =
         cwd: { type: 'string', description: '远端工作目录（POSIX 绝对路径，如 /home/user/project）；缺省用插件配置或远端家目录' },
         local_port: { type: 'integer', description: '本机转发端口；缺省自动分配' },
         force_restart: { type: 'boolean', description: '探测到既有远端会话时强制重启它' },
+        deployment_mode: { type: 'string', description: '部署方式：auto（自动安装）/existing（远端现有 Node + 内网 npm 源）/offline（严格离线）；缺省用插件配置' },
+        node_path: { type: 'string', description: 'existing 模式的远端 Node 绝对路径（如 /opt/node/bin/node）；留空从远端 PATH 探测' },
+        npm_registry: { type: 'string', description: 'existing 模式必填的内网 npm 源 URL（如 https://nexus.example.com/repository/npm/）' },
       },
       output: {
         schema: {
@@ -183,11 +187,22 @@ export function registerTools(ctx: Context, supervisor: SessionSupervisor): () =
       isConcurrencySafe: () => false,
       async execute(args) {
         try {
+          if (args.deployment_mode !== undefined && !isValidDeploymentMode(args.deployment_mode)) {
+            throw new SupervisorError(
+              'bad_usage',
+              `deployment_mode 必须是 auto/existing/offline，收到 '${args.deployment_mode}'`,
+            );
+          }
           const snapshot = supervisor.startConnect({
             hostAlias: args.host_alias,
             ...(args.cwd !== undefined ? { cwd: args.cwd } : {}),
             ...(args.local_port !== undefined ? { localPort: args.local_port } : {}),
             ...(args.force_restart !== undefined ? { forceRestart: args.force_restart } : {}),
+            ...(args.deployment_mode !== undefined
+              ? { deploymentMode: args.deployment_mode as 'auto' | 'existing' | 'offline' }
+              : {}),
+            ...(args.node_path !== undefined ? { nodePath: args.node_path } : {}),
+            ...(args.npm_registry !== undefined ? { npmRegistry: args.npm_registry } : {}),
           });
           return {
             session_id: snapshot.sessionId,

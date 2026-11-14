@@ -19,7 +19,9 @@ import {
   probeRemote,
   type ProbeResult,
 } from '../../provision/probe.js';
-import { isOfflineMode } from '../../provision/offline-runtime.js';
+import {
+  checkNpmRegistry, inspectExistingNode, resolveDeploymentMode, type DeploymentMode,
+} from '../../provision/intranet-runtime.js';
 import { selectMirror, type MirrorProbeResult } from '../../provision/mirror-selector.js';
 import { createRemotePaths, type RemotePaths } from '../../provision/remote-paths.js';
 import type { RemoteContext } from '../../provision/remote-context.js';
@@ -35,6 +37,14 @@ export interface DoctorOptions {
   alias: string;
   /** 强制重测镜像，忽略缓存 */
   refreshMirrors: boolean;
+  /** 旧版严格离线开关（兼容 --offline） */
+  offline?: boolean;
+  /** 部署方式（auto/existing/offline；缺省 auto） */
+  deploymentMode?: DeploymentMode;
+  /** existing 模式的远端 Node 路径 */
+  nodePath?: string;
+  /** 内网 npm 源（existing 模式建议提供） */
+  npmRegistry?: string;
   /** 传输类型；默认 'ssh' */
   transportType?: TransportType;
   /** WSL 发行版名称（transportType='wsl' 时必需） */
@@ -67,6 +77,8 @@ interface Finding {
  * @returns 进程退出码：0 全部通过或仅有警告，1 存在致命问题
  */
 export async function runDoctor(options: DoctorOptions): Promise<number> {
+  // 在创建传输前拒绝 existing 与进程级严格离线的冲突，避免诊断访问内网源。
+  const mode = resolveDeploymentMode(options.deploymentMode, options.offline);
   const progress = new ProgressReporter();
   const findings: Finding[] = [];
   const targetLabel = options.transportType === 'wsl' ? 'WSL 发行版' : '主机';
@@ -117,7 +129,7 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
     if (connFatal) { report(findings); return 1; }
 
     // 探测远端环境（home 目录、基础工具等）
-    const probe = await checkProbe(transport, progress, findings);
+    const probe = await checkProbe(transport, progress, findings, mode !== 'auto');
     if (!probe) { report(findings); return 1; }
 
     const paths = createRemotePaths(probe.homeDir);
@@ -132,12 +144,18 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
     // 已装运行时
     checkInstalledRuntimes(probe, findings);
 
-    // Node 稳定性自检
-    await checkNodeStabilityChecks(transport, probe, progress, findings);
+    // 部署方式：existing 模式单独诊断现成 Node + 内网源，不测公共镜像
+    if (mode === 'existing') {
+      findings.push({ item: '部署方式', verdict: 'ok', detail: 'existing（现有 Node + 内网 npm 源）' });
+      await checkExistingRuntime(ctx, options, progress, findings);
+    } else {
+      // Node 稳定性自检
+      await checkNodeStabilityChecks(transport, probe, progress, findings);
 
-    // 镜像测速
-    if (isOfflineMode()) findings.push({ item: '镜像测速', verdict: 'ok', detail: '严格离线模式：跳过所有网络测速' });
-    else await checkMirror(ctx, options, progress, findings);
+      // 镜像测速
+      if (mode === 'offline') findings.push({ item: '镜像测速', verdict: 'ok', detail: '严格离线模式：跳过所有网络测速' });
+      else await checkMirror(ctx, options, progress, findings);
+    }
 
     // 通道配额（仅 SSH）
     checkChannelQuota(transport, findings);
@@ -252,10 +270,11 @@ async function checkProbe(
   transport: RemoteTransport,
   progress: ProgressReporter,
   findings: Finding[],
+  skipDownloadTools = false,
 ): Promise<ProbeResult | null> {
   progress.start('探测远端环境');
   try {
-    const probe = await probeRemote(transport, undefined, isOfflineMode());
+    const probe = await probeRemote(transport, undefined, skipDownloadTools);
     progress.done(`home=${probe.homeDir}`);
     return probe;
   } catch (error) {
@@ -322,6 +341,88 @@ function checkInstalledRuntimes(probe: ProbeResult, findings: Finding[]): void {
         ? '已安装但不可运行（`dsh --version` 失败），引导会删除重装'
         : '尚未安装（首次 connect 时会自动装）',
   });
+}
+
+/**
+ * 诊断 existing 模式：现成 Node/npm、稳定性与内网 npm 源可达性。
+ *
+ * 这里不测 Node 发行站镜像——existing 不下载 Node；npm 源检查用
+ * `npm view @deepseek-ai/dsh version`，失败只报警告（用户可显式指定
+ * dsh 版本继续），不访问公共 registry。
+ *
+ * @param ctx - 远端上下文
+ * @param options - doctor 选项
+ * @param progress - 进度输出
+ * @param findings - 诊断结果收集
+ */
+async function checkExistingRuntime(
+  ctx: RemoteContext,
+  options: DoctorOptions,
+  progress: ProgressReporter,
+  findings: Finding[],
+): Promise<void> {
+  progress.start('探测远端现有 Node 与 npm');
+  try {
+    const runtime = await inspectExistingNode(ctx, {
+      ...(options.nodePath !== undefined ? { nodePath: options.nodePath } : {}),
+    });
+    progress.done(`Node ${runtime.nodeVersion} / npm ${runtime.npmVersion}`);
+    findings.push({
+      item: '现有 Node',
+      verdict: 'ok',
+      detail: `${runtime.nodeVersion}（${runtime.nodePath}）`,
+    });
+    findings.push({
+      item: '现有 npm',
+      verdict: 'ok',
+      detail: `${runtime.npmVersion}（${runtime.npmPath}）`,
+    });
+
+    progress.start(`Node ${runtime.nodeVersion} 稳定性自检`);
+    const stability = await probeNodeStability(ctx.transport, runtime.nodePath);
+    if (stability.isStable) {
+      progress.done(`${stability.attempts} 次全部成功`);
+      findings.push({
+        item: `Node ${runtime.nodeVersion} 稳定性`,
+        verdict: 'ok',
+        detail: `起进程 ${stability.attempts} 次，0 次失败`,
+      });
+    } else {
+      const rate = Math.round((stability.failures / stability.attempts) * 100);
+      progress.fail(`${stability.failures}/${stability.attempts} 次失败`);
+      findings.push({
+        item: `Node ${runtime.nodeVersion} 稳定性`,
+        verdict: 'fail',
+        detail: `起进程 ${stability.attempts} 次失败 ${stability.failures} 次（${rate}%），不适合运行 npm install`,
+      });
+    }
+
+    if (options.npmRegistry !== undefined && options.npmRegistry !== '') {
+      progress.start('检查内网 npm 源');
+      const registry = await checkNpmRegistry(ctx, {
+        registryUrl: options.npmRegistry,
+        nodeBinDir: runtime.nodeBinDir,
+      });
+      if (registry.ok) {
+        progress.done(`可访问${registry.version !== undefined ? `，dsh 最新 ${registry.version}` : ''}`);
+        findings.push({
+          item: '内网 npm 源',
+          verdict: 'ok',
+          detail: `${options.npmRegistry}${registry.version !== undefined ? `（@deepseek-ai/dsh ${registry.version}）` : ''}`,
+        });
+      } else {
+        progress.fail('不可访问或缺少 dsh');
+        findings.push({
+          item: '内网 npm 源',
+          verdict: 'fail',
+          detail: `${options.npmRegistry}：${registry.error ?? '检查失败'}`,
+        });
+      }
+    }
+  } catch (error) {
+    progress.fail(toErrorMessage(error));
+    findings.push({ item: '现有 Node', verdict: 'fail', detail: toErrorMessage(error) });
+  }
 }
 
 /**

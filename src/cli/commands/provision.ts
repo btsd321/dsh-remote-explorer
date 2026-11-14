@@ -16,6 +16,7 @@ import type { TransportType } from '../../session/options.js';
 import { provision } from '../../provision/provisioner.js';
 import { computeSessionId } from '../../util/session-id.js';
 import type { LocalResourceDownloadMode } from '../../provision/local-download-mode.js';
+import type { DeploymentMode } from '../../provision/intranet-runtime.js';
 import { prepareHostAuth } from '../host-auth.js';
 import { bold, cyan, dim, green, println, printTable, ProgressReporter } from '../output.js';
 
@@ -27,6 +28,12 @@ export interface ProvisionCommandOptions {
   cwd: string;
   /** 严格离线引导 */
   offline?: boolean;
+  /** 部署方式（auto/existing/offline；优先于 offline） */
+  deploymentMode?: DeploymentMode;
+  /** existing 模式的远端 Node 路径 */
+  nodePath?: string;
+  /** 内网 npm 源 */
+  npmRegistry?: string;
   /** 目标 Node 版本 */
   nodeVersion?: string;
   /** 目标 dsh 版本或 dist-tag */
@@ -93,6 +100,9 @@ export async function runProvision(options: ProvisionCommandOptions): Promise<nu
 
     const result = await provision(transport, {
       sessionId,
+      ...(options.deploymentMode ? { deploymentMode: options.deploymentMode } : {}),
+      ...(options.nodePath ? { nodePath: options.nodePath } : {}),
+      ...(options.npmRegistry ? { npmRegistry: options.npmRegistry } : {}),
       ...(options.offline ? { offline: true } : {}),
       ...(options.nodeVersion ? { nodeVersion: options.nodeVersion } : {}),
       ...(options.dshVersion ? { dshVersion: options.dshVersion } : {}),
@@ -109,6 +119,7 @@ export async function runProvision(options: ProvisionCommandOptions): Promise<nu
       ['项目', '值'],
       [
         ['远端根目录', result.paths.base],
+        ['部署方式', result.deploymentMode],
         ['Node', `${result.node.version}${result.node.reused ? dim('（复用）') : ''}`],
         ['dsh', `${result.dsh.version}${result.dsh.reused ? dim('（复用）') : ''}`],
         ['dsh 入口', result.dsh.dshBin],

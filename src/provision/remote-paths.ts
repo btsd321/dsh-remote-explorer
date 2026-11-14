@@ -190,6 +190,24 @@ export interface RemotePaths {
   nodeBinDir(version: string): string;
 
   /**
+   * 「现有 Node + 内网 npm 源」部署模式的私有运行时根目录
+   * （`base/existing`）。
+   *
+   * 该模式复用远端系统已有的 Node，但**不向系统 Node 目录写任何东西**：
+   * pnpm 等全局包装在这个私有 prefix 下，运行时通过 `<root>/bin` 的
+   * node/npm 符号链接接入。
+   */
+  readonly existingRuntimeRoot: string;
+
+  /**
+   * existing 模式的私有 bin 目录（`base/existing/bin`）。
+   *
+   * 内含指向系统 node/npm/npx 的符号链接；dsh 的 `#!/usr/bin/env node`
+   * 与 pnpm 的全局入口都靠这个目录进入 PATH。
+   */
+  readonly existingRuntimeBinDir: string;
+
+  /**
    * dsh 安装目录（= base）。dsh 装在 `base/node_modules` 下，不再按版本分目录。
    *
    * 参考 dsh 官方安装方式：`npm install @deepseek-ai/dsh@<version>` 在 `DSH_HOME`
@@ -324,6 +342,9 @@ export function createRemotePaths(homeDir: string): RemotePaths {
     nodeDir: (version) => `${base}/node/${version}`,
     nodeBin: (version) => `${base}/node/${version}/bin/node`,
     nodeBinDir: (version) => `${base}/node/${version}/bin`,
+
+    existingRuntimeRoot: `${base}/existing`,
+    existingRuntimeBinDir: `${base}/existing/bin`,
 
     // dsh 装在 base/node_modules 下，不再按版本分目录
     dshDir: base,
