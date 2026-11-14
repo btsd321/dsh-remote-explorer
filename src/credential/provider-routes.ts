@@ -260,22 +260,6 @@ export function localDeepseekConfig(settingsText?: string): Record<string, unkno
 }
 
 /**
- * 返回本机生效的 DeepSeek 原生通道 baseURL。
- *
- * 优先级：本机 profile/settings 的显式配置 > 本机进程的 `DEEPSEEK_BASE_URL`
- * > undefined（由 deepseekRoute 使用官方默认地址）。DSH 的 llm-deepseek
- * 适配器自身也以 `$DEEPSEEK_BASE_URL` 作为 trusted environment 兜底。
- *
- * @param settingsText - 本机配置文本；undefined 时只看环境变量
- * @returns baseURL；均未配置时 undefined
- */
-export function localDeepseekBaseURL(settingsText?: string): string | undefined {
-  const config = localDeepseekConfig(settingsText);
-  const baseURL = config?.['baseURL'];
-  return typeof baseURL === 'string' && baseURL.trim() !== '' ? baseURL.trim() : undefined;
-}
-
-/**
  * 解析 DeepSeek 原生通道的旧式路径。
  *
  * 远端 patch 把 baseURL 指向隧道的 `/anthropic`；DSH 的 `messagesApiRoot`

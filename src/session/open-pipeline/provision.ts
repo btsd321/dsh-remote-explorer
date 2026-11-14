@@ -84,11 +84,13 @@ export async function provisionAndConfigure(
   const deepseekBaseURL = typeof deepseekConfig?.['baseURL'] === 'string'
     ? deepseekConfig['baseURL'] as string
     : undefined;
+  // 合法性（环境变量名格式）由 deepseekRoute 统一校验；这里只收窄类型，
+  // 非字符串同样在入口拒绝，不让坏配置拖到请求期才暴露
   const configuredKeyEnv = deepseekConfig?.['apiKeyEnv'];
   if (configuredKeyEnv !== undefined && typeof configuredKeyEnv !== 'string') {
     throw new Error('DeepSeek apiKeyEnv 必须是合法环境变量名');
   }
-  const keyEnv = configuredKeyEnv as string | undefined;
+  const keyEnv = configuredKeyEnv;
   const localCredentials = readLocalCredentials();
   const accountToken = readLocalAccountToken();
   if (accountToken !== undefined) {

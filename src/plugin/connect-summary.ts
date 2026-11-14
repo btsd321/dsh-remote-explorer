@@ -125,9 +125,13 @@ export function renderConnectSummary(input: ConnectSummaryInput): string[] {
     ? 'existing（现有 Node + 内网 npm 源）'
     : deployment === 'offline' ? 'offline（严格离线）' : 'auto（自动安装）';
   lines.push(`  部署方式: ${deploymentLabel}`);
+  // auto 模式也可指定自定义源（跳过公共镜像测速），同样要打出来便于排查；
+  // offline 不访问任何源，不渲染
   if (deployment === 'existing') {
     lines.push(`  Node 路径: ${input.nodePath ?? '从远端 PATH 探测'}`);
-    lines.push(`  内网 npm 源: ${input.npmRegistry ?? '未配置'}`);
+    lines.push(`  npm 源: ${input.npmRegistry ?? '未配置'}`);
+  } else if (deployment === 'auto' && input.npmRegistry !== undefined) {
+    lines.push(`  npm 源: ${input.npmRegistry}（自定义，跳过公共镜像测速）`);
   }
 
   // 本地资源下载（SSH 专属；WSL 域无此选项，不渲染占位行免误导）

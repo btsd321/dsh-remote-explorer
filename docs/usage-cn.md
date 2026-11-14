@@ -605,6 +605,9 @@ pnpm exec tsx scripts/dev-plugin.ts --sync   # 只同步产物进沙箱
     forceRestart: false
     refreshMirrors: false
     panel: true               # false = 不注册面板路由，只留命令与工具
+    deploymentMode: ""        # 空 = 跟随 offline；auto / existing / offline
+    nodePath: ""              # existing：远端 Node 绝对路径（空 = 从远端 PATH 探测）
+    npmRegistry: ""           # 自定义 npm 源；existing 必填，auto 填写后跳过公共镜像测速
 ```
 
 **没有 password 字段**——Config 会随 patch 落盘，密码进配置等于明文写磁盘。
