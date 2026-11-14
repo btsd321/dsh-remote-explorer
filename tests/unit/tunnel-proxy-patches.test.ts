@@ -80,3 +80,33 @@ test('远端 patch 只包含安全模型元数据，不透传 headers 或明文�
   const native = makeProxy(undefined, config).remotePatches()[0]!;
   assert.deepEqual(native.config, { models: [{ id: 'test-model', name: '测试' }], baseURL: 'http://127.0.0.1:40123/anthropic' });
 });
+
+test('远端 patch 保留 DSH catalogModel 的多模态字段，丢弃非 schema 字段与无效条目', () => {
+  const config = {
+    reasoningEffort: 'high',
+    models: [
+      {
+        id: 'vision-model', name: '视觉', description: '多模态', contextWindow: 128000, maxTokens: 8192,
+        inputModalities: ['text', 'image', 'audio'], imagePixelBudget: 'low', imageMaxBytes: 4_000_000,
+        systemPromptUpdate: 'in-history', toolUpdate: 'addition-only',
+        // 非 DSH schema 字段（pi-ai 风格）不应下发
+        input: ['text'], cost: { input: 1 }, maxOutputTokens: 100,
+      },
+      'string-entry',
+      { name: '缺 id' },
+      null,
+    ],
+  };
+  const native = makeProxy(undefined, config).remotePatches()[0]!;
+  assert.deepEqual(native.config['models'], [{
+    id: 'vision-model', name: '视觉', description: '多模态', contextWindow: 128000, maxTokens: 8192,
+    inputModalities: ['text', 'image'], imagePixelBudget: 'low', imageMaxBytes: 4_000_000,
+    systemPromptUpdate: 'in-history', toolUpdate: 'addition-only',
+  }]);
+  assert.equal(native.config['reasoningEffort'], 'high');
+});
+
+test('模型条目全部无效时省略 models，非法 reasoningEffort 不下发', () => {
+  const native = makeProxy(undefined, { reasoningEffort: 'turbo', models: ['x', { name: 'y' }] }).remotePatches()[0]!;
+  assert.deepEqual(native.config, { baseURL: 'http://127.0.0.1:40123/anthropic' });
+});
