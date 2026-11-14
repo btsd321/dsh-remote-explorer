@@ -25,6 +25,9 @@ import { listWslDistros, refreshWslCache } from '../hosts/wsl-distro-parser.js';
 import { fetchDshVersions } from '../provision/dsh-version-fetch.js';
 import { fetchNodeVersions } from '../provision/node-version-fetch.js';
 import { isValidLocalResourceDownloadMode, type LocalResourceDownloadMode } from '../provision/local-download-mode.js';
+import {
+  isValidDeploymentMode, validateNodePath, validateNpmRegistry, type DeploymentMode,
+} from '../provision/intranet-runtime.js';
 import { toErrorMessage } from '../util/errors.js';
 import { SessionSupervisor, SupervisorError, type ConnectRequest, type SessionSnapshot } from './supervisor.js';
 import {
@@ -240,12 +243,42 @@ function buildRoutes(supervisor: SessionSupervisor): RouteDef[] {
               { status: 400 },
             );
           }
-          // WSL 域只有 env：body 出现 proxy/jumpHosts/localResourceDownload 一律 400
+          // 部署方式/Node 路径/内网 npm 源（SSH 专属扩展字段）
+          const deploymentModeRaw: unknown = body.deploymentMode;
+          if (deploymentModeRaw !== undefined && !isValidDeploymentMode(deploymentModeRaw)) {
+            return Response.json(
+              { code: 'bad_usage', message: `deploymentMode 必须是 'auto'、'existing' 或 'offline'，收到 '${String(deploymentModeRaw)}'` },
+              { status: 400 },
+            );
+          }
+          const nodePathRaw: unknown = body.nodePath;
+          if (nodePathRaw !== undefined && typeof nodePathRaw !== 'string') {
+            return Response.json({ code: 'bad_usage', message: 'nodePath 必须是字符串' }, { status: 400 });
+          }
+          if (typeof nodePathRaw === 'string' && nodePathRaw !== '') {
+            const error = validateNodePath(nodePathRaw);
+            if (error !== undefined) return Response.json({ code: 'bad_usage', message: error }, { status: 400 });
+          }
+          const npmRegistryRaw: unknown = body.npmRegistry;
+          if (npmRegistryRaw !== undefined && typeof npmRegistryRaw !== 'string') {
+            return Response.json({ code: 'bad_usage', message: 'npmRegistry 必须是字符串' }, { status: 400 });
+          }
+          if (typeof npmRegistryRaw === 'string' && npmRegistryRaw !== '') {
+            const error = validateNpmRegistry(npmRegistryRaw);
+            if (error !== undefined) return Response.json({ code: 'bad_usage', message: error }, { status: 400 });
+          }
+          // WSL 域只有 env：body 出现 SSH 专属字段一律 400
           // （域契约，存储层写侧还有一道防御性抛错）
           if (transportType === 'wsl') {
             if (lrdRaw !== undefined) {
               return Response.json(
                 { code: 'bad_usage', message: 'WSL 连接不支持 localResourceDownload 配置，仅支持环境变量' },
+                { status: 400 },
+              );
+            }
+            if (deploymentModeRaw !== undefined || nodePathRaw !== undefined || npmRegistryRaw !== undefined) {
+              return Response.json(
+                { code: 'bad_usage', message: 'WSL 连接不支持部署方式/Node 路径/npm 源配置，仅支持环境变量' },
                 { status: 400 },
               );
             }
@@ -262,11 +295,27 @@ function buildRoutes(supervisor: SessionSupervisor): RouteDef[] {
           const lrdEffective = lrdRaw !== undefined
             ? (lrdRaw as LocalResourceDownloadMode)
             : current.localResourceDownload;
+          const deploymentModeEffective = deploymentModeRaw !== undefined
+            ? (deploymentModeRaw as DeploymentMode)
+            : current.deploymentMode;
+          const nodePathEffective = nodePathRaw !== undefined
+            ? (nodePathRaw === '' ? undefined : nodePathRaw as string)
+            : current.nodePath;
+          const npmRegistryEffective = npmRegistryRaw !== undefined
+            ? (npmRegistryRaw === '' ? undefined : npmRegistryRaw as string)
+            : current.npmRegistry;
           const merged: AdvancedConfig = {
             env: envRaw !== undefined ? env : current.env,
-            ...(proxyRaw !== undefined && proxyRaw !== '' ? { proxy: proxyRaw } : {}),
-            ...(jumpRaw !== undefined && jumpRaw.length > 0 ? { jumpHosts: jumpRaw } : {}),
+            ...(proxyRaw !== undefined
+              ? (proxyRaw !== '' ? { proxy: proxyRaw } : {})
+              : (current.proxy !== undefined ? { proxy: current.proxy } : {})),
+            ...(jumpRaw !== undefined
+              ? (jumpRaw.length > 0 ? { jumpHosts: jumpRaw } : {})
+              : (current.jumpHosts !== undefined ? { jumpHosts: current.jumpHosts } : {})),
             ...(lrdEffective !== undefined ? { localResourceDownload: lrdEffective } : {}),
+            ...(deploymentModeEffective !== undefined ? { deploymentMode: deploymentModeEffective } : {}),
+            ...(nodePathEffective !== undefined ? { nodePath: nodePathEffective } : {}),
+            ...(npmRegistryEffective !== undefined ? { npmRegistry: npmRegistryEffective } : {}),
           };
           const validation = validateAdvancedConfig(merged);
           if (validation !== undefined) {
@@ -309,10 +358,38 @@ function buildRoutes(supervisor: SessionSupervisor): RouteDef[] {
               { status: 400 },
             );
           }
+          // 部署方式与内网运行时字段：SSH 专属；WSL 传了就 400
+          const deploymentModeRaw = stringField(body, 'deploymentMode');
+          if (deploymentModeRaw !== undefined && !isValidDeploymentMode(deploymentModeRaw)) {
+            return Response.json(
+              { code: 'bad_usage', message: `deploymentMode 必须是 'auto'、'existing' 或 'offline'，收到 '${deploymentModeRaw}'` },
+              { status: 400 },
+            );
+          }
+          const nodePathRaw = stringField(body, 'nodePath');
+          if (nodePathRaw !== undefined && nodePathRaw !== '') {
+            const error = validateNodePath(nodePathRaw);
+            if (error !== undefined) return Response.json({ code: 'bad_usage', message: error }, { status: 400 });
+          }
+          const npmRegistryRaw = stringField(body, 'npmRegistry');
+          if (npmRegistryRaw !== undefined && npmRegistryRaw !== '') {
+            const error = validateNpmRegistry(npmRegistryRaw);
+            if (error !== undefined) return Response.json({ code: 'bad_usage', message: error }, { status: 400 });
+          }
+          if (transportType === 'wsl'
+            && (deploymentModeRaw !== undefined || nodePathRaw !== undefined || npmRegistryRaw !== undefined)) {
+            return Response.json(
+              { code: 'bad_usage', message: 'WSL 连接不支持部署方式/Node 路径/npm 源配置' },
+              { status: 400 },
+            );
+          }
           const connectRequest: ConnectRequest = {
             hostAlias,
             transportType,
             ...(distroName !== undefined ? { distroName } : {}),
+            ...(deploymentModeRaw !== undefined ? { deploymentMode: deploymentModeRaw as DeploymentMode } : {}),
+            ...(nodePathRaw !== undefined && nodePathRaw !== '' ? { nodePath: nodePathRaw } : {}),
+            ...(npmRegistryRaw !== undefined && npmRegistryRaw !== '' ? { npmRegistry: npmRegistryRaw } : {}),
             ...(stringField(body, 'wslUser') !== undefined ? { wslUser: stringField(body, 'wslUser') } : {}),
             ...(stringField(body, 'cwd') !== undefined ? { cwd: stringField(body, 'cwd') } : {}),
             ...(stringField(body, 'password') !== undefined ? { password: stringField(body, 'password') } : {}),

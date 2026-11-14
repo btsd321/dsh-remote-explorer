@@ -24,7 +24,7 @@ import {
 import { readLocalCredentials, readLocalAccountToken } from '../../credential/local-credentials.js';
 import { TunnelProxyCredential } from '../../credential/tunnel-proxy.js';
 import {
-  deepseekRoute, deepseekModelsRoute, extractProviderRoutes, readLocalSettings,
+  deepseekRoute, deepseekModelsRoute, extractProviderRoutes, localDeepseekConfig, readLocalSettings,
   renderProviderTunnelPatch,
 } from '../../credential/provider-routes.js';
 import { writeProxySecret, writePlaceholderAccountCredentials, writeSessionReverseHost } from '../../credential/proxy-secret.js';
@@ -78,6 +78,19 @@ export async function provisionAndConfigure(
   //    在安全层面等价（都是模型调用认证密钥），走同一隧道代理替换，不出本机
   const localSettings = readLocalSettings();
   const providerRoutes = localSettings ? extractProviderRoutes(localSettings) : [];
+  // DeepSeek 官方模型也允许自定义 baseURL 与 models 目录；不读这段会让远端
+  // 固定走官方地址和内置模型列表
+  const deepseekConfig = localDeepseekConfig(localSettings);
+  const deepseekBaseURL = typeof deepseekConfig?.['baseURL'] === 'string'
+    ? deepseekConfig['baseURL'] as string
+    : undefined;
+  // 合法性（环境变量名格式）由 deepseekRoute 统一校验；这里只收窄类型，
+  // 非字符串同样在入口拒绝，不让坏配置拖到请求期才暴露
+  const configuredKeyEnv = deepseekConfig?.['apiKeyEnv'];
+  if (configuredKeyEnv !== undefined && typeof configuredKeyEnv !== 'string') {
+    throw new Error('DeepSeek apiKeyEnv 必须是合法环境变量名');
+  }
+  const keyEnv = configuredKeyEnv;
   const localCredentials = readLocalCredentials();
   const accountToken = readLocalAccountToken();
   if (accountToken !== undefined) {
@@ -86,7 +99,7 @@ export async function provisionAndConfigure(
   const credential = secret
     ? new TunnelProxyCredential(
       secret.token, secret.reversePort, secret.reverseHost,
-      [deepseekRoute(), deepseekModelsRoute(), ...providerRoutes],
+      [deepseekRoute(deepseekBaseURL, keyEnv), deepseekModelsRoute(deepseekBaseURL, keyEnv), ...providerRoutes],
       options.hostAlias,
       localCredentials,
       // manageHandlers 直接传（undefined 落到可选参数位）——**不能用条件
@@ -96,6 +109,7 @@ export async function provisionAndConfigure(
       // 报「本机未登录 DeepSeek 账号」502）
       options.manageHandlers,
       accountToken,
+      deepseekConfig,
     )
     : undefined;
 
@@ -108,7 +122,10 @@ export async function provisionAndConfigure(
   const provisioned = await provision(transport, {
     sessionId,
     patches,
+    ...(options.deploymentMode ? { deploymentMode: options.deploymentMode } : {}),
     ...(options.offline ? { offline: true } : {}),
+    ...(options.nodePath ? { nodePath: options.nodePath } : {}),
+    ...(options.npmRegistry ? { npmRegistry: options.npmRegistry } : {}),
     ...(options.nodeVersion ? { nodeVersion: options.nodeVersion } : {}),
     ...(options.dshVersion ? { dshVersion: options.dshVersion } : {}),
     ...(options.refreshMirrors ? { refreshMirrors: true } : {}),

@@ -19,6 +19,7 @@ import type { PasswordPromptFn } from '../util/password-prompt.js';
 import type { ManageHandlers } from '../handoff/protocol.js';
 import type { JumpEntry } from '../hosts/ssh-config-parser.js';
 import type { LocalResourceDownloadMode } from '../provision/local-download-mode.js';
+import type { DeploymentMode } from '../provision/intranet-runtime.js';
 
 /** 传输类型标识 */
 export type TransportType = 'ssh' | 'wsl';
@@ -37,6 +38,17 @@ export interface OpenSessionOptions {
   wslUser?: string;
   /** 严格离线引导，只使用已安装的运行时 */
   offline?: boolean;
+  /**
+   * 部署方式（优先于 offline 布尔）：
+   * - `auto`：自动安装 Node，npm 走公共镜像
+   * - `existing`：复用远端现有 Node，只从 `npmRegistry` 安装 dsh/pnpm
+   * - `offline`：严格离线，只复用预装运行时
+   */
+  deploymentMode?: DeploymentMode;
+  /** existing 模式的远端 node 路径；缺省从远端非交互 PATH 探测 */
+  nodePath?: string;
+  /** 内网 npm 源（existing 必填；auto 可选） */
+  npmRegistry?: string;
   /** 目标 Node 版本 */
   nodeVersion?: string;
   /** 目标 dsh 版本或 dist-tag */

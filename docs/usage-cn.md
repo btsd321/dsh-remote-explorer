@@ -156,6 +156,9 @@ pnpm exec tsx src/cli/bin.ts provision <别名> --cwd //home/user
 | `--node-version <版本>` | 目标 Node 版本（默认解析 Node 24 最新稳定版） |
 | `--dsh-version <版本>` | 目标 dsh 版本或 dist-tag（默认最大稳定版，无稳定版取最新 rc，alpha 不选；首选装不上时退到次新，最多 3 个；失败回退兜底） |
 | `--refresh-mirrors` | 强制重测镜像延迟 |
+| `--deployment-mode <mode>` | 部署方式：`auto`（默认）/`existing`（现有 Node + 内网 npm 源）/`offline`（严格离线） |
+| `--node-path <绝对路径>` | `existing` 模式的远端 Node 路径；留空从远端非交互 PATH 探测 |
+| `--npm-registry <URL>` | `existing` 模式必填的内网 npm 源；也可用于 `auto` 模式指定自定义源 |
 | `--ssh-config <路径>` | 使用指定的 ssh config 文件 |
 | `--private-key <路径>` | 私钥路径，优先于 config 的 IdentityFile（见[认证与主机指定](#认证与主机指定)） |
 | `--password <密码>` | 明文密码认证（有泄露风险，见[认证与主机指定](#认证与主机指定)） |
@@ -208,6 +211,9 @@ DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect <别名> --cwd //ho
 | `--node-version <版本>` | 目标 Node 版本（默认解析 Node 24 最新稳定版） |
 | `--dsh-version <版本>` | 目标 dsh 版本或 dist-tag（默认最大稳定版，无稳定版取最新 rc，alpha 不选；首选装不上时退到次新，最多 3 个；失败回退兜底） |
 | `--refresh-mirrors` | 强制重测镜像延迟 |
+| `--deployment-mode <mode>` | 部署方式：`auto`（默认）/`existing`（现有 Node + 内网 npm 源）/`offline`（严格离线） |
+| `--node-path <绝对路径>` | `existing` 模式的远端 Node 路径；留空从远端非交互 PATH 探测 |
+| `--npm-registry <URL>` | `existing` 模式必填的内网 npm 源；也可用于 `auto` 模式指定自定义源 |
 | `--ssh-config <路径>` | 使用指定的 ssh config 文件 |
 | `--private-key <路径>` | 私钥路径，优先于 config 的 IdentityFile（见[认证与主机指定](#认证与主机指定)） |
 | `--password <密码>` | 明文密码认证（有泄露风险，见[认证与主机指定](#认证与主机指定)） |
@@ -599,6 +605,9 @@ pnpm exec tsx scripts/dev-plugin.ts --sync   # 只同步产物进沙箱
     forceRestart: false
     refreshMirrors: false
     panel: true               # false = 不注册面板路由，只留命令与工具
+    deploymentMode: ""        # 空 = 跟随 offline；auto / existing / offline
+    nodePath: ""              # existing：远端 Node 绝对路径（空 = 从远端 PATH 探测）
+    npmRegistry: ""           # 自定义 npm 源；existing 必填，auto 填写后跳过公共镜像测速
 ```
 
 **没有 password 字段**——Config 会随 patch 落盘，密码进配置等于明文写磁盘。

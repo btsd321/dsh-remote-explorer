@@ -20,6 +20,9 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 import { listHosts, refreshConfig } from '../hosts/ssh-config-parser.js';
 import { listWslDistros, refreshWslCache } from '../hosts/wsl-distro-parser.js';
 import { toErrorMessage } from '../util/errors.js';
+import {
+  isValidDeploymentMode, validateNodePath, validateNpmRegistry,
+} from '../provision/intranet-runtime.js';
 import { SessionSupervisor, SupervisorError, type SessionSnapshot } from './supervisor.js';
 
 /** 统一错误出参：code 供模型分支，message 是中文定位信息 */
@@ -162,6 +165,9 @@ export function registerTools(ctx: Context, supervisor: SessionSupervisor): () =
         cwd: { type: 'string', description: '远端工作目录（POSIX 绝对路径，如 /home/user/project）；缺省用插件配置或远端家目录' },
         local_port: { type: 'integer', description: '本机转发端口；缺省自动分配' },
         force_restart: { type: 'boolean', description: '探测到既有远端会话时强制重启它' },
+        deployment_mode: { type: 'string', description: '部署方式：auto（自动安装）/existing（远端现有 Node + 内网 npm 源）/offline（严格离线）；缺省用插件配置' },
+        node_path: { type: 'string', description: 'existing 模式的远端 Node 绝对路径（如 /opt/node/bin/node）；留空从远端 PATH 探测' },
+        npm_registry: { type: 'string', description: '自定义 npm 源 URL（如 https://nexus.example.com/repository/npm/）；existing 模式必填，auto 模式填写后跳过公共镜像测速' },
       },
       output: {
         schema: {
@@ -183,11 +189,27 @@ export function registerTools(ctx: Context, supervisor: SessionSupervisor): () =
       isConcurrencySafe: () => false,
       async execute(args) {
         try {
+          const deploymentMode = args.deployment_mode;
+          if (deploymentMode !== undefined && !isValidDeploymentMode(deploymentMode)) {
+            throw new SupervisorError(
+              'bad_usage',
+              `deployment_mode 必须是 auto/existing/offline，收到 '${deploymentMode}'`,
+            );
+          }
+          // 与 CLI、面板路由同一套校验：非法路径/源在入口拒绝，不拖到远端引导才失败
+          const nodePath = args.node_path !== undefined && args.node_path !== '' ? args.node_path : undefined;
+          const npmRegistry = args.npm_registry !== undefined && args.npm_registry !== '' ? args.npm_registry : undefined;
+          const inputError = (nodePath !== undefined ? validateNodePath(nodePath) : undefined)
+            ?? (npmRegistry !== undefined ? validateNpmRegistry(npmRegistry) : undefined);
+          if (inputError !== undefined) throw new SupervisorError('bad_usage', inputError);
           const snapshot = supervisor.startConnect({
             hostAlias: args.host_alias,
             ...(args.cwd !== undefined ? { cwd: args.cwd } : {}),
             ...(args.local_port !== undefined ? { localPort: args.local_port } : {}),
             ...(args.force_restart !== undefined ? { forceRestart: args.force_restart } : {}),
+            ...(deploymentMode !== undefined ? { deploymentMode } : {}),
+            ...(nodePath !== undefined ? { nodePath } : {}),
+            ...(npmRegistry !== undefined ? { npmRegistry } : {}),
           });
           return {
             session_id: snapshot.sessionId,

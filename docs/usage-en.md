@@ -120,6 +120,9 @@ pnpm exec tsx src/cli/bin.ts doctor <alias>
 | Option | Description |
 |---|---|
 | `--refresh-mirrors` | Force re-benchmark mirror latency, ignore cached results |
+| `--deployment-mode <mode>` | Deployment mode: `auto` (default) / `existing` (existing Node + intranet npm registry) / `offline` (strict offline) |
+| `--node-path <absolute-path>` | Remote Node path for `existing`; empty = probe the remote non-interactive PATH |
+| `--npm-registry <URL>` | Intranet npm registry (required for `existing`; optional custom registry for `auto`) |
 | `--ssh-config <path>` | Use a custom ssh config file |
 | `--private-key <path>` | Private key path, wins over the config's IdentityFile (see [Authentication](#authentication-and-host-targeting)) |
 | `--password <password>` | Plaintext password auth (leaks; see [Authentication](#authentication-and-host-targeting)) |
@@ -156,6 +159,9 @@ pnpm exec tsx src/cli/bin.ts provision <alias> --cwd //home/user
 | `--node-version <ver>` | Target Node version (default: resolve the latest Node 24 stable release) |
 | `--dsh-version <ver>` | Target dsh version or dist-tag (default: highest stable release, falling back to the latest rc when no stable exists; alpha excluded; if the top pick cannot be installed, walks down the candidate chain to the next newest, up to 3 attempts; fallback on failure) |
 | `--refresh-mirrors` | Force re-benchmark mirror latency |
+| `--deployment-mode <mode>` | Deployment mode: `auto` (default) / `existing` (existing Node + intranet npm registry) / `offline` (strict offline) |
+| `--node-path <absolute-path>` | Remote Node path for `existing`; empty = probe the remote non-interactive PATH |
+| `--npm-registry <URL>` | Intranet npm registry (required for `existing`; optional custom registry for `auto`) |
 | `--ssh-config <path>` | Use a custom ssh config file |
 | `--private-key <path>` | Private key path, wins over the config's IdentityFile (see [Authentication](#authentication-and-host-targeting)) |
 | `--password <password>` | Plaintext password auth (leaks; see [Authentication](#authentication-and-host-targeting)) |
@@ -208,6 +214,9 @@ DEEPSEEK_API_KEY=sk-xxx pnpm exec tsx src/cli/bin.ts connect <alias> --cwd //hom
 | `--node-version <ver>` | Target Node version (default: resolve the latest Node 24 stable release) |
 | `--dsh-version <ver>` | Target dsh version or dist-tag (default: highest stable release, falling back to the latest rc when no stable exists; alpha excluded; if the top pick cannot be installed, walks down the candidate chain to the next newest, up to 3 attempts; fallback on failure) |
 | `--refresh-mirrors` | Force re-benchmark mirror latency |
+| `--deployment-mode <mode>` | Deployment mode: `auto` (default) / `existing` (existing Node + intranet npm registry) / `offline` (strict offline) |
+| `--node-path <absolute-path>` | Remote Node path for `existing`; empty = probe the remote non-interactive PATH |
+| `--npm-registry <URL>` | Intranet npm registry (required for `existing`; optional custom registry for `auto`) |
 | `--ssh-config <path>` | Use a custom ssh config file |
 | `--private-key <path>` | Private key path, wins over the config's IdentityFile (see [Authentication](#authentication-and-host-targeting)) |
 | `--password <password>` | Plaintext password auth (leaks; see [Authentication](#authentication-and-host-targeting)) |
@@ -600,6 +609,9 @@ Override by entry id in the profile's `cordis.patch.yml`:
     forceRestart: false
     refreshMirrors: false
     panel: true               # false = skip panel routes, keep command and tools
+    deploymentMode: ""        # empty = follow offline; auto / existing / offline
+    nodePath: ""              # existing: absolute remote Node path (empty = probe remote PATH)
+    npmRegistry: ""           # custom npm registry; required for existing, skips public mirror probing in auto
 ```
 
 **There is no password field** — Config lands on disk with the patch layer; a password there would be plaintext on disk.

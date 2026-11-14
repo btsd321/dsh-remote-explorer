@@ -21,12 +21,16 @@ export const INSTALL_LOCK_WAIT_SECONDS = 900;
 /**
  * 把一条安装命令包进远端 flock 临界区。
  *
+ * **先创建锁文件父目录**：existing 模式不下载 Node，`base/tmp` 不会像 auto
+ * 模式那样由下载临时目录顺带创建；直接 `flock <base>/tmp/install.lock` 会因
+ * 父目录不存在立即失败（stderr 含 flock，极易被误判成等锁超时）。
+ *
  * @param paths - 远端路径集合（取锁文件位置）
  * @param command - 原始 shell 命令（未转义整体，作为 flock -c 的单一参数）
  * @returns 加锁后的命令字符串
  */
 export function lockInstallCommand(paths: RemotePaths, command: string): string {
-  return `flock -w ${INSTALL_LOCK_WAIT_SECONDS} ${quote(paths.installLockFile)} -c ${quote(command)}`;
+  return `mkdir -p ${quote(paths.tmpRoot)} && flock -w ${INSTALL_LOCK_WAIT_SECONDS} ${quote(paths.installLockFile)} -c ${quote(command)}`;
 }
 
 /**
@@ -37,6 +41,12 @@ export function lockInstallCommand(paths: RemotePaths, command: string): string 
  * @returns 补充说明；不像锁超时时 undefined
  */
 export function installLockHint(stderr: string): string | undefined {
+  if (/flock.*(?:command not found|not found)/i.test(stderr)) {
+    return '（远端缺少 flock 命令，无法串行化安装；请安装 util-linux 后重试）';
+  }
+  if (/flock.*(?:cannot open lock file|no such file or directory|permission denied)/i.test(stderr)) {
+    return '（flock 锁文件不可写：请确认远端安装根目录存在且当前用户有写权限）';
+  }
   return /flock/i.test(stderr)
     ? '（flock 等锁超时：同一远端账号下另一引导正在进行，稍后重试）'
     : undefined;

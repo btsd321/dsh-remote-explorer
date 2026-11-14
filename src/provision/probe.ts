@@ -145,7 +145,8 @@ export async function probeRemote(
       { hostAlias: transport.hostAlias },
     );
   }
-  if (!tools.hasTar) {
+  // offline/existing 不下载或解包 Node；tar 只影响自动安装路径
+  if (!offline && !tools.hasTar) {
     throw new RemoteError(
       'REMOTE_TOOL_MISSING',
       `主机 ${transport.hostAlias} 上没有 tar，无法解包 Node 发行版`,

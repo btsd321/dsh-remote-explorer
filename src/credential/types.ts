@@ -15,8 +15,8 @@ import type { Duplex } from 'node:stream';
 export interface CredentialPatchEntry {
   /** 目标条目 id */
   id: string;
-  /** 要覆盖的配置字段 */
-  config: Record<string, string | number | boolean>;
+  /** 要覆盖的配置字段；允许嵌套值（如 DeepSeek 自定义 models 目录） */
+  config: Record<string, unknown>;
 }
 
 /** 凭据策略契约 */

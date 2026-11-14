@@ -18,9 +18,13 @@
  */
 
 import { isOfflineMode } from '../provision/offline-runtime.js';
+import {
+  isValidDeploymentMode, resolveDeploymentMode, type DeploymentMode,
+} from '../provision/intranet-runtime.js';
 import { openSession, type RemoteSession, type TransportType } from '../session/session-manager.js';
 import { HANDOFF_PROTOCOL_VERSION, type ManageHandlers } from '../handoff/protocol.js';
 import { listSessions } from '../session/session-registry.js';
+import { resolveRuntimeOverrides } from './runtime-options.js';
 import { readAdvancedConfig } from './advanced-store.js';
 import { renderConnectSummary } from './connect-summary.js';
 import { planJumpHosts } from '../session/transport/factory.js';
@@ -130,6 +134,12 @@ export interface ConnectRequest {
   forceRestart?: boolean;
   /** 强制重测镜像 */
   refreshMirrors?: boolean;
+  /** 部署方式：auto/existing/offline；缺省用插件配置 */
+  deploymentMode?: DeploymentMode;
+  /** existing 模式的远端 Node 绝对路径；缺省从远端 PATH 探测 */
+  nodePath?: string;
+  /** 内网 npm 源（existing 必填；auto 可选） */
+  npmRegistry?: string;
   /** Node 版本覆盖 */
   nodeVersion?: string;
   /** dsh 版本覆盖 */
@@ -198,6 +208,12 @@ export class SupervisorError extends Error {
 export interface SupervisorDefaults {
   /** 严格离线引导，省略保持在线流程 */
   offline?: boolean;
+  /** 默认部署方式（auto/existing/offline；空 = 跟随 offline） */
+  deploymentMode?: string;
+  /** 默认 existing 模式的远端 Node 路径 */
+  nodePath?: string;
+  /** 默认内网 npm 源 */
+  npmRegistry?: string;
   /** 默认远端工作目录 */
   cwd: string;
   /** 默认本机端口（0 = OS 分配） */
@@ -456,6 +472,16 @@ export class SessionSupervisor {
       const refreshMirrors = request.refreshMirrors ?? this.defaults.refreshMirrors;
       const nodeVersion = request.nodeVersion ?? this.defaults.nodeVersion;
       const dshVersion = request.dshVersion ?? this.defaults.dshVersion;
+      const configuredMode = record.transportType === 'ssh' && isValidDeploymentMode(this.defaults.deploymentMode)
+        ? this.defaults.deploymentMode
+        : undefined;
+      const deploymentMode = resolveDeploymentMode(
+        request.deploymentMode ?? (isSsh ? advanced.deploymentMode : undefined) ?? configuredMode,
+        this.defaults.offline,
+      );
+      const { nodePath, npmRegistry } = isSsh
+        ? resolveRuntimeOverrides(deploymentMode, request, advanced, this.defaults)
+        : {};
 
       // 连接选项日志（用户排查「连的是什么」的一手资料）：渲染纪律见
       // connect-summary（键名/打码/途径种类，绝不打值）；双落——面板日志
@@ -488,6 +514,9 @@ export class SessionSupervisor {
         forceRestart,
         refreshMirrors,
         ...(localResourceDownload !== undefined ? { localResourceDownload } : {}),
+        deploymentMode,
+        ...(nodePath !== undefined && nodePath !== '' ? { nodePath } : {}),
+        ...(npmRegistry !== undefined && npmRegistry !== '' ? { npmRegistry } : {}),
         privateKey: request.privateKey !== undefined && request.privateKey !== '',
       });
       for (const line of summaryLines) {
@@ -495,9 +524,14 @@ export class SessionSupervisor {
         log.info(line);
       }
 
-      if (this.offline) this.push(record, 'info', '严格离线模式：不测速、不查询在线版本、不下载运行时');
+      if (deploymentMode === 'offline') {
+        this.push(record, 'info', '严格离线模式：不测速、不查询在线版本、不下载运行时');
+      } else if (deploymentMode === 'existing') {
+        this.push(record, 'info', '内网运行时模式：复用远端现有 Node，仅从指定内网 npm 源安装');
+      }
       const session = await openSession({
-        ...(this.offline ? { offline: true } : {}),
+        ...(deploymentMode === 'offline' ? { offline: true } : {}),
+        deploymentMode,
         hostAlias: request.hostAlias,
         remoteCwd: record.remoteCwd,
         // 传输类型与 WSL 参数透传；缺省 'ssh' 保持向后兼容
@@ -511,6 +545,8 @@ export class SessionSupervisor {
         refreshMirrors,
         ...(nodeVersion !== undefined && nodeVersion !== '' ? { nodeVersion } : {}),
         ...(dshVersion !== undefined && dshVersion !== '' ? { dshVersion } : {}),
+        ...(nodePath !== undefined && nodePath !== '' ? { nodePath } : {}),
+        ...(npmRegistry !== undefined && npmRegistry !== '' ? { npmRegistry } : {}),
         ...(request.privateKey ? { privateKey: request.privateKey } : {}),
         ...(request.password !== undefined ? { password: request.password } : {}),
         ...(Object.keys(advanced.env).length > 0 ? { extraEnv: advanced.env } : {}),
