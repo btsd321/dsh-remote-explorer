@@ -1,16 +1,17 @@
 /**
  * @file 本机供应商配置的提取与远端镜像
- * @description 读本机的 `llm-pi-ai` 供应商配置，抽出所有带凭据引用的供应商，
- *              构建代理路由表；同时产出一份「远端镜像」settings——内容与本机一致，
- *              仅把供应商的 `baseURL` 重定向进反向隧道。
+ * @description 读本机的 `llm-pi-ai` 供应商配置与 DeepSeek 原生通道配置，
+ *              抽出所有带凭据引用的供应商，构建代理路由表；同时产出一份
+ *              「远端镜像」settings——内容与本机一致，仅把供应商的 `baseURL`
+ *              重定向进反向隧道。
  *
  * 配置来源自适应（按优先级）：
  *
  * 1. `$DSH_HOME/settings.yaml`（CLI 形态 / 旧版 dsh）
- * 2. `$DSH_HOME/profiles/desktop/cordis.patch.yml` 中的 `llm-pi-ai` patch 条目
+ * 2. `$DSH_HOME/profiles/desktop/cordis.patch.yml` 中的 `llm-pi-ai` / `llm-deepseek` patch 条目
  *    （桌面版 dsh 把供应商配置写在 profile patch 里，没有 settings.yaml）
  *
- * 两种来源最终都归一化为 `{ 'llm-pi-ai': { providers: {...} } }` 格式，
+ * 两种来源最终都归一化为 `{ 'llm-pi-ai': {...}, 'llm-deepseek': {...} }` 格式，
  * 下游的路由提取、镜像、patch 渲染无需感知来源差异。
  *
  * 为什么需要这一层（P5 后多供应商支持的依据）：
@@ -18,9 +19,9 @@
  * - dsh 的模型供应商有两套通道：`llm-deepseek` 原生适配器（P4 已覆盖，走 patch）
  *   和 `llm-pi-ai` 多供应商适配器。用户的默认模型可能配置在后者，
  *   P4 的单上游代理覆盖不到。
- * - `llm-pi-ai` 在 base bundle 里（远端 web 组合自带），其 settings 段热重载，
- *   `apiKeyEnv` 每次请求经 `ctx.credentials` 从**继承环境**解析——所以远端
- *   进程环境里放占位令牌即可生效，与 DeepSeek 的机制一致。
+ * - **DeepSeek 原生通道也允许自定义 `baseURL`**（如公司网关），它必须与
+ *   pi-ai 供应商一样被提取并作为代理上游；只读 llm-pi-ai 会让该配置在远端
+ *   会话里被固定成 api.deepseek.com。
  * - settings.yaml / cordis.patch.yml 只含**凭据引用**（环境变量名），不含明文密钥；
  *   真正的密钥在 `$DSH_HOME/.credentials.yaml`（凭据库）或环境变量里。
  *   **我们只镜像配置，绝不镜像 .credentials.yaml**——后者可能含真实密钥，
@@ -39,6 +40,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parse, stringify } from 'yaml';
+import { remoteDeepseekConfig } from './deepseek-config.js';
 
 /** 一条代理路由 */
 export interface ProxyRoute {
@@ -97,17 +99,20 @@ export function setProfilePatchPath(path: string): void {
 }
 
 /**
- * 从 profile 的 cordis.patch.yml 中提取 llm-pi-ai 配置并转换为 settings 格式。
+ * 从 profile 的 cordis.patch.yml 中提取本工具需要的配置段。
  *
  * dsh 新版（0.1.7+）把供应商配置写在 profile 的 `cordis.patch.yml` 的
- * `- id: llm-pi-ai` patch 条目中，而不是 settings.yaml。本函数找到该条目，
- * 提取其 `config` 段（即 `{ providers: {...} }`），包装成等效的
- * `{ 'llm-pi-ai': { providers: {...} } }` settings 文档返回。
+ * `- id: llm-pi-ai` / `- id: llm-deepseek` patch 条目中，而不是 settings.yaml。
+ * 本函数把这两类条目的 config 段包装成等效 settings 文档：
+ * `{ 'llm-pi-ai': {...}, 'llm-deepseek': {...} }`。
+ *
+ * **必须同时保留 llm-deepseek**：官方 DeepSeek 模型也允许自定义 baseURL，
+ * 只读 llm-pi-ai 会让该地址在远端会话里被固定为 api.deepseek.com。
  *
  * @param patchPath - profile 的 cordis.patch.yml 绝对路径
  * @returns 等效 settings YAML 文本；找不到或解析失败时 undefined
  */
-function readProfilePatchProviders(patchPath: string): string | undefined {
+function readProfilePatchSettings(patchPath: string): string | undefined {
   let text: string;
   try {
     text = readFileSync(patchPath, 'utf8');
@@ -120,17 +125,18 @@ function readProfilePatchProviders(patchPath: string): string | undefined {
 
   if (!Array.isArray(patchEntries)) return undefined;
 
-  // 找 id === 'llm-pi-ai' 的条目
+  const sections: Record<string, unknown> = {};
   for (const entry of patchEntries) {
     if (entry === null || typeof entry !== 'object') continue;
     const record = entry as Record<string, unknown>;
-    if (record['id'] !== 'llm-pi-ai') continue;
+    const id = record['id'];
+    if (id !== 'llm-pi-ai' && id !== 'llm-deepseek' && id !== 'llm-deepseek-account') continue;
     const config = record['config'];
     if (config === null || typeof config !== 'object') continue;
-    // config 就是 { providers: {...} }，包装成 settings 格式
-    return stringify({ 'llm-pi-ai': config });
+    sections[id] = config;
   }
-  return undefined;
+  if (Object.keys(sections).length === 0) return undefined;
+  return stringify(sections);
 }
 
 /** DeepSeek 原生通道的路由前缀（保留字，pi-ai 供应商不得占用） */
@@ -149,7 +155,19 @@ interface SettingsDocument {
     /** 供应商字典：键名即路由名 */
     providers?: Record<string, ProviderProfile>;
   };
+  /** DeepSeek 原生 API key 通道配置 */
+  'llm-deepseek'?: DeepSeekProviderConfig;
+  /** DeepSeek 账号通道配置（部分版本把 baseURL 写在这里） */
+  'llm-deepseek-account'?: DeepSeekProviderConfig;
   /** 其余键原样保留（镜像时透传） */
+  [key: string]: unknown;
+}
+
+/** DeepSeek 原生通道里与路由相关的配置字段 */
+interface DeepSeekProviderConfig {
+  /** 上游地址；省略 = DSH 的官方默认地址 */
+  baseURL?: string;
+  /** 其余字段镜像/读取时原样保留 */
   [key: string]: unknown;
 }
 
@@ -164,17 +182,145 @@ interface ProviderProfile {
 }
 
 /**
- * DeepSeek 原生通道的路由（固定值）。
+ * DeepSeek 原生通道的官方默认地址。
+ *
+ * DSH 的 `PUBLIC_BASE_URL` 也是 `https://api.deepseek.com/anthropic`；
+ * 这里显式保留是为了在没有任何本机自定义配置时维持 P4 的既有行为。
+ */
+const OFFICIAL_DEEPSEEK_BASE_URL = 'https://api.deepseek.com/anthropic';
+
+/**
+ * 从归一化 settings 文本中提取 DeepSeek 原生通道的 baseURL。
+ *
+ * 支持两种来源形状：
+ * - profile patch 归一化后的 `llm-deepseek: { baseURL }`
+ * - settings.yaml 里的 `llm-deepseek: { config: { baseURL } }`
+ *
+ * 仅使用 `llm-deepseek`；账号通道固定官方地址，不参与 API key 的配置回退。
+ *
+ * @param settingsText - 本机 settings/profile 配置文本
+ * @returns 自定义 baseURL；未配置时 undefined
+ */
+export function extractDeepseekConfig(settingsText: string): Record<string, unknown> | undefined {
+  let document: unknown;
+  try {
+    document = parse(settingsText);
+  } catch {
+    return undefined;
+  }
+  if (document === null || typeof document !== 'object') return undefined;
+
+  const record = document as Record<string, unknown>;
+  for (const id of ['llm-deepseek'] as const) {
+    const section = record[id];
+    if (section === null || typeof section !== 'object') continue;
+    const sectionRecord = section as Record<string, unknown>;
+    // 兼容 settings.yaml 里可能存在的 config 包装层；profile patch 归一化
+    // 后的 section 本身就是 config。
+    const nested = sectionRecord['config'];
+    if (nested !== null && typeof nested === 'object') {
+      return { ...(nested as Record<string, unknown>) };
+    }
+    return { ...sectionRecord };
+  }
+  return undefined;
+}
+
+/**
+ * 从归一化 settings 文本中提取 DeepSeek 原生通道的 baseURL。
+ *
+ * @param settingsText - 本机 settings/profile 配置文本
+ * @returns 自定义 baseURL；未配置时 undefined
+ */
+export function extractDeepseekBaseURL(settingsText: string): string | undefined {
+  const config = extractDeepseekConfig(settingsText);
+  const baseURL = config?.['baseURL'];
+  return typeof baseURL === 'string' && baseURL.trim() !== '' ? baseURL.trim() : undefined;
+}
+
+/**
+ * 返回本机生效的 DeepSeek 原生通道完整配置。
+ *
+ * 优先本机 profile/settings 的 `llm-deepseek` 配置；没有时用本机进程的
+ * `DEEPSEEK_BASE_URL` 合成 `{ baseURL }` 兜底（DSH 自身也用该环境变量）。
+ *
+ * @param settingsText - 本机配置文本；undefined 时只看环境变量
+ * @returns DeepSeek 配置；均未配置时 undefined
+ */
+export function localDeepseekConfig(settingsText?: string): Record<string, unknown> | undefined {
+  const fromSettings = settingsText === undefined ? undefined : extractDeepseekConfig(settingsText);
+  const fromEnv = process.env.DEEPSEEK_BASE_URL?.trim();
+  if (fromSettings !== undefined) {
+    const baseURL = fromSettings['baseURL'];
+    return (typeof baseURL !== 'string' || baseURL.trim() === '') && fromEnv
+      ? { ...fromSettings, baseURL: fromEnv }
+      : fromSettings;
+  }
+  return fromEnv !== undefined && fromEnv !== '' ? { baseURL: fromEnv } : undefined;
+}
+
+/**
+ * 返回本机生效的 DeepSeek 原生通道 baseURL。
+ *
+ * 优先级：本机 profile/settings 的显式配置 > 本机进程的 `DEEPSEEK_BASE_URL`
+ * > undefined（由 deepseekRoute 使用官方默认地址）。DSH 的 llm-deepseek
+ * 适配器自身也以 `$DEEPSEEK_BASE_URL` 作为 trusted environment 兜底。
+ *
+ * @param settingsText - 本机配置文本；undefined 时只看环境变量
+ * @returns baseURL；均未配置时 undefined
+ */
+export function localDeepseekBaseURL(settingsText?: string): string | undefined {
+  const config = localDeepseekConfig(settingsText);
+  const baseURL = config?.['baseURL'];
+  return typeof baseURL === 'string' && baseURL.trim() !== '' ? baseURL.trim() : undefined;
+}
+
+/**
+ * 解析 DeepSeek 原生通道的旧式路径。
+ *
+ * 远端 patch 把 baseURL 指向隧道的 `/anthropic`；DSH 的 `messagesApiRoot`
+ * 会对不以 `/v1` 结尾的 baseURL 追加 `/v1`，因此：
+ * - 自定义 baseURL 路径以 `/v1` 结尾时，代理侧要把 `/v1` 从 upstreamPath
+ *   中减去（远端仍会追加 `/v1`）
+ * - 其他路径原样作为 upstreamPath
+ *
+ * @param baseURL - 自定义 baseURL；undefined = 官方默认
+ * @returns origin 与 messages 上游路径
+ */
+function deepseekMessagesEndpoint(baseURL?: string): { origin: string; upstreamPath: string } {
+  const parsed = splitUrl(baseURL !== undefined && baseURL !== '' ? baseURL : OFFICIAL_DEEPSEEK_BASE_URL);
+  if (parsed === undefined) {
+    const fallback = splitUrl(OFFICIAL_DEEPSEEK_BASE_URL);
+    return {
+      origin: fallback?.origin ?? 'https://api.deepseek.com',
+      upstreamPath: fallback?.path ?? '/anthropic',
+    };
+  }
+  const path = parsed.path;
+  return {
+    origin: parsed.origin,
+    upstreamPath: path.endsWith('/v1') ? path.slice(0, -'/v1'.length) : path,
+  };
+}
+
+/**
+ * DeepSeek 原生通道的路由（固定前缀，上游地址可配置）。
  *
  * 前缀与上游路径相同，转发时路径不变——这正是 P4 的既有行为，
  * 泛化后的路由机制把它统一了进来。
+ *
+ * @param baseURL - 本机自定义的 DeepSeek 官方模型地址；undefined = 官方默认
+ * @param keyEnv - 本机 API key 引用；默认 DEEPSEEK_API_KEY
+ * @returns DeepSeek 路由
  */
-export function deepseekRoute(): ProxyRoute {
+export function deepseekRoute(baseURL?: string, keyEnv = 'DEEPSEEK_API_KEY'): ProxyRoute {
+  if (!ENV_NAME_PATTERN.test(keyEnv)) throw new Error('DeepSeek apiKeyEnv 必须是合法环境变量名');
+  const endpoint = deepseekMessagesEndpoint(baseURL);
   return {
     prefix: DEEPSEEK_PREFIX,
-    upstreamOrigin: 'https://api.deepseek.com',
-    upstreamPath: '/anthropic',
-    keyEnv: 'DEEPSEEK_API_KEY',
+    upstreamOrigin: endpoint.origin,
+    upstreamPath: endpoint.upstreamPath,
+    keyEnv,
     label: 'DeepSeek',
   };
 }
@@ -184,22 +330,24 @@ export function deepseekRoute(): ProxyRoute {
  *
  * dsh 的模型发现取 **baseURL 的 origin** 再拼 `/models`（`modelListingURL`），
  * 而不是 `${baseURL}/models`——baseURL 被 patch 成 `<隧道>/anthropic` 后，
- * 列表请求落在 `<隧道>/models`，没有这条路由就 404，远端只能回落到内置目录
+ * 列表请求落在 `<隧道>/models`；没有这条路由就 404，远端只能回落到内置目录
  * （日志：`model listing from .../models failed ... answered HTTP 404`）。
  *
- * 上游 `https://api.deepseek.com/models` 同时接受两种凭据（实测）：
- * `x-api-key`（API key 通道，401 表示 key 失效）与 `x-dsh-auth-token`
- * （账号 grant 通道）。所以本路由与 `/anthropic` 一样按请求头各自替换，
- * 不区分通道。
+ * 自定义 baseURL 时上游 origin 必须跟着变；列表接口始终是 origin + `/models`。
  *
- * @returns 固定的模型列表路由
+ * @param baseURL - 本机自定义的 DeepSeek 官方模型地址；undefined = 官方默认
+ * @param keyEnv - 本机 API key 引用；默认 DEEPSEEK_API_KEY
+ * @returns 模型列表路由
  */
-export function deepseekModelsRoute(): ProxyRoute {
+export function deepseekModelsRoute(baseURL?: string, keyEnv = 'DEEPSEEK_API_KEY'): ProxyRoute {
+  if (!ENV_NAME_PATTERN.test(keyEnv)) throw new Error('DeepSeek apiKeyEnv 必须是合法环境变量名');
+  const parsed = splitUrl(baseURL !== undefined && baseURL !== '' ? baseURL : OFFICIAL_DEEPSEEK_BASE_URL);
+  const origin = parsed?.origin ?? 'https://api.deepseek.com';
   return {
     prefix: '/models',
-    upstreamOrigin: 'https://api.deepseek.com',
+    upstreamOrigin: origin,
     upstreamPath: '/models',
-    keyEnv: 'DEEPSEEK_API_KEY',
+    keyEnv,
     label: 'DeepSeek Models',
   };
 }
@@ -213,9 +361,9 @@ export function deepseekModelsRoute(): ProxyRoute {
  *   网页版读 web profile，互不干扰）
  * - **CLI 形态**：读 `$DSH_HOME/settings.yaml`
  *
- * 两种来源最终都归一化为 `{ 'llm-pi-ai': { providers: {...} } }` 格式，
- * 下游函数（extractProviderRoutes / mirrorSettingsForTunnel / renderProviderTunnelPatch）
- * 不感知来源差异。
+ * 两种来源最终都归一化为 `{ 'llm-pi-ai': {...}, 'llm-deepseek': {...} }` 格式，
+ * 下游函数（extractProviderRoutes / extractDeepseekBaseURL /
+ * mirrorSettingsForTunnel / renderProviderTunnelPatch）不感知来源差异。
  *
  * @param path - 覆盖路径（显式指定时直接读取该文件，跳过自动探测）
  * @returns settings 格式的 YAML 文本；找不到时 undefined
@@ -231,7 +379,7 @@ export function readLocalSettings(path?: string): string | undefined {
   // 插件形态：读当前 profile 的 cordis.patch.yml
   // 桌面版和网页版各自通过 setProfilePatchPath 设置了自己的路径
   if (_profilePatchPath !== undefined) {
-    return readProfilePatchProviders(_profilePatchPath);
+    return readProfilePatchSettings(_profilePatchPath);
   }
 
   // CLI 形态：读 settings.yaml
@@ -326,6 +474,24 @@ export function mirrorSettingsForTunnel(
         record['baseURL'] = `http://${reverseHost}:${reversePort}${PROVIDER_NS}/${name}`;
       }
     }
+  }
+
+  // DeepSeek 原生通道/账号通道的 baseURL 也必须指向隧道；否则 settings 镜像
+  // 会把本机自定义地址原样带到远端，绕过凭据代理
+  for (const id of ['llm-deepseek', 'llm-deepseek-account'] as const) {
+    const section = (document as SettingsDocument)[id];
+    if (section === null || typeof section !== 'object') continue;
+    const record = section as Record<string, unknown>;
+    const nested = record['config'];
+    const config = nested !== null && typeof nested === 'object'
+      ? nested as Record<string, unknown> : record;
+    const safe = {
+      ...remoteDeepseekConfig(config),
+      baseURL: `http://${reverseHost}:${reversePort}${DEEPSEEK_PREFIX}`,
+    };
+    // 包装层也必须同步净化，不能留下另一份含凭据的原始配置。
+    (document as Record<string, unknown>)[id] = nested !== null && typeof nested === 'object'
+      ? { config: safe } : safe;
   }
 
   return stringify(document);
