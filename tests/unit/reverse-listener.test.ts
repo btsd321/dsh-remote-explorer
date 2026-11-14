@@ -3,7 +3,7 @@
  * @description 用**真实 socket** 覆盖：绑定分配、EADDRINUSE 换候选重试、
  *              多地址绑定（NAT 网关语义）、handler 后挂与杂散连接销毁、
  *              setExtraHosts 增量调整、close 幂等。测试端口全部走
- *              127.0.0.1/127.0.0.2 回环段，不触网。
+ *              127.0.0.1/::1 回环段，不触网。
  */
 
 import { describe, it } from 'node:test';
@@ -13,6 +13,19 @@ import { ReverseListener } from '../../src/tunnel/reverse-listener.js';
 
 /** 测试用主机别名（日志定位信息，不参与行为） */
 const ALIAS = 'wsl:Ubuntu-test';
+
+/** 探测 IPv6 回环能力；仅跳过宿主确实不支持的多地址成功用例。 */
+const extraHostUnavailable = await new Promise<string | false>((resolve, reject) => {
+  const server = createServer();
+  server.once('error', (error: NodeJS.ErrnoException) => {
+    if (error.code === 'EADDRNOTAVAIL' || error.code === 'EAFNOSUPPORT') {
+      resolve(`宿主不支持 IPv6 回环（${error.code}）`);
+    } else {
+      reject(error);
+    }
+  });
+  server.listen(0, '::1', () => server.close(() => resolve(false)));
+});
 
 /**
  * 连接到本机某地址并等待建立。
@@ -38,6 +51,7 @@ function connectTo(port: number, host = '127.0.0.1'): Promise<Socket> {
  * @param socket - 客户端 socket
  */
 function waitForSocketClosed(socket: Socket): Promise<void> {
+  if (socket.closed) return Promise.resolve();
   return new Promise(resolve => {
     let settled = false;
     const finish = (): void => {
@@ -68,8 +82,9 @@ async function occupyPort(): Promise<{ port: number; release: () => void }> {
 // ─── 绑定与分配 ───────────────────────────────────────────────────────────
 
 describe('ReverseListener.bind', () => {
-  it('分配端口并保持监听', async () => {
+  it('分配端口并保持监听', async t => {
     const listener = new ReverseListener(ALIAS);
+    t.after(() => listener.close());
     const port = await listener.bind();
     // 区间（47000–48999）是偏好而非不变量：被整段静默占用的机器上 bind
     // 走 OS 分配回退（端口落动态区），此时仅要求绑定成功与语义成立
@@ -79,10 +94,11 @@ describe('ReverseListener.bind', () => {
     await listener.close();
   });
 
-  it('首选端口被占时换端口重试（幽灵占用语义）', async () => {
+  it('首选端口被占时换端口重试（幽灵占用语义）', async t => {
     const blocker = await occupyPort();
     try {
       const listener = new ReverseListener(ALIAS);
+      t.after(() => listener.close());
       const port = await listener.bind({ preferredPort: blocker.port });
       assert.notEqual(port, blocker.port);
       // 同上：换到的端口在区间耗尽时可能是 OS 分配的动态区端口
@@ -93,50 +109,54 @@ describe('ReverseListener.bind', () => {
     }
   });
 
-  it('首选端口空闲时优先复用（复用语义）', async () => {
+  it('首选端口空闲时优先复用（复用语义）', async t => {
     // 首选端口要「确定空闲」：OS 分配（listen 0）取一个保证可绑定的口再
     // 释放复用——硬编码 47xxx 口在区间被静默占用的机器上必是假空闲
     const probe = await occupyPort();
     const preferred = probe.port;
     probe.release();
     const listener = new ReverseListener(ALIAS);
+    t.after(() => listener.close());
     const port = await listener.bind({ preferredPort: preferred });
     assert.equal(port, preferred);
     await listener.close();
   });
 
-  it('重复 bind 被拒绝', async () => {
+  it('重复 bind 被拒绝', async t => {
     const listener = new ReverseListener(ALIAS);
+    t.after(() => listener.close());
     await listener.bind();
     await assert.rejects(() => listener.bind(), /已绑定/);
     await listener.close();
   });
 });
 
-// ─── 多地址绑定（NAT 网关语义，用 127.0.0.2 模拟网关地址） ────────────────
+// ─── 多地址绑定（NAT 网关语义，用 ::1 模拟网关地址） ────────────────
 
 describe('ReverseListener 多地址绑定', () => {
-  it('附加地址与主绑定共用同一端口', async () => {
+  it('附加地址与主绑定共用同一端口', { skip: extraHostUnavailable }, async t => {
     const listener = new ReverseListener(ALIAS);
-    const port = await listener.bind({ extraHosts: ['127.0.0.2'] });
+    t.after(() => listener.close());
+    const port = await listener.bind({ extraHosts: ['::1'] });
     assert.ok(listener.hosts.includes('127.0.0.1'));
-    assert.ok(listener.hosts.includes('127.0.0.2'));
+    assert.ok(listener.hosts.includes('::1'));
 
-    // 两个地址都真实可连（handler 挂上后经 127.0.0.2 进来的连接同样被接管）
+    // 两个地址都真实可连（handler 挂上后经 ::1 进来的连接同样被接管）
     const got: number[] = [];
     listener.setHandler((connection) => {
       connection.stream.write('OK');
       got.push(connection.remotePort);
     });
-    const client = await connectTo(port, '127.0.0.2');
+    const client = await connectTo(port, '::1');
     const reply = await new Promise<Buffer>(resolve => client.once('data', (chunk: Buffer) => resolve(chunk)));
     assert.equal(reply.toString(), 'OK');
     client.destroy();
     await listener.close();
   });
 
-  it('附加地址绑定失败返回 false 并保持降级（仅主绑定）', async () => {
+  it('附加地址绑定失败返回 false 并保持降级（仅主绑定）', async t => {
     const listener = new ReverseListener(ALIAS);
+    t.after(() => listener.close());
     await listener.bind();
     // 203.0.113.1（TEST-NET-1）未分配给本机任何接口：EADDRNOTAVAIL
     const ok = await listener.addHost('203.0.113.1');
@@ -145,9 +165,10 @@ describe('ReverseListener 多地址绑定', () => {
     await listener.close();
   });
 
-  it('setExtraHosts 增量调整附加地址且主端口不变', async () => {
+  it('setExtraHosts 增量调整附加地址且主端口不变', { skip: extraHostUnavailable }, async t => {
     const listener = new ReverseListener(ALIAS);
-    const port = await listener.bind({ extraHosts: ['127.0.0.2'] });
+    t.after(() => listener.close());
+    const port = await listener.bind({ extraHosts: ['::1'] });
 
     // 移除附加地址（如 NAT → mirrored 时摘掉旧网关）
     await listener.setExtraHosts([]);
@@ -155,17 +176,18 @@ describe('ReverseListener 多地址绑定', () => {
     assert.equal(listener.port, port);
 
     // 重新补绑（自愈语义：早前绑定失败的地址每次重连都有一次机会）
-    await listener.setExtraHosts(['127.0.0.2']);
-    assert.ok(listener.hosts.includes('127.0.0.2'));
+    await listener.setExtraHosts(['::1']);
+    assert.ok(listener.hosts.includes('::1'));
     assert.equal(listener.port, port);
     await listener.close();
   });
 
-  it('setExtraHosts 幂等（集合无变化不产生操作）', async () => {
+  it('setExtraHosts 幂等（集合无变化不产生操作）', { skip: extraHostUnavailable }, async t => {
     const listener = new ReverseListener(ALIAS);
-    await listener.bind({ extraHosts: ['127.0.0.2'] });
-    await listener.setExtraHosts(['127.0.0.2']);
-    assert.deepEqual([...listener.hosts].sort(), ['127.0.0.1', '127.0.0.2']);
+    t.after(() => listener.close());
+    await listener.bind({ extraHosts: ['::1'] });
+    await listener.setExtraHosts(['::1']);
+    assert.deepEqual([...listener.hosts].sort(), ['127.0.0.1', '::1']);
     await listener.close();
   });
 });
@@ -173,16 +195,18 @@ describe('ReverseListener 多地址绑定', () => {
 // ─── handler 后挂与连接接管（真实 socket） ────────────────────────────────
 
 describe('ReverseListener 连接处理', () => {
-  it('未挂 handler 时到达的连接被销毁（杂散连接）', async () => {
+  it('未挂 handler 时到达的连接被销毁（杂散连接）', async t => {
     const listener = new ReverseListener(ALIAS);
+    t.after(() => listener.close());
     const port = await listener.bind();
     const client = await connectTo(port);
     await waitForSocketClosed(client);
     await listener.close();
   });
 
-  it('setHandler 后新连接经 handler 双向对接（真实 socket 数据回环）', async () => {
+  it('setHandler 后新连接经 handler 双向对接（真实 socket 数据回环）', async t => {
     const listener = new ReverseListener(ALIAS);
+    t.after(() => listener.close());
     const port = await listener.bind();
 
     const gotFromClient = new Promise<Buffer>(resolve => {
@@ -204,8 +228,9 @@ describe('ReverseListener 连接处理', () => {
     await listener.close();
   });
 
-  it('杂散连接销毁后不会被事后接管，新连接正常进入 handler', async () => {
+  it('杂散连接销毁后不会被事后接管，新连接正常进入 handler', async t => {
     const listener = new ReverseListener(ALIAS);
+    t.after(() => listener.close());
     const port = await listener.bind();
 
     // 先来一条杂散连接（无 handler → 直接销毁）
@@ -233,8 +258,9 @@ describe('ReverseListener 连接处理', () => {
 // ─── close 语义 ───────────────────────────────────────────────────────────
 
 describe('ReverseListener.close', () => {
-  it('幂等且关闭后端口复位、后续操作被拒绝', async () => {
+  it('幂等且关闭后端口复位、后续操作被拒绝', async t => {
     const listener = new ReverseListener(ALIAS);
+    t.after(() => listener.close());
     await listener.bind();
     await listener.close();
     await listener.close(); // 幂等
@@ -242,8 +268,9 @@ describe('ReverseListener.close', () => {
     await assert.rejects(() => listener.bind(), /已关闭/);
   });
 
-  it('关闭后挂接 handler 的监听不再接受新连接', async () => {
+  it('关闭后挂接 handler 的监听不再接受新连接', async t => {
     const listener = new ReverseListener(ALIAS);
+    t.after(() => listener.close());
     const port = await listener.bind();
     listener.setHandler((connection) => {
       connection.stream.write('OK');
