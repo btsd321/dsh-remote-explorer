@@ -2,6 +2,7 @@
  * @file profile 嵌套配置与 YAML 往返回归
  * @description 通过公开写入接口捕获远端内容，不连接远端或使用真实凭据。
  */
+
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parse } from 'yaml';

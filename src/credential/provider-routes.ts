@@ -39,7 +39,8 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { parse, stringify } from 'yaml';
+import { isDeepStrictEqual } from 'node:util';
+import { isMap, isSeq, parse, parseDocument, stringify } from 'yaml';
 import { remoteDeepseekConfig } from './deepseek-config.js';
 
 /** 一条代理路由 */
@@ -347,7 +348,7 @@ export function deepseekModelsRoute(baseURL?: string, keyEnv = 'DEEPSEEK_API_KEY
  *
  * 两种来源最终都归一化为 `{ 'llm-pi-ai': {...}, 'llm-deepseek': {...} }` 格式，
  * 下游函数（extractProviderRoutes / extractDeepseekBaseURL /
- * mirrorSettingsForTunnel / renderProviderTunnelPatch）不感知来源差异。
+ * mirrorSettingsForTunnel / renderProfileProviderEntry）不感知来源差异。
  *
  * @param path - 覆盖路径（显式指定时直接读取该文件，跳过自动探测）
  * @returns settings 格式的 YAML 文本；找不到时 undefined
@@ -482,28 +483,50 @@ export function mirrorSettingsForTunnel(
 }
 
 /**
- * 产出写进会话 home patch 层（`$DSH_HOME/cordis.patch.yml`）的供应商路由条目。
+ * 写进远端 profile patch 的一条供应商条目。
  *
- * 背景：dsh 0.1.7 起不再运行时读 `$DSH_HOME/settings.yaml`（改为启动时一次性
- * 导入进 profile 的 patch 后改名 `.imported`），镜像的热生效语义断了。home patch
- * 层在 0.1.6 与 0.1.7 都存在、都在 hmr 的 watch 列表里——把 `llm-pi-ai` 的
- * 供应商配置（baseURL 已重定向）直接写进这一层，两个版本都能拿到
- * 「重写即热生效」。注意 patch 的 `config` 是**整块替换**不做深合并，所以这里
- * 必须携带完整的 `llm-pi-ai` 段（与镜像同一变换规则），不能只写被改的字段。
+ * 为什么是 profile patch 而不是会话 `--patch`：dsh 的**设置文档就是 profile 的
+ * `cordis.patch.yml`**（`dsh-settings` 的 `configEditor.documentPath`），GUI 的
+ * 模型设置页读写这个文件的 `llm-pi-ai` 条目（设置视图的 `user` 层），并且
+ * 只把**组合基线（bundle/profile 层）**当作模型卡片的「继承模型」来源（`base` 层）。
+ * 命令行 `--patch` 覆盖层既不算 `base` 也不算 `user`，只在组合树里生效，且对同一
+ * `id` 是**整块替换**——供应商写进覆盖层后：设置页看不到模型、远端改动会被盖掉。
+ * 详见 docs/lessons.md 的「供应商配置必须落在设置文档层」。
+ */
+export interface ProviderPatchEntry {
+  /** 目标条目 id（dsh 的 patch 必须按 id 定位） */
+  id: string;
+  /** 插件包名（与 dsh 自身写入该文件时的形态一致） */
+  name: string;
+  /** 条目 config；整块替换语义，必须携带完整 `llm-pi-ai` 段 */
+  config: Record<string, unknown>;
+}
+
+/** `llm-pi-ai` 适配器在 dsh 里的条目 id */
+export const LLM_PI_AI_ENTRY_ID = 'llm-pi-ai';
+
+/** `llm-pi-ai` 适配器的包名 */
+export const LLM_PI_AI_PLUGIN_NAME = '@deepseek-ai/dsh-llm-pi-ai';
+
+/**
+ * 产出写进远端 profile patch 的 `llm-pi-ai` 条目（baseURL 已重定向进隧道）。
  *
- * 解析失败或本机 settings 无 `llm-pi-ai` 段时返回 undefined（调用方跳过写入）。
+ * 注意 patch 的 `config` 是**整块替换**不做深合并，所以必须携带完整的
+ * `llm-pi-ai` 段，不能只写被改的字段。
  *
- * @param settingsText - 本机 settings.yaml 文本
+ * 解析失败或本机配置无 `llm-pi-ai` 段时返回 undefined（调用方跳过写入）。
+ *
+ * @param settingsText - 本机 settings/profile 配置文本
  * @param reversePort - 反向隧道端口
  * @param reverseHost - 反向端点主机（WSL NAT 模式为网关 IP）；缺省 127.0.0.1
  *                      （SSH 路径与既有调用行为不变）
- * @returns patch YAML 文本（单条 `- id: llm-pi-ai` + `config:`）；无法处理时 undefined
+ * @returns 待合并进 profile patch 的条目；无法处理时 undefined
  */
-export function renderProviderTunnelPatch(
+export function renderProfileProviderEntry(
   settingsText: string,
   reversePort: number,
   reverseHost: string = '127.0.0.1',
-): string | undefined {
+): ProviderPatchEntry | undefined {
   let document: unknown;
   try {
     document = parse(settingsText);
@@ -522,7 +545,7 @@ export function renderProviderTunnelPatch(
     for (const [name, profile] of Object.entries(providers as Record<string, unknown>)) {
       if (profile === null || typeof profile !== 'object') continue;
       const record = profile as Record<string, unknown>;
-      // 与 mirrorSettingsForTunnel 同一判据：两个条件齐才有资格重定向，
+      // 与 extractProviderRoutes 同一判据：两个条件齐才有资格重定向，
       // 其余供应商字段原样保留（整块替换语义下丢了就是丢配置）
       if (typeof record['apiKeyEnv'] !== 'string' || !ENV_NAME_PATTERN.test(record['apiKeyEnv'])) continue;
       if (typeof record['baseURL'] !== 'string' || record['baseURL'] === '') continue;
@@ -530,7 +553,100 @@ export function renderProviderTunnelPatch(
     }
   }
 
-  return stringify([{ id: 'llm-pi-ai', config: section }]);
+  return { id: LLM_PI_AI_ENTRY_ID, name: LLM_PI_AI_PLUGIN_NAME, config: section };
+}
+
+/**
+ * profile patch 合并结果。
+ *
+ * 三态而不是 `string | undefined`：调用方必须能区分「无法解析（危险，绝不能写）」
+ * 与「已经是等价内容（不必写）」——后者被当成前者会白白触发 dsh 的配置重组合
+ * 与设置页刷新。
+ */
+export interface ProfilePatchMerge {
+  /** 是否需要写回（false = 远端内容已等价，跳过写入） */
+  merged: boolean;
+  /** 合并后的完整文档文本（merged=false 时等于原文本） */
+  text: string;
+}
+
+/**
+ * 把供应商条目合并进远端 profile patch 文本。
+ *
+ * 合并语义（顺序与格式都不能丢）：
+ * - 只替换/追加 `llm-pi-ai` 这一条，**其余条目原样保留**（远端用户的活动终端、
+ *   默认模型、子智能体白名单等设置都在同一文件里）
+ * - 原地替换而不是删掉再追加：patch 是按顺序应用的，移动条目会改变应用顺序
+ * - 走 yaml 的 `Document` 而非 `parse`/`stringify`：用户可能手工编辑这个文件，
+ *   行内注释、锚点/别名、引号与 flow 风格都要保留（整体重排会把它们静默清掉）
+ * - 无法解析（不是顶层数组 / YAML 损坏）时返回 undefined：宁可跳过写入，
+ *   也不能拿一份新内容覆盖掉用户的设置文档
+ *
+ * 取舍（有意为之）：条目内容以**本机配置为准**。远端 GUI 里给某个供应商新增的
+ * 模型/供应商，会在下一次连接（或 WSL 重连）时被本机配置覆盖——本工具的定位是
+ * 「把本机配置镜像到远端」，远端只提供编辑入口，不承担持久化。
+ *
+ * @param existingText - 远端 profile patch 现有文本；文件不存在时 undefined
+ * @param entry - 待写入的供应商条目
+ * @returns 合并结果；无法安全合并时 undefined
+ */
+export function mergeProfileProviderPatch(
+  existingText: string | undefined,
+  entry: ProviderPatchEntry,
+): ProfilePatchMerge | undefined {
+  if (existingText === undefined || existingText.trim() === '') {
+    return { merged: true, text: `${stringify([entry])}` };
+  }
+
+  const document = parseDocument(existingText);
+  if (document.errors.length > 0) return undefined;
+
+  if (document.contents === null) {
+    // 只有注释（或空白）的文件：注释原样保留，条目直接追加在后面
+    return {
+      merged: true,
+      text: `${existingText.replace(/\s+$/, '')}\n${stringify([entry])}`,
+    };
+  }
+  if (!isSeq(document.contents)) return undefined;
+
+  // yaml 的节点类型在 items 上是联合类型，替换时统一按 ParsedNode 处理
+  const sequence = document.contents as unknown as { items: unknown[] };
+  const index = sequence.items.findIndex((item) =>
+    item !== null && typeof item === 'object'
+    && isMap(item as never)
+    && (item as { get: (key: string) => unknown }).get('id') === entry.id);
+
+  const node = document.createNode(entry) as unknown;
+  if (index >= 0) {
+    const previous = sequence.items[index];
+    if (isDeepStrictEqual(nodeValue(node), nodeValue(previous))) {
+      // 内容已等价：不重写文件，避免每次连接都触发远端配置重组合
+      return { merged: false, text: existingText };
+    }
+    // 保留原条目的前置注释（用户可能在条目上方写过说明）
+    const commentBefore = (previous as { commentBefore?: string } | undefined)?.commentBefore;
+    if (commentBefore !== undefined) {
+      (node as { commentBefore?: string }).commentBefore = commentBefore;
+    }
+    sequence.items[index] = node;
+  } else {
+    sequence.items.push(node);
+  }
+
+  return { merged: true, text: document.toString() };
+}
+
+/**
+ * 取 YAML 节点的普通 JS 值；yaml 的节点都实现了 `toJSON`。
+ *
+ * @param node - YAML 节点（或已是普通值）
+ * @returns 用于语义比较的普通值
+ */
+function nodeValue(node: unknown): unknown {
+  if (node === null || typeof node !== 'object') return node;
+  const candidate = node as { toJSON?: () => unknown };
+  return typeof candidate.toJSON === 'function' ? candidate.toJSON() : node;
 }
 
 /**

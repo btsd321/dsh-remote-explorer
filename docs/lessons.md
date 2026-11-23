@@ -102,7 +102,7 @@
 
 - 远端进程环境里的 key 变量（`DEEPSEEK_API_KEY`等）是**代理令牌**（随机值）不是真实 key——dsh 缺 key 会在请求发出前就报 `MISSING_CREDENTIAL`，代理根本收不到，所以必须有占位值。真实 key 只在本机进程（`process.env[keyEnv]` → [src/credential/tunnel-proxy.ts](../src/credential/tunnel-proxy.ts) 注入）。
 - **代理是多供应商路由表**：DeepSeek 原生通道走 `/anthropic` 前缀（patch 重定向），`llm-pi-ai` 供应商走 `/r/<名>` 前缀（路由自动从本机 `~/.dsh/settings.yaml` 的 `llm-pi-ai.providers` 提取，见 [src/credential/provider-routes.ts](../src/credential/provider-routes.ts)）。转发时请求前缀替换成上游自身路径。每条路由的 keyEnv 各自检查，缺哪个只影响哪个供应商。
-- **远端 settings 双写**（0.1.7 适配）：本机 settings.yaml 整体复制到会话 `DSH_HOME/settings.yaml`（dsh ≤0.1.6 运行时热读；0.1.7 起只在每次进程启动时一次性导入进 profile 的 cordis.patch.yml，导入后改名 `.imported`），**同时**把 pi-ai 供应商路由写进 home patch 层 `DSH_HOME/cordis.patch.yml`（0.1.6/0.1.7 都存在且受 hmr 热监听——供应商的持续热生效靠它，见 provider-routes 的 renderProviderTunnelPatch；patch `config` 是整块替换，必须携带完整 `llm-pi-ai` 段）。两份都仅重定向 provider baseURL。**只镜像 settings（凭据引用），绝不镜像 `.credentials.yaml`**（可能含真实密钥，落远端违背整个设计）。
+- **远端 settings 双写**（0.1.7 适配，**已被 23d 取代**：供应商配置改落 profile 设置文档）：本机 settings.yaml 整体复制到会话 `DSH_HOME/settings.yaml`（dsh ≤0.1.6 运行时热读；0.1.7 起只在每次进程启动时一次性导入进 profile 的 cordis.patch.yml，导入后改名 `.imported`），**同时**把 pi-ai 供应商路由写进 home patch 层 `DSH_HOME/cordis.patch.yml`（0.1.6/0.1.7 都存在且受 hmr 热监听——供应商的持续热生效靠它，见 provider-routes 的 renderProfileProviderEntry；patch `config` 是整块替换，必须携带完整 `llm-pi-ai` 段）。两份都仅重定向 provider baseURL。**只镜像 settings（凭据引用），绝不镜像 `.credentials.yaml`**（可能含真实密钥，落远端违背整个设计）。
 - **代理令牌与反向端口随会话固定**，落盘远端 `.runtime/proxy-token`（600）与 `.runtime/reverse-port`。反向端口写进了 patch 的 `baseURL`，运行中的远端进程认它——复用、重连、换本机 CLI 必须读回同一组值，别在启动时重新生成。
 - 代理实例（本机回环 http.Server）与正向监听器一样**跨重连存活**，重连只重挂 `forwardIn`。多视图共享会话时反向端口先到先得，挂不上是警告不是错误。
 
@@ -123,6 +123,14 @@
 **排查提示**：账号「被登出」先看远端 `DSH_HOME` 的 `.credentials.yaml` 里 `deepseek-account-platform/default` 是否还在——被删=撞了 40003/401 路径（通知或平台/推理请求没用上真实 token）；还在但 UI 报错=路径换算错了（上游回 HTML）。不要靠「重新登录远端」掩盖：占位 grant 每次连接会重写，根因在代理路由。
 
 **23c. dsh 的模型列表请求落 baseURL 的 origin（`/models`），不是 `${baseURL}/models`——代理必须单独给 `/models` 一条路由。** dsh 的 `modelListingURL(baseURL)` 是 `new URL('/models', new URL(baseURL).origin)`（源码核实），baseURL 被 patch 成 `<隧道>/anthropic` 后列表请求落在 `<隧道>/models`；没这条路由时代理回 404，远端日志打印 `[llm-deepseek-account] model listing from .../models failed ... answered HTTP 404; using the bundled catalog`——功能上回落内置目录仍能对话，但模型列表不会跟随账号的真实目录。上游 `https://api.deepseek.com/models` 同时接受 `x-api-key`（API key 通道）与 `x-dsh-auth-token`（账号 grant 通道），实测账号令牌 200 返回完整目录、失效 API key 401，所以路由与 `/anthropic` 同款（按请求头各自替换，不区分通道），见 [provider-routes.ts](../src/credential/provider-routes.ts) 的 `deepseekModelsRoute`。另记一个高频误判：远端报「API 密钥无效」时先分清是哪条通道——代理日志的 `route=DeepSeek` 对 `/anthropic` 下两条通道都成立（同一路径前缀，靠请求头区分），要确认走的是 API key 还是账号：本机 `~/.dsh/.credentials.yaml` 的 `refs.DEEPSEEK_API_KEY` 可能早已失效（上游 401 会给出 `api key ****xxxx is invalid`），而 `records.deepseek-account-platform/default` 的 grant 仍然有效；两者是独立凭据，别把「账号有效」当成「API key 也有效」。
+
+**23d. 供应商配置必须落在**设置文档**（profile 的 `cordis.patch.yml`），写进命令行 `--patch` 覆盖层会让远端模型设置页看不见、改不动。** 现象（dsh 0.2.2-rc.5 实测）：远程 SSH 连上后，远端「设置 → 模型」里自定义供应商（iflytek 等）显示 0 个模型，用户手工添加的模型也不生效。逐层取证（`dsh --dump-config` + 直接调远端 `/api/settings/describe`）：
+
+- dsh 的设置文档**就是** `profiles/<name>/cordis.patch.yml`（`dsh-settings` 的 `configEditor.documentPath` 指它）；GUI 读写的是设置视图的 `user` 层，模型卡片的「继承模型」读 `base` 层（组合基线）。
+- 命令行 `--patch` 覆盖层**既不算 base 也不算 user**：它只出现在组合树里（`value`），并且对同一 `id` 是**整块替换**。实测设置视图三层的值是 `user={}`、`base={"providers":{}}`、`value=完整供应商`——所以卡片没有任何可显示的模型；而在 profile 层加一个模型后叠加覆盖层，组合结果里该模型直接消失（整块被覆盖层替换）——这就是「加不上」。
+- 修复：供应商条目改写到 profile 的 `cordis.patch.yml`（[profile-writer.ts](../src/provision/profile-writer.ts) 的 `syncProviderProfileEntry` + [provider-routes.ts](../src/credential/provider-routes.ts) 的 `mergeProfileProviderPatch`），会话 `--patch` 只留标量通道（`llm-deepseek` / `deepseek-account`）。合并必须走 yaml 的 `parseDocument`（保注释/锚点/顺序，`parse`+`stringify` 会把用户批注与条目顺序清掉），只替换 `llm-pi-ai` 一条。
+- 三条安全契约（都踩过或差点踩）：① 读取失败与文件不存在必须分开判定——`cat ... 2>/dev/null || true` 会把权限/IO 错误当成「新文档」，用只含 `llm-pi-ai` 的内容覆盖掉用户全部设置；② 写入必须「同目录临时文件 + rename」——SFTP/printf 都是先截断再写，中途失败会留下半截设置文档；③ 内容已等价时跳过写入，否则每次连接/重连都触发远端 dsh 配置重组合与设置页刷新。
+- 已知取舍：profile 是**机器级**共享（一份设置给该主机所有会话），所以同主机并发多会话时，后连接者的隧道端点会覆盖前者；远端 GUI 里新增的 provider/model 会在下次连接时被本机配置覆盖（本工具定位是「把本机配置镜像到远端」）。另：会话关闭后 profile 里的 `baseURL` 仍指向已关闭的反向端口，原生 `dsh` 在该主机上直接跑会看到不可达的供应商端点——需要时重连一次即可刷新。
 
 **24. 高级选项的持久化语义从 per-host 改为全局「上一次输入」，密码绝不落盘；三弹窗共写一份存储必须用部分更新。** 0.9.0 的设计拍板与依据：
 

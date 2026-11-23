@@ -25,9 +25,10 @@ import { readLocalCredentials, readLocalAccountToken } from '../../credential/lo
 import { TunnelProxyCredential } from '../../credential/tunnel-proxy.js';
 import {
   deepseekRoute, deepseekModelsRoute, extractProviderRoutes, localDeepseekConfig, readLocalSettings,
-  renderProviderTunnelPatch,
+  renderProfileProviderEntry,
 } from '../../credential/provider-routes.js';
 import { writeProxySecret, writePlaceholderAccountCredentials, writeSessionReverseHost } from '../../credential/proxy-secret.js';
+import { syncProviderProfileEntry } from '../../credential/provider-profile-sync.js';
 import { quote } from '../../util/shell-quote.js';
 import { toErrorMessage } from '../../util/errors.js';
 import { createLogger } from '../../util/logger.js';
@@ -185,22 +186,30 @@ export async function provisionAndConfigure(
     transportIo(transport, { pathPrefix: provisioned.node.binDir }), paths,
   );
 
-  // 6. pi-ai 供应商路由 patch：追加到会话 patch 文件（.runtime/patch.yml）末尾。
-  //    pi-ai 的 patch 结构含 providers 嵌套对象，provisioner 的 renderPatchYaml
-  //    只支持标量 config 字段——所以 pi-ai patch 走独立追加路径，追加到
-  //    provisioner 已写的标量 patch（llm-deepseek/llm-deepseek-account）之后。
-  //    **必须用 >> 追加，不能用 writeRemoteTextFile（覆盖写入）**——后者会
-  //    把 provisioner 写的标量 patch 全部覆盖掉。
+  // 6. pi-ai 供应商配置：写进远端 profile 的**设置文档**（profiles/web/cordis.patch.yml），
+  //    不走会话 `--patch` 覆盖层。
+  //
+  //    为什么是设置文档：dsh 的模型设置页读写的就是这份文件（`user` 层），模型卡片的
+  //    「继承模型」只认组合基线（`base` 层）。`--patch` 覆盖层两层都不算，且对同一
+  //    `id` 整块替换——供应商写进覆盖层后，远端设置页看不到模型、用户在远端的增改
+  //    也会被整块盖掉（实测：profile 层新增的模型在叠加覆盖层后从组合结果里消失）。
+  //
+  //    端口/端点仍是**机器级共享**：profile 是整台主机一份，同一主机并发多会话时
+  //    后连的会话覆盖 baseURL（隧道端点以最后连接者为准，与 dsh 自身"一份 profile
+  //    一份设置"的语义一致）。
+  //
   //    baseURL 的 host 用 secret.reverseHost（SSH 恒 127.0.0.1；WSL NAT 为网关 IP）
   if (secret && localSettings) {
-    const piAiPatch = renderProviderTunnelPatch(localSettings, secret.reversePort, secret.reverseHost);
-    if (piAiPatch !== undefined) {
+    const providerEntry = renderProfileProviderEntry(localSettings, secret.reversePort, secret.reverseHost);
+    if (providerEntry !== undefined) {
+      // 必须先 onStageStart：此刻没有活跃阶段，done/skip 会被进度报告器早退丢弃，
+      // 用户就永远看不到「供应商配置没写成功」这件事
+      options.onStageStart?.('同步供应商配置到远端 profile');
       try {
-        const patchFile = paths.sessionPatchFile(sessionId);
-        // 用 printf 追加（>> 重定向），不覆盖 provisioner 已写的标量 patch
-        await transport.exec(`printf '\\n%s' ${quote(piAiPatch)} >> ${quote(patchFile)}`, { allowNonZeroExit: true });
+        await syncProviderProfileEntry(ctx, providerEntry);
+        options.onStageDone?.('供应商配置已同步到远端 profile（远端模型设置可编辑）');
       } catch (error) {
-        options.onStageSkip?.(`pi-ai 供应商路由写入失败（不影响其他通道）：${toErrorMessage(error)}`);
+        options.onStageSkip?.(`pi-ai 供应商配置写入失败（不影响其他通道）：${toErrorMessage(error)}`);
       }
     }
   }
