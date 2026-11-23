@@ -41,6 +41,15 @@ export class LocalForward {
   /** 活跃的本机连接，close() 时统一销毁 */
   private readonly sockets = new Set<Socket>();
   private closed = false;
+  /**
+   * 最近一次有转发数据流动的时间戳（epoch 毫秒）；0 = 尚无活动。
+   *
+   * 用途：弱网大流量（如首屏 2.6MB 静态资源）期间，单条 SSH TCP 会被
+   * 大块 CHANNEL_DATA 占满，管理类 exec（心跳）排在其后而超时——但隧道其实
+   * 仍在正常传输数据。会话编排层据此把「命令超时」判为链路活跃而非断线，
+   * 避免误触发重连销毁正在下载的转发连接（白屏根因）。
+   */
+  private _lastActivityAt = 0;
 
   /**
    * @param transport - 初始传输实例
@@ -60,6 +69,21 @@ export class LocalForward {
   /** 本机监听端口；`listen()` 之后可用 */
   get localPort(): number {
     return this.listenPort;
+  }
+
+  /** 最近一次转发数据流动的时间戳（epoch 毫秒）；0 表示尚无活动 */
+  get lastActivityAt(): number {
+    return this._lastActivityAt;
+  }
+
+  /**
+   * 判断转发通道近期是否有数据流动（活跃）。
+   *
+   * @param windowMs - 判定窗口（毫秒）；windowMs <= 0 恒为 false
+   * @returns 最近一次数据流动距今不超过 windowMs 时为 true
+   */
+  isRecentlyActive(windowMs: number): boolean {
+    return windowMs > 0 && this._lastActivityAt !== 0 && Date.now() - this._lastActivityAt <= windowMs;
   }
 
   /**
@@ -185,6 +209,12 @@ export class LocalForward {
     socket.once('close', release);
     socket.on('error', () => channel.stream.destroy());
     channel.stream.on('error', () => socket.destroy());
+
+    // 记录双向数据流动（含远端 → 本机的大块下载）：仅供「隧道是否活跃」判定，
+    // 不做任何转发干预——pipe() 内部同样通过 data 事件搬运数据，多挂一个只
+    // 更新时间戳的监听不会消耗数据流。
+    socket.on('data', () => { this._lastActivityAt = Date.now(); });
+    channel.stream.on('data', () => { this._lastActivityAt = Date.now(); });
 
     socket.pipe(channel.stream).pipe(socket);
   }

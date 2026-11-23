@@ -90,8 +90,15 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 /** 默认 keepalive 间隔 */
 const DEFAULT_KEEPALIVE_INTERVAL_MS = 10_000;
 
-/** 默认 keepalive 失败上限 */
-const DEFAULT_KEEPALIVE_COUNT_MAX = 3;
+/**
+ * 默认 keepalive 连续失败上限。
+ *
+ * 取 6（而非 3）：ssh2 的 keepalive 计数只认 ping 回包，不认 CHANNEL_DATA，
+ * 大流量下载期间即便 TCP 正常也会被高丢包链路（实测 20%~33%）吃掉部分 ping。
+ * 10s × 6 = 60s 的容忍窗口，把「连续丢包」误杀连接的概率降到可忽略（0.33^6 ≈ 0.13%），
+ * 又能在真正断链时于 1 分钟内感知。
+ */
+const DEFAULT_KEEPALIVE_COUNT_MAX = 6;
 
 /** 密码认证最大尝试次数（每次被拒后经 getPassword 重新取） */
 const MAX_PASSWORD_ATTEMPTS = 3;

@@ -14,13 +14,29 @@
  */
 
 import { quote } from '../util/shell-quote.js';
+import { RemoteError } from '../util/errors.js';
 import type { RemoteTransport } from '../transport/types.js';
 
 /** 心跳间隔（毫秒） */
 export const HEARTBEAT_INTERVAL_MS = 5_000;
 
-/** 单次心跳的超时（毫秒） */
-export const HEARTBEAT_TIMEOUT_MS = 5_000;
+/**
+ * 单次心跳的超时（毫秒）。
+ *
+ * 从 5 秒放宽到 15 秒：弱网（实测 RTT 245ms、丢包 20%~33%）大流量下载期间，
+ * 心跳 exec 会被大块 CHANNEL_DATA 排在后面，5 秒几乎必然超时。放宽超时 +
+ * 编排层「转发活跃时容忍超时」双管齐下，避免把「忙但活着」误判成断线重连。
+ */
+export const HEARTBEAT_TIMEOUT_MS = 15_000;
+
+/** 心跳失败的分类 */
+export type HeartbeatFailureKind =
+  /** 远端明确异常：进程退出 / 端口未监听 / webserver 无 HTTP 响应 */
+  | 'remote-down'
+  /** 命令超时：可能是高负载排队，需结合转发活跃度判定而非直接判死 */
+  | 'timeout'
+  /** 其余 SSH 链路错误（连接已失效等） */
+  | 'link-error';
 
 /** 一次心跳的结果 */
 export interface HeartbeatResult {
@@ -28,6 +44,8 @@ export interface HeartbeatResult {
   isHealthy: boolean;
   /** 失败原因；健康时为 undefined */
   reason?: string;
+  /** 失败分类；健康时为 undefined */
+  failureKind?: HeartbeatFailureKind;
 }
 
 /**
@@ -101,21 +119,31 @@ export async function beat(
     const httpCode = /^HTTP=(\d+|unknown)$/m.exec(result.stdout)?.[1];
 
     if (result.stdout.includes('PID=dead')) {
-      return { isHealthy: false, reason: `远端 dsh 进程（pid ${pid}）已退出` };
+      return { isHealthy: false, failureKind: 'remote-down', reason: `远端 dsh 进程（pid ${pid}）已退出` };
     }
     if (result.stdout.includes('PORT=down')) {
-      return { isHealthy: false, reason: `远端端口 ${port} 已停止监听` };
+      return { isHealthy: false, failureKind: 'remote-down', reason: `远端端口 ${port} 已停止监听` };
     }
     // HTTP=000：连接建立不了——进程在、端口在，但 webserver 不应答。
     // 这正是 pid+端口判据探测不到的故障层（进程僵死、事件循环卡住）
     if (httpCode === '000') {
-      return { isHealthy: false, reason: `远端 dsh 无 HTTP 响应（127.0.0.1:${port} 连不上 webserver）` };
+      return {
+        isHealthy: false,
+        failureKind: 'remote-down',
+        reason: `远端 dsh 无 HTTP 响应（127.0.0.1:${port} 连不上 webserver）`,
+      };
     }
     return { isHealthy: true };
   } catch (error) {
-    // exec 失败意味着 SSH 链路本身有问题
+    // exec 失败意味着 SSH 链路本身有问题。区分「命令超时」与其余链路错误：
+    // 超时可能只是高负载排队（隧道其实仍在传数据），交给编排层结合转发活跃度
+    // 二次判定；其余错误（连接已失效）按链路异常处理。
+    const isTimeout = error instanceof RemoteError
+      && error.code === 'EXEC_FAILED'
+      && /超时/.test(error.message);
     return {
       isHealthy: false,
+      failureKind: isTimeout ? 'timeout' : 'link-error',
       reason: `SSH 链路异常：${error instanceof Error ? error.message : String(error)}`,
     };
   }

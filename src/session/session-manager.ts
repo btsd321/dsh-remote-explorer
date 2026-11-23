@@ -86,6 +86,16 @@ export type { TransportType, OpenSessionOptions, CloseSessionOptions } from './o
 const log = createLogger('session-manager');
 
 /**
+ * 「转发近期活跃」判定窗口（毫秒）。
+ *
+ * 心跳因 exec 超时失败时，若本机正向隧道在此时长内仍有数据流动，
+ * 说明 SSH 链路「忙但活着」（典型：弱网下载首屏 2.6MB 静态资源），
+ * 此时不把超时计入断线、不触发重连——否则重连会销毁正在下载的转发连接，
+ * 导致首屏 JS 截断、远端界面永久白屏。
+ */
+const FORWARD_ACTIVITY_GUARD_MS = 20_000;
+
+/**
  * RemoteSession 构造所需的内部依赖集合。
  *
  * 将原本散落的 10 个位置参数收进单一对象，避免长参数列表导致的
@@ -395,10 +405,23 @@ export class RemoteSession {
   private onHeartbeat(result: HeartbeatResult): void {
     if (this.closed) return;
 
+    // 弱网大流量期间，心跳 exec 会排在大块 CHANNEL_DATA 之后而超时，但隧道
+    // 其实仍在传输数据。此时「命令超时」不算断线：只要正向隧道近期仍有数据
+    // 流动，就按链路健康处理，避免误判重连销毁正在下载的转发连接（白屏根因）。
+    // 注意只宽容 'timeout'；'remote-down'（进程退出/端口未监听/无 HTTP 响应）
+    // 与 'link-error'（连接已失效）仍然照常计数。
+    const tolerated = !result.isHealthy
+      && result.failureKind === 'timeout'
+      && this.forward.isRecentlyActive(FORWARD_ACTIVITY_GUARD_MS);
+
     const before = this.state.tag;
-    this.apply(result.isHealthy
+    this.apply(tolerated || result.isHealthy
       ? { type: 'heartbeat-ok' }
       : { type: 'heartbeat-fail' });
+
+    if (tolerated) {
+      log.debug('心跳命令超时但转发隧道活跃，判为链路健康（不重连）', { reason: result.reason });
+    }
 
     // 状态机判定该重连了（heartbeat-fail 达阈值会转成 reconnecting）
     if (before !== 'reconnecting' && this.state.tag === 'reconnecting') {
