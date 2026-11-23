@@ -169,6 +169,17 @@ export interface RemotePaths {
   hostProfileNodeModules(platform: string): string;
 
   /**
+   * 主机级 profile 的用户 patch 层（`profiles/<name>/cordis.patch.yml`）。
+   *
+   * 这个文件同时是 dsh 的**设置文档**：GUI 的模型/插件设置读写的就是它
+   * （`dsh-settings` 的 `configEditor.documentPath`）。供应商配置必须写在这里，
+   * 而不是会话 `--patch` 覆盖层——覆盖层既不算设置文档的 `base` 也不算 `user`，
+   * 只在组合树里生效，会把用户在远端的改动整块盖掉（详见 provider-routes.ts）。
+   * @param platform - 平台 profile 名
+   */
+  hostProfilePatch(platform: string): string;
+
+  /**
    * 某 Node 版本的安装目录。
    * @param version - 版本号，含前缀 v，如 `v24.21.0`
    */
@@ -338,6 +349,7 @@ export function createRemotePaths(homeDir: string): RemotePaths {
     hostProfileDir: (platform) => `${base}/profiles/${platform}`,
     hostProfileManifest: (platform) => `${base}/profiles/${platform}/package.json`,
     hostProfileNodeModules: (platform) => `${base}/profiles/${platform}/node_modules`,
+    hostProfilePatch: (platform) => `${base}/profiles/${platform}/cordis.patch.yml`,
 
     nodeDir: (version) => `${base}/node/${version}`,
     nodeBin: (version) => `${base}/node/${version}/bin/node`,

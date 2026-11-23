@@ -169,9 +169,9 @@ export async function prepareSessionProfile(
 /**
  * 把 patch 条目渲染成 YAML 文本。
  *
- * 顶层保持 `- id:` 数组条目形态：`provisionAndConfigure` 之后会向同一文件
- * 追加 `- id: llm-pi-ai`，如果用 JSON 数组包起来（`[...]`），追加的 YAML
- * 条目会落在闭合括号之后，整份文件将无法解析。
+ * 顶层保持 `- id:` 数组条目形态：会话 patch 只承载标量通道
+ * （`llm-deepseek` / `llm-deepseek-account` / `deepseek-account`），供应商配置
+ * 已改由 credential/provider-profile-sync 写进远端 profile 的设置文档。
  *
  * 标量沿用严格引号；嵌套对象/数组用 JSON 序列化——JSON 是 YAML 1.2 的
  * 严格子集，`models: [{"id":"..."}]` 这类 flow style 可被 DSH 的 YAML

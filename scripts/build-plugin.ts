@@ -94,6 +94,18 @@ export async function buildPlugin(options: BuildPluginOptions = {}): Promise<voi
   const hostExternal = options.offline
     ? [...Object.keys(pkg.peerDependencies), 'cpu-features', 'nan']
     : HOST_EXTERNAL;
+  const emptyNativeModules = {
+    name: 'empty-native-modules',
+    setup(pluginBuild: import('esbuild').PluginBuild): void {
+      // `.node` 原生件一律替成空模块。不能只靠 `loader: { '.node': 'empty' }`——
+      // 它仅在文件**存在**时生效；没装原生构建工具链的机器上 ssh2 的
+      // `require('./build/Release/sshcrypto.node')` 解析不到，esbuild 会退化成
+      // `__require(...)` 原样留在产物里，于是同一个 bundle 在不同机器上产出
+      // 不一样的内容。空模块让 ssh2 的 try/catch 稳定回落纯 JS
+      pluginBuild.onResolve({ filter: /\.node$/ }, args => ({ path: args.path, namespace: 'empty-native' }));
+      pluginBuild.onLoad({ filter: /.*/, namespace: 'empty-native' }, () => ({ contents: '', loader: 'js' }));
+    },
+  };
   rmSync(libDirectory, { recursive: true, force: true });
   mkdirSync(libDirectory, { recursive: true });
 
@@ -111,10 +123,11 @@ export async function buildPlugin(options: BuildPluginOptions = {}): Promise<voi
     target: 'node20',
     bundle: true,
     external: hostExternal,
-    // ssh2 可选原生件（sshcrypto.node）在放行构建脚本的机器上存在——单文件
-    // bundle 带不走它，empty loader 让 require 拿到空模块，ssh2 的 try/catch
-    // 自然回落纯 JS（与 package.ts 对 cpu-features 的 external 同一哲学）
+    // ssh2 可选原生件（sshcrypto.node）：单文件 bundle 带不走它，
+    // 空模块让 require 拿到空壳，ssh2 的 try/catch 自然回落纯 JS
+    // （与 package.ts 对 cpu-features 的 external 同一哲学）
     loader: { '.node': 'empty' },
+    plugins: [emptyNativeModules],
     define,
     minify,
   });
@@ -155,8 +168,10 @@ export async function buildPlugin(options: BuildPluginOptions = {}): Promise<voi
     bundle: true,
     external: hostExternal,
     banner: { js: HOST_BANNER },
-    // 同 handoff 宿主半：宿主半 bundle 了 ssh2，须容忍 .node 原生件存在
+    // 同 handoff 宿主半：宿主半 bundle 了 ssh2，须把 .node 原生件替成空模块
+    // （插件拦截，与原生件是否存在无关，产物因此与编译机无关）
     loader: { '.node': 'empty' },
+    plugins: [emptyNativeModules],
     // handoff 产物文本随宿主半内联（引导期写进远端会话 profile）
     define: handoffDefine,
     minify,
