@@ -9,9 +9,11 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parse } from 'yaml';
 import {
   extractProviderRoutes, deepseekRoute, deepseekModelsRoute, extractDeepseekBaseURL,
   readLocalSettings, setProfilePatchPath, mirrorSettingsForTunnel, localDeepseekConfig,
+  renderProfileProviderEntry, mergeProfileProviderPatch,
 } from '../../src/credential/provider-routes.js';
 import type { ProxyRoute } from '../../src/credential/provider-routes.js';
 
@@ -403,4 +405,111 @@ it('已有 models 配置仍回退 DEEPSEEK_BASE_URL 环境变量', t => {
     else process.env.DEEPSEEK_BASE_URL = old;
   });
   assert.equal(localDeepseekConfig('llm-deepseek:\n  models: []\n')?.['baseURL'], 'https://env-gateway.example/v1');
+});
+
+describe('renderProfileProviderEntry', () => {
+  /** 带一个已重定向资格的供应商与本机模型列表。 */
+  const local = `
+llm-pi-ai:
+  providers:
+    gw:
+      apiKeyEnv: GW_KEY
+      api: openai-completions
+      baseURL: https://gw.example.com/v1
+      models:
+        - id: model-a
+          name: model-a
+    no-key:
+      baseURL: https://other.example.com/v1
+`;
+
+  it('产出带 id/name 的条目，供应商 baseURL 指向隧道且模型保留', () => {
+    const entry = renderProfileProviderEntry(local, 40123);
+    assert.ok(entry !== undefined);
+    assert.equal(entry.id, 'llm-pi-ai');
+    assert.equal(entry.name, '@deepseek-ai/dsh-llm-pi-ai');
+    const providers = entry.config['providers'] as Record<string, Record<string, unknown>>;
+    assert.equal(providers['gw']?.['baseURL'], 'http://127.0.0.1:40123/r/gw');
+    assert.equal(providers['gw']?.['apiKeyEnv'], 'GW_KEY');
+    assert.deepEqual(providers['gw']?.['models'], [{ id: 'model-a', name: 'model-a' }]);
+    // 无凭据引用的供应商不重定向（远端直连，不依赖代理）
+    assert.equal(providers['no-key']?.['baseURL'], 'https://other.example.com/v1');
+  });
+
+  it('WSL NAT 网关 host 进入 baseURL', () => {
+    const entry = renderProfileProviderEntry(local, 40123, '172.29.240.1');
+    const providers = entry!.config['providers'] as Record<string, Record<string, unknown>>;
+    assert.equal(providers['gw']?.['baseURL'], 'http://172.29.240.1:40123/r/gw');
+  });
+
+  it('无 llm-pi-ai 段或非法 YAML 返回 undefined', () => {
+    assert.equal(renderProfileProviderEntry('llm-deepseek:\n  baseURL: https://x', 1), undefined);
+    assert.equal(renderProfileProviderEntry('{{bad yaml', 1), undefined);
+  });
+});
+
+describe('mergeProfileProviderPatch', () => {
+  /** 供应商条目替身。 */
+  const entry = { id: 'llm-pi-ai', name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers: { gw: { apiKeyEnv: 'GW_KEY', baseURL: 'http://127.0.0.1:1/r/gw' } } } };
+
+  it('保留其它条目与文件头注释，原地替换既有 llm-pi-ai 条目', () => {
+    const existing = `# Your patch layer for this dsh profile
+- id: agent-default-model
+  config:
+    provider: iflytek
+    model: GLM-5.3   # 行内注释也要留住
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      old:
+        apiKeyEnv: OLD_KEY
+        baseURL: https://old.example.com/v1
+- id: subagent
+  config:
+    maxActiveSubagents: 20
+`;
+    const result = mergeProfileProviderPatch(existing, entry);
+    assert.ok(result !== undefined);
+    assert.equal(result.merged, true);
+    assert.ok(result.text.startsWith('# Your patch layer for this dsh profile\n'));
+    assert.ok(result.text.includes('# 行内注释也要留住'));
+    const entries = parse(result.text) as Record<string, unknown>[];
+    // 顺序保持：替换原地，不把条目挪到末尾
+    assert.deepEqual(entries.map(item => item['id']), ['agent-default-model', 'llm-pi-ai', 'subagent']);
+    assert.deepEqual(entries[1]?.['config'], entry.config);
+    assert.ok(!result.text.includes('OLD_KEY'));
+  });
+
+  it('内容已等价时不重写（merged=false）', () => {
+    const first = mergeProfileProviderPatch('- id: llm-pi-ai\n  name: "@deepseek-ai/dsh-llm-pi-ai"\n  config:\n    providers: {}\n', {
+      id: 'llm-pi-ai', name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers: {} },
+    });
+    assert.ok(first !== undefined);
+    const second = mergeProfileProviderPatch(first.text, {
+      id: 'llm-pi-ai', name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers: {} },
+    });
+    assert.ok(second !== undefined);
+    assert.equal(second.merged, false);
+    assert.equal(second.text, first.text);
+  });
+
+  it('远端尚无该条目时追加，不丢其它设置', () => {
+    const result = mergeProfileProviderPatch('- id: subagent\n  config:\n    maxActiveSubagents: 20\n', entry);
+    const entries = parse(result!.text) as Record<string, unknown>[];
+    assert.deepEqual(entries.map(item => item['id']), ['subagent', 'llm-pi-ai']);
+  });
+
+  it('文件不存在或只有注释时写出该条目', () => {
+    const created = parse(mergeProfileProviderPatch(undefined, entry)!.text) as Record<string, unknown>[];
+    assert.deepEqual(created.map(item => item['id']), ['llm-pi-ai']);
+    const commented = mergeProfileProviderPatch('# 只有注释\n', entry)!;
+    assert.ok(commented.text.includes('# 只有注释'));
+    assert.deepEqual((parse(commented.text) as Record<string, unknown>[]).map(item => item['id']), ['llm-pi-ai']);
+  });
+
+  it('YAML 损坏或顶层不是数组时返回 undefined（绝不覆盖用户设置文档）', () => {
+    assert.equal(mergeProfileProviderPatch('{{broken yaml', entry), undefined);
+    assert.equal(mergeProfileProviderPatch('id: not-a-list\n', entry), undefined);
+  });
 });

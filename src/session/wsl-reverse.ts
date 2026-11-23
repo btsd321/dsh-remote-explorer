@@ -43,11 +43,11 @@ import type { ProvisionResult } from '../provision/provisioner.js';
 import { prepareSessionProfile } from '../provision/profile-writer.js';
 import { ReverseListener } from '../tunnel/reverse-listener.js';
 import { writeSessionReverseHost, writePlaceholderAccountCredentials, type ProxySecret } from '../credential/proxy-secret.js';
+import { syncProviderProfileEntry } from '../credential/provider-profile-sync.js';
 import type { TunnelProxyCredential } from '../credential/tunnel-proxy.js';
 import {
-  readLocalSettings, renderProviderTunnelPatch,
+  readLocalSettings, renderProfileProviderEntry,
 } from '../credential/provider-routes.js';
-import { quote } from '../util/shell-quote.js';
 import { toErrorMessage } from '../util/errors.js';
 import { createLogger } from '../util/logger.js';
 import type { OpenSessionOptions } from './options.js';
@@ -327,8 +327,8 @@ export async function refreshWslReverseOnReconnect(
     await writeSessionReverseHost(ctx, sessionId, plan.reverseHost);
     // 3b. profile patch：prepareSessionProfile 幂等且每次重写 patch——
     //     复用引导产出的 dshBin/binDir，不重跑整个 provision。
-    //     DSH_HOME = base，patch 文件在 sessions/<id>/.runtime/patch.yml（会话级）。
-    //     pi-ai 供应商路由也合并进 patch 文件（与 open 流程同一机制）。
+    //     DSH_HOME = base，patch 文件在 sessions/<id>/.runtime/patch.yml（会话级），
+    //     只承载标量通道（llm-deepseek / deepseek-account）。
     const patches = credential?.remotePatches() ?? [];
     await prepareSessionProfile(ctx, {
       sessionId,
@@ -336,15 +336,23 @@ export async function refreshWslReverseOnReconnect(
       nodeBinDir: provisioned.node.binDir,
       ...(patches.length > 0 ? { patches } : {}),
     });
-    // 3c. pi-ai 供应商路由 patch：追加到 patch 文件（>> 追加，不覆盖标量 patch）
+    // 3c. pi-ai 供应商配置：写进远端 profile 的**设置文档**（与 open 流程同一机制）。
+    //     NAT 模式下反向端点 host 会随 WSL 重启变化，baseURL 必须跟着刷新，
+    //     否则隧道指向旧网关地址。注意：本分支只在 host 变化时进入——host 不变时
+    //     既有的 baseURL 仍然有效，不需要重写；写失败必须留痕（否则远端会一直
+    //     指着旧端点而无从排查）。
     const localSettings = readLocalSettings();
     if (localSettings) {
-      const piAiPatch = renderProviderTunnelPatch(localSettings, secret.reversePort, plan.reverseHost);
-      if (piAiPatch !== undefined) {
+      const providerEntry = renderProfileProviderEntry(localSettings, secret.reversePort, plan.reverseHost);
+      if (providerEntry !== undefined) {
         try {
-          const patchFile = provisioned.paths.sessionPatchFile(sessionId);
-          await transport.exec(`printf '\\n%s' ${quote(piAiPatch)} >> ${quote(patchFile)}`, { allowNonZeroExit: true });
-        } catch { /* 容忍：pi-ai patch 失败不阻断重连 */ }
+          await syncProviderProfileEntry(ctx, providerEntry);
+        } catch (error) {
+          log.warn(
+            `WSL 重连后供应商配置刷新失败，远端设置文档仍指向旧反向端点：${toErrorMessage(error)}`,
+            { hostAlias: transport.hostAlias, reverseHost: plan.reverseHost },
+          );
+        }
       }
     }
     // 3d. 机器级 credentials.yaml（占位 grant record，同值幂等重写；契约与
