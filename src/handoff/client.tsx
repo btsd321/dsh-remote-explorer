@@ -34,6 +34,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client';
 import {
   HANDOFF_PROTOCOL_VERSION, HANDOFF_ROUTE_PREFIX, type HandoffMeta,
 } from './protocol.js';
+import { installClipboardFallback } from './clipboard-fallback.js';
 import { STATE_COLORS, STATE_LABEL_KEYS } from '../util/session-display.js';
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -132,6 +133,10 @@ export const inject = ['slots', 'locale'];
  * @param ctx - 远端页面的 cordis 上下文
  */
 export function apply(ctx: ClientContext): void {
+  ctx.effect(
+    () => installClipboardFallback(),
+    'dsh-remote-handoff: clipboard fallback',
+  );
   ctx.effect(
     () => ctx.locale.register(LOCALE_NS, { zh, en }),
     'dsh-remote-handoff: locales',
