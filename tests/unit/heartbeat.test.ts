@@ -11,7 +11,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { beat } from '../../src/session/heartbeat.js';
+import { beat, isTolerableFailure, type HeartbeatResult } from '../../src/session/heartbeat.js';
 import type { RemoteTransport, ExecOptions, ExecResult } from '../../src/transport/types.js';
 import { RemoteError } from '../../src/util/errors.js';
 
@@ -66,12 +66,31 @@ describe('beat 结果分类', () => {
     assert.equal(result.isHealthy, true);
   });
 
-  it('命令超时（EXEC_FAILED 含「超时」）→ timeout', async () => {
+  it('命令超时（EXEC_TIMEOUT）→ timeout', async () => {
     const transport = stubTransport(async () => {
-      throw new RemoteError('EXEC_FAILED', '主机 h 上的命令超时（15000ms）：sh -c ...');
+      throw new RemoteError('EXEC_TIMEOUT', '主机 h 上的命令超时（15000ms）：sh -c ...');
     });
     const result = await beat(transport, { pid: 1, port: 48809 });
     assert.equal(result.isHealthy, false);
+    assert.equal(result.failureKind, 'timeout');
+  });
+
+  it('EXEC_FAILED 即使消息含「超时」也不算 timeout（不靠文案分类）', async () => {
+    // 通道池等人为等待超时、退出码非零等都落在 EXEC_FAILED，若按消息匹配
+    // 会把它们误判成「链路可能只是忙」，从而漏掉真实故障
+    const transport = stubTransport(async () => {
+      throw new RemoteError('EXEC_FAILED', '等待 SSH 通道超时（30000ms）：exec 类通道已用满');
+    });
+    const result = await beat(transport, { pid: 1, port: 48809 });
+    assert.equal(result.isHealthy, false);
+    assert.equal(result.failureKind, 'link-error');
+  });
+
+  it('WSL 传输包装后的超时同样归 timeout（EXEC_TIMEOUT 透传）', async () => {
+    const transport = stubTransport(async () => {
+      throw new RemoteError('EXEC_TIMEOUT', 'WSL 命令超时（15000ms）：wsl.exe -d Ubuntu -- bash -c ...');
+    });
+    const result = await beat(transport, { pid: 1, port: 48809 });
     assert.equal(result.failureKind, 'timeout');
   });
 
@@ -91,5 +110,40 @@ describe('beat 结果分类', () => {
     const result = await beat(transport, { pid: 1, port: 48809 });
     assert.equal(result.isHealthy, false);
     assert.equal(result.failureKind, 'link-error');
+  });
+});
+
+describe('isTolerableFailure（容忍规则）', () => {
+  /** 命令超时：结果未知，可能只是链路忙 */
+  const timeoutFailure: HeartbeatResult = {
+    isHealthy: false, failureKind: 'timeout', reason: '命令超时',
+  };
+  /** 远端明确异常：进程退出 / 端口未监听 / 无 HTTP 响应 */
+  const remoteDown: HeartbeatResult = {
+    isHealthy: false, failureKind: 'remote-down', reason: '远端进程已退出',
+  };
+  /** 其余链路错误：连接已失效 */
+  const linkError: HeartbeatResult = {
+    isHealthy: false, failureKind: 'link-error', reason: '连接已失效',
+  };
+
+  it('超时 + 转发近期有远端数据 → 容忍', () => {
+    assert.equal(isTolerableFailure(timeoutFailure, true), true);
+  });
+
+  it('超时但转发无活动 → 不容忍（照常累加断线）', () => {
+    assert.equal(isTolerableFailure(timeoutFailure, false), false);
+  });
+
+  it('远端明确异常即使转发活跃也不容忍', () => {
+    assert.equal(isTolerableFailure(remoteDown, true), false);
+  });
+
+  it('链路错误即使转发活跃也不容忍', () => {
+    assert.equal(isTolerableFailure(linkError, true), false);
+  });
+
+  it('健康结果不算「容忍」（调用方应走 heartbeat-ok 而不是「未知」分支）', () => {
+    assert.equal(isTolerableFailure({ isHealthy: true }, true), false);
   });
 });

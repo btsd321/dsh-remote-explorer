@@ -42,12 +42,15 @@ export class LocalForward {
   private readonly sockets = new Set<Socket>();
   private closed = false;
   /**
-   * 最近一次有转发数据流动的时间戳（epoch 毫秒）；0 = 尚无活动。
+   * 最近一次「远端 → 本机」通道数据的时间戳（epoch 毫秒）；0 = 尚无活动。
    *
    * 用途：弱网大流量（如首屏 2.6MB 静态资源）期间，单条 SSH TCP 会被
    * 大块 CHANNEL_DATA 占满，管理类 exec（心跳）排在其后而超时——但隧道其实
    * 仍在正常传输数据。会话编排层据此把「命令超时」判为链路活跃而非断线，
    * 避免误触发重连销毁正在下载的转发连接（白屏根因）。
+   *
+   * 只记录远端 → 本机方向：本机 socket 的写只证明浏览器发出请求，不证明
+   * SSH 链路还在（静默断链时仍会发生），拿来当存活证据会让容忍永不失效。
    */
   private _lastActivityAt = 0;
 
@@ -77,10 +80,13 @@ export class LocalForward {
   }
 
   /**
-   * 判断转发通道近期是否有数据流动（活跃）。
+   * 判断转发通道近期是否有「远端 → 本机」数据流动（活跃）。
+   *
+   * 语义是「SSH 链路还在传数据」，不是「本机浏览器发过请求」——后者在链路
+   * 静默断开时同样成立，不能作为存活证据。
    *
    * @param windowMs - 判定窗口（毫秒）；windowMs <= 0 恒为 false
-   * @returns 最近一次数据流动距今不超过 windowMs 时为 true
+   * @returns 最近一次远端数据距今不超过 windowMs 时为 true
    */
   isRecentlyActive(windowMs: number): boolean {
     return windowMs > 0 && this._lastActivityAt !== 0 && Date.now() - this._lastActivityAt <= windowMs;
@@ -153,6 +159,9 @@ export class LocalForward {
     // 主动断开依附旧传输的连接，让浏览器立刻重连而不是卡在半死的连接上
     for (const socket of this.sockets) socket.destroy();
     this.sockets.clear();
+    // 活跃证据只属于当前传输：不清零的话重连后最长一个窗口内 isRecentlyActive()
+    // 仍会因旧连接的残留时间戳返回 true，用「已经不存在的链路」冒充新链路的健康证据
+    this._lastActivityAt = 0;
   }
 
   /** 关闭监听并断开所有连接；幂等 */
@@ -161,6 +170,7 @@ export class LocalForward {
     this.closed = true;
     for (const socket of this.sockets) socket.destroy();
     this.sockets.clear();
+    this._lastActivityAt = 0;
     const server = this.server;
     this.server = undefined;
     if (server) {
@@ -210,10 +220,11 @@ export class LocalForward {
     socket.on('error', () => channel.stream.destroy());
     channel.stream.on('error', () => socket.destroy());
 
-    // 记录双向数据流动（含远端 → 本机的大块下载）：仅供「隧道是否活跃」判定，
-    // 不做任何转发干预——pipe() 内部同样通过 data 事件搬运数据，多挂一个只
-    // 更新时间戳的监听不会消耗数据流。
-    socket.on('data', () => { this._lastActivityAt = Date.now(); });
+    // 只以「远端 → 本机」的通道数据作为链路存活的证据：本机 socket 的 data 事件
+    // 只说明浏览器往本地端口写了字节，链路静默断开（无 RST）时浏览器新发请求仍会
+    // 刷新它，容忍窗口就永不到期——那会把「已经断了」误判成「忙但活着」。
+    // 不影响转发本身：pipe() 内部同样通过 data 事件搬运数据，多挂一个只更新时间
+    // 戳的监听不消耗数据流。
     channel.stream.on('data', () => { this._lastActivityAt = Date.now(); });
 
     socket.pipe(channel.stream).pipe(socket);
