@@ -15,6 +15,40 @@
  * 纯函数、不依赖 DOM，便于单测。
  */
 
+/** 是否为 http(s) 协议（本策略只处理这两种） */
+function isHttpUrl(url: URL): boolean {
+  return url.protocol === 'http:' || url.protocol === 'https:';
+}
+
+/**
+ * 解析目标 URL 与会话 URL，并校验两侧都是 http(s)。
+ *
+ * 两个导出判据共用这一份解析：只差最后一行 origin 的比较（`!==` / `===`），
+ * 分开写会因为协议白名单、origin 归一化规则改动而不同步，导致两个判据不再互补。
+ *
+ * @param url - 待判断的 URL
+ * @param sessionUrl - 远端会话页面地址
+ * @returns 两侧都合法时为解析结果，否则 undefined
+ */
+function parseHttpOrigins(
+  url: string,
+  sessionUrl: string,
+): { target: URL; session: URL } | undefined {
+  let target: URL;
+  let session: URL;
+  try {
+    target = new URL(url);
+    session = new URL(sessionUrl);
+  } catch {
+    return undefined;
+  }
+  // sessionUrl 也必须是 http(s)：非 http(s) 的 URL（例如 about:blank#<lease>）解析
+  // 会成功但 origin 退化成字符串 "null"，于是任何 http(s) 目标都被判成跨站——
+  // 与「解析失败一律不外开」的保守取向相反
+  if (!isHttpUrl(target) || !isHttpUrl(session)) return undefined;
+  return { target, session };
+}
+
 /**
  * 判断 URL 是否应交给系统浏览器打开。
  *
@@ -23,17 +57,10 @@
  * @returns true = 交系统浏览器；false = 留在浮层，或不是 http(s)，或 URL 非法
  */
 export function shouldOpenExternally(url: string, sessionUrl: string): boolean {
-  let target: URL;
-  let session: URL;
-  try {
-    target = new URL(url);
-    session = new URL(sessionUrl);
-  } catch {
-    // 任一地址解析失败都不外开：浮层里报错好过把用户甩到系统浏览器
-    return false;
-  }
-  if (target.protocol !== 'http:' && target.protocol !== 'https:') return false;
-  return target.origin !== session.origin;
+  const parsed = parseHttpOrigins(url, sessionUrl);
+  // 任一侧非法都不外开：浮层里报错好过把用户甩到系统浏览器
+  if (parsed === undefined) return false;
+  return parsed.target.origin !== parsed.session.origin;
 }
 
 /**
@@ -48,14 +75,7 @@ export function shouldOpenExternally(url: string, sessionUrl: string): boolean {
  * @returns true = 同 origin 的 http(s) 地址；false = 跨站、非 http(s) 或非法
  */
 export function isSameSessionOrigin(url: string, sessionUrl: string): boolean {
-  let target: URL;
-  let session: URL;
-  try {
-    target = new URL(url);
-    session = new URL(sessionUrl);
-  } catch {
-    return false;
-  }
-  if (target.protocol !== 'http:' && target.protocol !== 'https:') return false;
-  return target.origin === session.origin;
+  const parsed = parseHttpOrigins(url, sessionUrl);
+  if (parsed === undefined) return false;
+  return parsed.target.origin === parsed.session.origin;
 }

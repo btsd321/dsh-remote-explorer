@@ -58,10 +58,6 @@ interface WebViewElement extends HTMLWebViewElement {
   getURL(): string;
   /** 中止进行中的导航（webview 的 will-navigate DOM 事件不可 preventDefault，必须显式 stop） */
   stop(): void;
-  /** 是否存在可回退的历史记录 */
-  canGoBack(): boolean;
-  /** 回退到上一条历史记录 */
-  goBack(): void;
   /** 在 guest 内执行 JS 并取回结果（用于探测首屏是否真正渲染） */
   executeJavaScript(code: string, userGesture?: boolean): Promise<unknown>;
 }
@@ -258,7 +254,16 @@ export function RemoteWindowOverlay(props: RemoteWindowOverlayProps): ReactNode 
         button.style.cssText = 'padding:6px 18px;border-radius:6px;border:1px solid rgba(255,255,255,.3);'
           + 'background:rgba(255,255,255,.08);color:inherit;font-size:13px;font-family:inherit;cursor:pointer;'
           + 'white-space:nowrap;';
-        button.addEventListener('click', () => { retry(); });
+        button.addEventListener('click', () => {
+          // 立刻切回加载态并禁用自身：否则双击会并发两条 loadURL + 两条看门狗链，
+          // 而界面还停在旧错误文案上，看起来像「点了没反应」。retry 内部会重新
+          // 渲染状态层（加载成功撤层，失败重建按钮）。
+          button.disabled = true;
+          button.style.opacity = '0.5';
+          button.style.cursor = 'default';
+          status.textContent = t('overlayLoading');
+          retry();
+        });
         status.appendChild(button);
       }
       status.style.display = 'flex';
@@ -297,6 +302,17 @@ export function RemoteWindowOverlay(props: RemoteWindowOverlayProps): ReactNode 
     };
 
     /**
+     * 外开去重窗口（毫秒）：同一 URL 在窗口内只交给系统浏览器一次。
+     *
+     * 必要性：`will-navigate` 外开之后，若该次跨站导航仍在 `stop()` 前提交，
+     * `did-navigate` 兜底会再外开一次；服务端持续 302 到同一跨站地址时也会
+     * 反复命中。去重让这些竞态都收敛成「只开一个标签页」。
+     */
+    const EXTERNAL_DEDUPE_MS = 3_000;
+    /** 最近一次交给系统浏览器的 URL 与时间 */
+    let lastExternal: { url: string; at: number } | undefined;
+
+    /**
      * 在系统默认浏览器打开外部链接。
      *
      * 桌面壳不允许网页创建新 OS 窗口：宿主文档的 `window.open` 会命中主进程的
@@ -306,6 +322,16 @@ export function RemoteWindowOverlay(props: RemoteWindowOverlayProps): ReactNode 
      * @param url - 已判定为外部链接的 http(s) URL
      */
     const openExternal = (url: string): void => {
+      const now = Date.now();
+      if (
+        lastExternal !== undefined
+        && lastExternal.url === url
+        && now - lastExternal.at <= EXTERNAL_DEDUPE_MS
+      ) {
+        log.debug('同一外链在去重窗口内重复请求，跳过', { url });
+        return;
+      }
+      lastExternal = { url, at: now };
       window.open(url, '_blank', 'noopener,noreferrer');
     };
 
@@ -327,13 +353,7 @@ export function RemoteWindowOverlay(props: RemoteWindowOverlayProps): ReactNode 
           log.info('lease 获取成功', { lease: result.lease, partition: result.partition });
           if (disposed) { void bridge.release(result.lease).catch(() => {}); return; }
           lease = result.lease;
-          // 2. handoff「返回」经 window.open 被桌面壳转发到这里；其余外部链接
-          //    壳同样只转发不打开，插件必须自己交给系统浏览器（否则点了没反应）
-          offOpenRequested = bridge.onOpenRequested(result.lease, (url) => {
-            if (handleIntentUrl(url)) return;
-            if (shouldOpenExternally(url, target.url)) openExternal(url);
-          });
-          // 3. 创建 webview（与第一方 ui-sidebar-browser 的 ElectronWebviewPresentation 对齐）：
+          // 2. 创建 webview（与第一方 ui-sidebar-browser 的 ElectronWebviewPresentation 对齐）：
           //    - partition + about:blank#<lease> 供主进程 will-attach-webview 校验放行；
           //    - allowpopups 必须显式设置：Electron <webview> 默认 disablePopups=true，
           //      而桌面壳在 will-attach-webview 里特意保留了 disablePopups；缺少该属性
@@ -351,43 +371,87 @@ export function RemoteWindowOverlay(props: RemoteWindowOverlayProps): ReactNode 
           // 不用 height:100%——包含块是整窗高度，加 top 偏移后 100% 会溢出底部
           // （底部内容被截到窗口外）。用 top+bottom:0 撑满遮蔽条下方的剩余空间。
           element.style.cssText = `position:absolute;left:0;right:0;bottom:0;top:${topInset};border:none;`;
-          // 最近一次停留在远端会话同 origin 下的地址（跨站导航若在 stop() 前竞态提交，
-          // 优先 goBack，失败则重载回这里）
+          // 3. handoff「返回」经 window.open 被桌面壳转发到这里；壳对 guest 的
+          //    window.open 一律 deny、只把 URL 转发过来，所以外部链接必须自己
+          //    交给系统浏览器（否则点了没反应），同 origin 的则要在浮层内导航
+          //    （否则同样「没反应」——远端 dsh 里 target="_blank" 的会话/设置
+          //    链接就走这条路径）。注册必须在 element 创建之后：回调要用 element。
+          offOpenRequested = bridge.onOpenRequested(result.lease, (url) => {
+            if (handleIntentUrl(url)) return;
+            if (shouldOpenExternally(url, target.url)) {
+              openExternal(url);
+              return;
+            }
+            if (isSameSessionOrigin(url, target.url)) {
+              log.info('同站 window.open 在浮层内导航', { url });
+              void element.loadURL(url).catch(() => { /* 失败由 did-fail-load 兜底 */ });
+              return;
+            }
+            // 非 http(s)（mailto: / blob: / dsh-resource: 等）不归本策略管
+            log.debug('onOpenRequested 忽略非 http(s) 链接', { url });
+          });
+          // 4. 导航兜底状态：lastSessionUrl = 最近一次停留在远端会话同 origin
+          //    下的地址（跨站导航被拦下后重载回它）；interceptingExternal =
+          //    当前跨站导航是否已由 will-navigate 外开过，避免 did-navigate 重复外开
           let lastSessionUrl = target.url;
           // 标记当前跨站导航是否已由 will-navigate 触发过外开，避免 did-navigate 兜底重复打开
           let interceptingExternal = false;
+          // 跨站导航自动回退的次数上限与统计窗口：服务端持续 302 到外部域时，
+          // 「外开 → 回退 → 再外开」必须有尽头上限，否则会不断弹系统浏览器标签
+          const MAX_EXTERNAL_RECOVERIES = 3;
+          const EXTERNAL_RECOVERY_WINDOW_MS = 60_000;
+          let externalRecoveries = 0;
+          let externalRecoverySince = 0;
           const stopNavigation = (): void => {
             try { element.stop(); } catch { /* guest 尚未就绪或已销毁 */ }
           };
-          // 首屏渲染看门狗的定时器；卸载或成功渲染后必须清理
+          // 首屏渲染看门狗的定时器与代际号。
+          // clearBootTimer 只能取消尚未触发的 setTimeout，取消不了已经挂在
+          // `await executeJavaScript` 里的 check——这种「迟到的 check」会把新一轮
+          // 刚展示的错误层又盖掉、或再挂一条并行轮询链，所以用代际号让过期轮次退出。
+          let bootGeneration = 0;
           const clearBootTimer = (): void => {
+            bootGeneration += 1;
             if (bootTimer !== undefined) {
               clearTimeout(bootTimer);
               bootTimer = undefined;
             }
           };
           /**
-           * 轮询 guest 的 #root 是否已有内容：渲染出来才撤加载层；
-           * 超过上限仍是空白则给出「重试」，避免空白 #root 直接亮成白屏。
+           * 轮询 guest 的主挂载容器是否已有内容：渲染出来才撤加载层；
+           * 超过上限仍是空白则给出「重试」，避免空白页面直接亮成白屏。
            */
           const startBootWatchdog = (): void => {
+            bootGeneration += 1;
+            const generation = bootGeneration;
             const startedAt = Date.now();
             const check = async (): Promise<void> => {
-              if (disposed) return;
+              if (disposed || generation !== bootGeneration) return;
               let children = -1;
               try {
                 const value = await element.executeJavaScript(
-                  '(document.getElementById("root")?.childElementCount ?? 0)', true,
+                  // 主挂载点 #root，并兼容改名后的 #app：两者任一有子元素即算已渲染。
+                  // 不用 body 兜底——body 里的 <script> 也是子元素，白屏时会误判成
+                  // 渲染完成，看门狗就形同虚设。
+                  // 只读探测不需要用户手势：别白送 guest 剪贴板写/全屏等手势能力。
+                  '(document.getElementById("root")?.childElementCount ?? 0)'
+                    + ' || (document.getElementById("app")?.childElementCount ?? 0)',
+                  false,
                 );
                 children = typeof value === 'number' ? value : -1;
               } catch {
                 // executeJavaScript 不可用（旧壳/受限分区）：无法探测，直接放行，
                 // 宁可露出 webview 也不要把用户卡在加载层
-                if (!disposed) showWebview();
+                if (!disposed && generation === bootGeneration) showWebview();
                 return;
               }
-              if (disposed) return;
-              if (children > 0) { showWebview(); return; }
+              if (disposed || generation !== bootGeneration) return;
+              if (children > 0) {
+                // 成功即收尾：清掉句柄，避免留下「还有定时器」的残留语义
+                bootTimer = undefined;
+                showWebview();
+                return;
+              }
               if (Date.now() - startedAt >= BOOT_WATCHDOG_MS) {
                 log.warn('远程界面长时间空白，疑似首屏资源加载失败', { url: target.url });
                 showStatus(`${t('overlayBootStalled')}\n${t('overlayReturnHint')}`, loadRemote);
@@ -397,23 +461,42 @@ export function RemoteWindowOverlay(props: RemoteWindowOverlayProps): ReactNode 
             };
             void check();
           };
+          // 同一次主框架失败会同时触发 did-fail-load 与 loadURL 的 reject，
+          // 用标记保证「加载失败」状态层只展示一次（否则两条日志 + 层被重建两次）
+          let loadFailureShown = false;
+          /**
+           * 统一展示「加载失败 + 重试」状态层（幂等）。
+           *
+           * @param detail - 失败详情（错误消息或 Chromium 错误描述）
+           */
+          const reportLoadFailure = (detail: string): void => {
+            if (disposed || loadFailureShown) return;
+            loadFailureShown = true;
+            clearBootTimer();
+            showStatus(`${t('loadError')}：${detail}\n${t('overlayReturnHint')}`, loadRemote);
+          };
           /**
            * 加载远端页面：主文档 load 后启动渲染看门狗（见上），
            * 失败则给出带「重试」的状态层。
            */
           const loadRemote = (): void => {
             clearBootTimer();
+            loadFailureShown = false;
             log.info('webview 加载远端页面', target.url);
             void element.loadURL(target.url)
               .then(() => {
+                if (disposed) return;
                 log.info('主文档已加载，等待首屏渲染');
                 startBootWatchdog();
               })
               .catch((error: unknown) => {
-                log.error('loadURL 失败', messageOf(error));
-                if (!disposed) {
-                  showStatus(`${t('loadError')}：${messageOf(error)}\n${t('overlayReturnHint')}`, loadRemote);
-                }
+                const text = messageOf(error);
+                // stop()（跨站导航拦截）或新导航取消在途加载时会以 ERR_ABORTED 拒绝，
+                // 与下面 did-fail-load 的口径保持一致：不是真实失败，不能盖状态层，
+                // 否则会把本来正常的远端界面盖成「加载失败」
+                if (text.includes('ERR_ABORTED')) return;
+                log.error('loadURL 失败', text);
+                reportLoadFailure(text);
               });
           };
           // 4. 首次 dom-ready（about:blank#lease 就绪 = attach 通过）后 loadURL
@@ -429,12 +512,7 @@ export function RemoteWindowOverlay(props: RemoteWindowOverlayProps): ReactNode 
             if (failure.isMainFrame === false) return;
             if (failure.errorCode === ERR_ABORTED) return;
             log.warn('webview did-fail-load', { code: failure.errorCode, desc: failure.errorDescription });
-            if (!disposed) {
-              showStatus(
-                `${t('loadError')}：${failure.errorDescription ?? String(failure.errorCode)}\n${t('overlayReturnHint')}`,
-                loadRemote,
-              );
-            }
+            reportLoadFailure(failure.errorDescription ?? String(failure.errorCode));
           });
           // 5. handoff「返回/关闭/停止」经 location.href 触发主框架导航，这里截获；
           //    其余跨 origin 导航会把整个浮层带走（远端界面消失），拦下改走系统浏览器，
@@ -468,16 +546,28 @@ export function RemoteWindowOverlay(props: RemoteWindowOverlayProps): ReactNode 
               interceptingExternal = false;
               return;
             }
-            // stop() 竞态未拦住或服务端 302 跨站重定向：若尚未外开则补开一次，
-            // 再把浮层拉回上一个远端会话地址
+            // stop() 竞态未拦住，或服务端 302 跨站重定向已提交：补开一次系统浏览器，
+            // 再把浮层拉回上一个远端会话地址。
+            // 反复命中（服务端持续把会话地址重定向到外部域）时不能无限「外开 →
+            // 回退 → 再外开」——那样每轮都多开一个标签页且永远回不去，超过上限
+            // 就停手并把失败原因与重试入口交给用户。
             if (!interceptingExternal) openExternal(url);
             interceptingExternal = false;
-            try {
-              if (element.canGoBack()) element.goBack();
-              else void element.loadURL(lastSessionUrl).catch(() => {});
-            } catch {
-              void element.loadURL(lastSessionUrl).catch(() => {});
+            const now = Date.now();
+            if (now - externalRecoverySince > EXTERNAL_RECOVERY_WINDOW_MS) {
+              externalRecoverySince = now;
+              externalRecoveries = 0;
             }
+            externalRecoveries += 1;
+            if (externalRecoveries > MAX_EXTERNAL_RECOVERIES) {
+              log.warn('跨站导航反复提交，停止自动回退', { url, recoveries: externalRecoveries });
+              reportLoadFailure(url);
+              return;
+            }
+            // 直接用 loadURL 重载会话地址，不用 goBack：canGoBack 时 goBack 可能
+            // 落到 webview 初始化时的 about:blank#<lease>（loadURL 是压入历史而非
+            // 替换），那样浮层会永久空白——看门狗与重试入口都不会再启动。
+            void element.loadURL(lastSessionUrl).catch(() => { /* 失败由 did-fail-load 兜底 */ });
           });
           element.addEventListener('did-navigate-in-page', (event) => {
             const nav = event as WebViewInPageNavigateEvent;
@@ -485,6 +575,9 @@ export function RemoteWindowOverlay(props: RemoteWindowOverlayProps): ReactNode 
             const url = nav.url ?? element.getURL();
             if (isSameSessionOrigin(url, target.url)) lastSessionUrl = url;
           });
+          // 加载结束复位标记：stop() 中止导航时 did-stop-loading 也会派发，可能先于
+          // did-navigate 把标记清掉；即便因此走到 did-navigate 的「补开一次」分支，
+          // openExternal 的 URL + 时间窗去重也会把它收敛掉，不会真的多开标签页
           element.addEventListener('did-stop-loading', () => {
             interceptingExternal = false;
           });

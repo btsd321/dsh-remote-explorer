@@ -66,6 +66,13 @@ describe('shouldOpenExternally', () => {
     it('会话地址非法时一律不外开', () => {
       assert.equal(shouldOpenExternally('https://github.com/', 'also not a url'), false);
     });
+
+    it('会话地址非 http(s) 时一律不外开（否则 origin 退化成 "null"）', () => {
+      // about:blank#<lease> 这类地址 new URL() 会解析成功但 origin === 'null'，
+      // 若只校验目标 URL 的协议，任何 http(s) 目标都会被误判成跨站而外开
+      assert.equal(shouldOpenExternally('https://github.com/', 'about:blank#lease-1'), false);
+      assert.equal(shouldOpenExternally('http://127.0.0.1:18950/chat', 'about:blank#lease-1'), false);
+    });
   });
 });
 
