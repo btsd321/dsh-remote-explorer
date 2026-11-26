@@ -64,10 +64,13 @@ export function parsePlatformOutput(stdout: string, label: string): RemotePlatfo
 }
 
 /**
- * 给命令加上 `env K=V` 前缀，处理 PATH 前缀和环境变量注入。
+ * 给命令注入 PATH 前缀与环境变量（`export …; <命令>`）。
  *
  * 不用 ssh2 的 `env` 选项：那要求服务端 `AcceptEnv` 放行，
  * 而多数 sshd 默认只允许 `LANG`/`LC_*`，静默丢弃其余变量。
+ *
+ * 调用约定：本函数产出的是 POSIX shell 语法，**必须在 `sh -c` 内部求值**
+ * （SSH 传输在外层还要套一层 `sh -c` 以防登录 shell 方言；见 ssh-transport）。
  *
  * @param command - 原始命令
  * @param env - 环境变量；值会被完整转义，不做变量展开
@@ -92,5 +95,11 @@ export function buildCommandWithEnv(
   }
 
   if (assignments.length === 0) return command;
-  return `env ${assignments.join(' ')} ${command}`;
+  // 用 `export …; <命令>` 而不是 `env … <命令>`：env 只对紧随其后的**那一条**
+  // 命令生效，命令里一旦出现 `&&`、`;` 或换行，后面的语句就落回外层 shell，
+  // PATH 前缀与注入变量当场丢失。实测踩过：`env PATH=<node bin> mkdir -p tmp
+  // && flock … -c 'npm install'` 里 flock 的子进程拿不到 node，npm 直接
+  // `command not found`（退出 127），引导把这一步报成「安装 dsh 失败」。
+  // export 改的是本 shell 自己的环境，同一命令行的后续语句与所有子进程都继承。
+  return `export ${assignments.join(' ')}; ${command}`;
 }

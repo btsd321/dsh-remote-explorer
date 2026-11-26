@@ -295,15 +295,16 @@ export class SshTransport implements RemoteTransport {
     // 而各 shell 行为有实质差异：zsh 对未匹配的 glob 直接报
     // "no matches found" 中止执行，bash 则保留字面量。不锁定的话，
     // 「遍历可能不存在的安装目录」这类脚本会在 zsh 用户的机器上突然失败。
-    const posix = `sh -c ${quote(command)}`;
-
-    // 环境变量用 `env K=V` 前缀注入：ssh2 的 env 选项要求服务端
-    // AcceptEnv 放行，而绝大多数 sshd 默认只允许 LANG/LC_*，不可依赖
-    const full = this.withEnv(posix, options.env, options.pathPrefix);
+    //
+    // 环境变量注入必须落在 `sh -c` **内部**：注入用的是 `export …;` 语法，
+    // 写在外面就由用户登录 shell 解析——csh/tcsh/fish 登录 shell 不认 export，
+    // 前缀会被静默丢弃（症状与「PATH 丢前缀」完全一样）。ssh2 的 env 选项
+    // 也不能用：服务端要 AcceptEnv 放行，而绝大多数 sshd 只允许 LANG/LC_*。
+    const posix = `sh -c ${quote(this.withEnv(command, options.env, options.pathPrefix))}`;
 
     const lease = await this.pool.acquire('admin', options.signal);
     try {
-      return await this.runExec(client, full, options);
+      return await this.runExec(client, posix, options);
     } finally {
       lease.release();
     }
@@ -1135,7 +1136,10 @@ export class SshTransport implements RemoteTransport {
   }
 
   /**
-   * 给命令加上 `env K=V` 前缀（委托给共享模块 {@link buildCommandWithEnv}）。
+   * 给命令注入 PATH 前缀与环境变量（委托给共享模块 {@link buildCommandWithEnv}）。
+   *
+   * **只在 `sh -c` 内部调用**：注入形态是 `export …; <命令>`，由 POSIX shell
+   * 解析；写在外层会被登录 shell 的方言（csh/fish）拒绝并静默丢弃。
    *
    * @param command - 原始命令
    * @param env - 环境变量；值会被完整转义，不做变量展开
