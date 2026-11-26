@@ -2,9 +2,10 @@
  * @file 心跳探活
  * @description 周期性确认「SSH 链路可用 + 远端 dsh 进程存活 + 端口在监听」三件事。
  *
- * 参数直接对标 Zed（`remote_client.rs:160`）：间隔 5 秒、超时 5 秒、
- * 连续丢失 5 次判定断开。它的取舍值得沿用——间隔太长则断线感知迟钝，
- * 太短则在高延迟链路上误判。
+ * 参数源自 Zed（`remote_client.rs:160`）的「间隔 5 秒、超时 5 秒、连续丢失 5 次
+ * 判定断开」，但本仓库把超时放宽到了 **15 秒**：弱网大流量期间心跳 exec 会排在
+ * 大块 CHANNEL_DATA 之后，5 秒几乎必然超时（见 {@link HEARTBEAT_TIMEOUT_MS}）。
+ * 间隔保持 5 秒不变——间隔太长则断线感知迟钝，太短则在高延迟链路上误判。
  *
  * **一次心跳只发一条命令。** 三项检查合并成一个远端脚本，而不是分三次 exec：
  * 每 5 秒三次 SSH 往返在高延迟链路上会明显占用通道配额，也更容易触发超时误判。
@@ -14,13 +15,29 @@
  */
 
 import { quote } from '../util/shell-quote.js';
+import { RemoteError } from '../util/errors.js';
 import type { RemoteTransport } from '../transport/types.js';
 
 /** 心跳间隔（毫秒） */
 export const HEARTBEAT_INTERVAL_MS = 5_000;
 
-/** 单次心跳的超时（毫秒） */
-export const HEARTBEAT_TIMEOUT_MS = 5_000;
+/**
+ * 单次心跳的超时（毫秒）。
+ *
+ * 从 5 秒放宽到 15 秒：弱网（实测 RTT 245ms、丢包 20%~33%）大流量下载期间，
+ * 心跳 exec 会被大块 CHANNEL_DATA 排在后面，5 秒几乎必然超时。放宽超时 +
+ * 编排层「转发活跃时容忍超时」双管齐下，避免把「忙但活着」误判成断线重连。
+ */
+export const HEARTBEAT_TIMEOUT_MS = 15_000;
+
+/** 心跳失败的分类 */
+export type HeartbeatFailureKind =
+  /** 远端明确异常：进程退出 / 端口未监听 / webserver 无 HTTP 响应 */
+  | 'remote-down'
+  /** 命令超时：可能是高负载排队，需结合转发活跃度判定而非直接判死 */
+  | 'timeout'
+  /** 其余 SSH 链路错误（连接已失效等） */
+  | 'link-error';
 
 /** 一次心跳的结果 */
 export interface HeartbeatResult {
@@ -28,6 +45,8 @@ export interface HeartbeatResult {
   isHealthy: boolean;
   /** 失败原因；健康时为 undefined */
   reason?: string;
+  /** 失败分类；健康时为 undefined */
+  failureKind?: HeartbeatFailureKind;
 }
 
 /**
@@ -101,24 +120,61 @@ export async function beat(
     const httpCode = /^HTTP=(\d+|unknown)$/m.exec(result.stdout)?.[1];
 
     if (result.stdout.includes('PID=dead')) {
-      return { isHealthy: false, reason: `远端 dsh 进程（pid ${pid}）已退出` };
+      return { isHealthy: false, failureKind: 'remote-down', reason: `远端 dsh 进程（pid ${pid}）已退出` };
     }
     if (result.stdout.includes('PORT=down')) {
-      return { isHealthy: false, reason: `远端端口 ${port} 已停止监听` };
+      return { isHealthy: false, failureKind: 'remote-down', reason: `远端端口 ${port} 已停止监听` };
     }
     // HTTP=000：连接建立不了——进程在、端口在，但 webserver 不应答。
     // 这正是 pid+端口判据探测不到的故障层（进程僵死、事件循环卡住）
     if (httpCode === '000') {
-      return { isHealthy: false, reason: `远端 dsh 无 HTTP 响应（127.0.0.1:${port} 连不上 webserver）` };
+      return {
+        isHealthy: false,
+        failureKind: 'remote-down',
+        reason: `远端 dsh 无 HTTP 响应（127.0.0.1:${port} 连不上 webserver）`,
+      };
     }
     return { isHealthy: true };
   } catch (error) {
-    // exec 失败意味着 SSH 链路本身有问题
+    // exec 失败意味着 SSH 链路本身有问题。区分「命令超时」与其余链路错误：
+    // 超时可能只是高负载排队（隧道其实仍在传数据），交给编排层结合转发活跃度
+    // 二次判定；其余错误（连接已失效）按链路异常处理。
+    //
+    // 按错误码而不是消息文案判断：EXEC_FAILED 同时承担「退出码非零」「启动命令
+    // 失败」「通道池等待超时」等语义，文案一改分类就会静默失效；而 ssh 与 wsl
+    // 两个传输实现都在超时处显式抛 EXEC_TIMEOUT（WSL 的超时曾因消息形态不同
+    // 完全走不到这里，被当成 link-error 照常累计断线）。
+    const isTimeout = error instanceof RemoteError && error.code === 'EXEC_TIMEOUT';
     return {
       isHealthy: false,
+      failureKind: isTimeout ? 'timeout' : 'link-error',
       reason: `SSH 链路异常：${error instanceof Error ? error.message : String(error)}`,
     };
   }
+}
+
+/**
+ * 判断一次心跳失败是否应被「容忍」（按链路健康处理，不累加断线计数）。
+ *
+ * 唯一容忍的形态是「命令超时 + 转发通道近期有远端 → 本机数据」：超时只说明
+ * 结果未知，而远端仍在往本机送数据说明链路活着（典型：弱网下载首屏资源时
+ * 心跳 exec 排在大块 CHANNEL_DATA 之后）。
+ *
+ * 远端明确异常（进程退出 / 端口未监听 / 无 HTTP 响应）与链路错误一律不容忍：
+ * 把它们也容忍掉就会出现「链路已经坏了却既不重连也不上报」——正是本修复要
+ * 消除的白屏故障的镜像版本。
+ *
+ * @param result - 一次心跳结果
+ * @param forwardRecentlyActive - 转发通道近期是否有远端 → 本机数据流动
+ * @returns true = 按链路健康处理，不累加断线计数
+ */
+export function isTolerableFailure(
+  result: HeartbeatResult,
+  forwardRecentlyActive: boolean,
+): boolean {
+  if (result.isHealthy) return false;
+  if (result.failureKind !== 'timeout') return false;
+  return forwardRecentlyActive;
 }
 
 /**

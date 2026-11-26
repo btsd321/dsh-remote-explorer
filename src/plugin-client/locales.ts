@@ -22,6 +22,7 @@ export type RemoteExplorerLocaleKey =
   | 'enterCurrent' | 'openNew' | 'countdown' | 'cancelCountdown'
   | 'connectWindow' | 'openWindow'
   | 'overlayLoading' | 'overlayStopping' | 'overlayStoppingRemote' | 'overlayLeaseFailed' | 'overlayReturnHint'
+  | 'overlayBootStalled'
   | 'intentDisconnect' | 'intentStop' | 'intentExecute' | 'intentCancel'
   | 'sessions' | 'noSessions' | 'disconnect' | 'stopRemote' | 'open' | 'external'
   | 'stateIdle' | 'stateConnecting' | 'stateConnected' | 'stateHeartbeatMissed'
@@ -94,6 +95,7 @@ export const zh: Record<RemoteExplorerLocaleKey, string> = {
   overlayStoppingRemote: '正在停止远端 dsh…',
   overlayLeaseFailed: '打开远程桌面失败',
   overlayReturnHint: '按 Esc 返回管理页',
+  overlayBootStalled: '远程界面未能正常渲染（可能是网络抖动导致首屏资源下载中断）。请点击重试。',
   intentDisconnect: '远端窗口请求关闭此远程连接（本机隧道与会话登记将解除，远端 dsh 保留）',
   intentStop: '远端窗口请求停止远端 dsh 并关闭此远程连接',
   intentExecute: '执行',
@@ -223,6 +225,7 @@ export const en: Record<RemoteExplorerLocaleKey, string> = {
   overlayStoppingRemote: 'Stopping remote dsh…',
   overlayLeaseFailed: 'Failed to open remote desktop',
   overlayReturnHint: 'Press Esc to return to the manager',
+  overlayBootStalled: 'The remote UI failed to render (first-screen resources may have been interrupted by network instability). Please retry.',
   intentDisconnect: 'The remote window asked to close this remote connection (local tunnel and session registration go away; remote dsh stays)',
   intentStop: 'The remote window asked to stop the remote dsh and close this remote connection',
   intentExecute: 'Execute',
