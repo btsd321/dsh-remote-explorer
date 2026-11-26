@@ -61,7 +61,10 @@ import { computeSessionId } from '../util/session-id.js';
 import { RemoteError, toErrorMessage } from '../util/errors.js';
 import type { PasswordProvider } from '../util/password-prompt.js';
 import { probeExistingSession, stopRemoteDsh, type RemoteProcessInfo } from './remote-process.js';
-import { Heartbeat, type HeartbeatResult } from './heartbeat.js';
+import {
+  HEARTBEAT_INTERVAL_MS, HEARTBEAT_TIMEOUT_MS, Heartbeat, isTolerableFailure,
+  type HeartbeatResult,
+} from './heartbeat.js';
 import { backoffDelay, wait, DEFAULT_RECONNECT_CONFIG, type ReconnectConfig } from './reconnect.js';
 import {
   DEFAULT_LIFECYCLE_CONFIG, INITIAL_STATE, describeState, isTerminal, transition,
@@ -84,6 +87,20 @@ import { createLogger } from '../util/logger.js';
 export type { TransportType, OpenSessionOptions, CloseSessionOptions } from './options.js';
 
 const log = createLogger('session-manager');
+
+/**
+ * 「转发近期活跃」判定窗口（毫秒）。
+ *
+ * 心跳因 exec 超时失败时，若本机正向隧道在此时长内仍有**远端 → 本机**数据流动，
+ * 说明 SSH 链路「忙但活着」（典型：弱网下载首屏 2.6MB 静态资源），
+ * 此时不把超时计入断线、不触发重连——否则重连会销毁正在下载的转发连接，
+ * 导致首屏 JS 截断、远端界面永久白屏。
+ *
+ * 由心跳常量推导而非写死：一次心跳从发出到超时最长要 HEARTBEAT_TIMEOUT_MS，
+ * 窗口必须不小于它（再加一个间隔留余量），否则调大超时后 isRecentlyActive()
+ * 在失败时刻永远为假，容忍规则会静默失效。
+ */
+const FORWARD_ACTIVITY_GUARD_MS = HEARTBEAT_TIMEOUT_MS + HEARTBEAT_INTERVAL_MS;
 
 /**
  * RemoteSession 构造所需的内部依赖集合。
@@ -395,10 +412,31 @@ export class RemoteSession {
   private onHeartbeat(result: HeartbeatResult): void {
     if (this.closed) return;
 
+    // 弱网大流量期间，心跳 exec 会排在大块 CHANNEL_DATA 之后而超时，但隧道
+    // 其实仍在传输数据。此时「命令超时」不算断线：只要正向隧道近期仍有远端
+    // 数据流动，就按链路健康处理，避免误判重连销毁正在下载的转发连接（白屏根因）。
+    // 注意只宽容 'timeout'；'remote-down'（进程退出/端口未监听/无 HTTP 响应）
+    // 与 'link-error'（连接已失效）仍然照常计数。
+    const tolerated = isTolerableFailure(
+      result,
+      this.forward.isRecentlyActive(FORWARD_ACTIVITY_GUARD_MS),
+    );
+
     const before = this.state.tag;
-    this.apply(result.isHealthy
-      ? { type: 'heartbeat-ok' }
-      : { type: 'heartbeat-fail' });
+    // 容忍的超时只是「结果未知」，不能当「健康」发 heartbeat-ok：那会把
+    // missedHeartbeats 清零，真实故障与可容忍超时交替出现时就永远到不了
+    // 重连阈值（链路已劣化却既不重连也不上报），状态还会来回跳。
+    if (result.isHealthy) {
+      this.apply({ type: 'heartbeat-ok' });
+    } else if (!tolerated) {
+      this.apply({ type: 'heartbeat-fail' });
+    }
+
+    if (tolerated) {
+      log.debug('心跳命令超时但转发通道仍有远端数据，判为链路健康（不累加也不清零）', {
+        reason: result.reason,
+      });
+    }
 
     // 状态机判定该重连了（heartbeat-fail 达阈值会转成 reconnecting）
     if (before !== 'reconnecting' && this.state.tag === 'reconnecting') {
