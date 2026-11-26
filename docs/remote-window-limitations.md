@@ -1,6 +1,6 @@
 # 桌面浮层（远程窗口）的复制与链接限制
 
-> **状态**：链接与复制均已在本分支实现插件侧修复（待桌面端实机验证）；剪贴板原生权限仍需上游 dsh 壳放行根治。
+> **状态**：复制与链接均已修复并在桌面端实测通过（0.8.14）；剪贴板原生权限仍需上游 dsh 壳放行根治，目前的 `execCommand` 降级是插件侧兜底。
 > **适用版本**：dsh-remote-explorer 0.8.11 + DeepSeek Harness 桌面端 0.2.2-rc.2 ~ 0.2.2-rc.5（Electron 44.7.0，`app.asar` 实测）。
 > **适用范围**：桌面端「在新窗口连接」打开的整窗浮层（[remote-window.tsx](../src/plugin-client/remote-window.tsx)）。
 > 浏览器形态（「进入（当前标签）」/「新标签打开 ↗」）**不受这两条限制影响**。
@@ -57,7 +57,7 @@ dsh 前端复制按钮
    - `dsh-client-ui-open-in-app/lib/client.js`（右键「复制链接地址」「复制文件路径」「复制文件夹路径」）与 `settings-account`、`forge` 等则**直接 `await navigator.clipboard.writeText(...)`**，没有任何降级，失败时弹出「无法复制，请检查内容是否可用后重试」。
 3. **壳侧限制与远端 handoff 兜底边界**：壳在 `will-attach-webview` 里清空了 `webPreferences`（只保留 `disablePopups`），因此宿主页确实无法给 `<webview>` 注入 preload 或修改权限策略；但远端页面运行的是本插件引导的远端 dsh，已加载本插件的浏览器半 [`dsh-remote-handoff`](../src/handoff/client.tsx)，与远端前端共享同一 `window` / `navigator` / `document`。
 
-### 1.3 插件侧兜底修复（已在本地实现，待实机验证）
+### 1.3 插件侧兜底修复（已在桌面端实测通过）
 
 在 [`src/handoff/clipboard-fallback.ts`](../src/handoff/clipboard-fallback.ts) 实现并在 [`src/handoff/client.tsx`](../src/handoff/client.tsx) 激活时挂载（单测见 [`tests/unit/clipboard-fallback.test.ts`](../tests/unit/clipboard-fallback.test.ts)）：
 
@@ -111,11 +111,11 @@ dsh 前端复制按钮
 - dsh Chat 的 `openExternalLink` 在 `linkOpening === 'sidebar'` **且** `sidebarRightTabs.get('browser')` 存在时才走右侧栏；远端未启用 `browser` 侧栏 tab 时（右键菜单里「在侧边栏打开」置灰），左键点击会直接回落到 `window.open`；
 - 右键菜单的「外部浏览器打开」（`open-in-app.url`）与 `linkOpening = new-tab` 也一律走 `window.open`，全部命中路径 A。
 
-### 2.4 插件侧修复（已在本地实现，待实机验证）
+### 2.4 插件侧修复（已在桌面端实测通过）
 
 1. **补齐 `<webview>` 属性（对齐第一方 `ui-sidebar-browser`）**：显式设置 `name`、`partition`、`allowpopups=""`、`src`，让 guest 的 `window.open` 能进入壳的 `guest.setWindowOpenHandler`（壳仍一律返回 `{ action: 'deny' }`，仅转发合法 http(s) URL 到 `browserOpenRequested`）；
-2. **接住 `onOpenRequested`**：先判 handoff 假意图 origin，其余外部 http(s) 调用宿主 `window.open(url, '_blank', 'noopener,noreferrer')` → 命中主窗口 `setWindowOpenHandler` 调 `shell.openExternal` 交系统浏览器打开；
-3. **真拦住跨 origin 主框架导航**：`will-navigate` 里用 `element.stop()` 中止导航并外开系统浏览器，并配 `did-navigate` 兜底（若 `stop()` 竞态或 302 重定向已提交外部页面，则 `goBack()` 或 `loadURL(lastSessionUrl)` 拉回远端会话）。
+2. **接住 `onOpenRequested`**：先判 handoff 假意图 origin；外部 http(s) 调用宿主 `window.open(url, '_blank', 'noopener,noreferrer')` → 命中主窗口 `setWindowOpenHandler` 调 `shell.openExternal` 交系统浏览器打开；**同 origin 的 `window.open` 在浮层内 `loadURL` 导航**（否则远端 dsh 里 `target="_blank"` 的会话/设置链接同样「点了没反应」）；非 http(s) 记 debug 日志丢弃。外开走「URL + 3 秒窗口」去重，避免 `stop()` 竞态导致同一链接弹出两个标签页。
+3. **真拦住跨 origin 主框架导航**：`will-navigate` 里用 `element.stop()` 中止导航并外开系统浏览器，并配 `did-navigate` 兜底。兜底**不再用 `goBack()`**：`loadURL` 是压入历史而非替换，`goBack()` 可能落到初始化时的 `about:blank#<lease>`，浮层就永久空白。改为直接 `loadURL(lastSessionUrl)`；同时给自动回退加次数上限（60 秒内 3 次），服务端持续 302 到外部域时停手并给出重试入口，而不是无限「外开 → 回退 → 再外开」。
 
 实现落在 [`src/plugin-client/link-policy.ts`](../src/plugin-client/link-policy.ts)（纯函数判据，含单测 [`tests/unit/link-policy.test.ts`](../tests/unit/link-policy.test.ts)）与 [`src/plugin-client/remote-window.tsx`](../src/plugin-client/remote-window.tsx)（`<webview>` 属性与事件接线），不动壳。
 
@@ -187,15 +187,22 @@ for (const t of ["configureSession","setWindowOpenHandler","browserOpenRequested
 
 修复（三层）：
 
-- [forward-local.ts](../src/tunnel/forward-local.ts)：记录最近一次转发数据流动时间
-  （`lastActivityAt` / `isRecentlyActive()`）。
+- [forward-local.ts](../src/tunnel/forward-local.ts)：记录最近一次**远端 → 本机**通道数据的时间
+  （`lastActivityAt` / `isRecentlyActive()`）。只认远端方向：本机 socket 的 `data` 只证明浏览器
+  写了本地端口，链路静默断开时照样发生，拿来当存活证据会让容忍窗口永不到期。`swapTransport()`
+  与 `close()` 清零时间戳，避免旧连接的证据冒充新链路健康。
 - [heartbeat.ts](../src/session/heartbeat.ts) + [session-manager.ts](../src/session/session-manager.ts)：
-  心跳结果区分 `remote-down` / `timeout` / `link-error`；**仅当 `timeout` 且转发近期活跃时
-  视为链路健康**，不累加断线（`remote-down` / `link-error` 照常计数）。同时心跳超时 5s→15s。
-- [ssh-transport.ts](../src/transport/ssh-transport.ts)：keepalive 连续失败上限 3→6（60s 容忍）。
+  心跳结果区分 `remote-down` / `timeout` / `link-error`（超时用独立错误码 `EXEC_TIMEOUT`，
+  ssh 与 wsl 两个传输实现都显式抛它，不靠消息文案匹配）；**仅当 `timeout` 且转发近期有远端数据
+  时暂不计入断线**——注意是「不计入」而不是「按健康处理」：发 `heartbeat-ok` 会把
+  `missedHeartbeats` 清零，真实故障与可容忍超时交替出现就永远到不了重连阈值。
+  判定窗口由 `HEARTBEAT_TIMEOUT_MS + HEARTBEAT_INTERVAL_MS` 推导。同时心跳超时 5s→15s。
+- [ssh-transport.ts](../src/transport/ssh-transport.ts)：keepalive 连续失败上限 3→6。注意 ssh2 的
+  判定是 `++kacount > kacountmax`，实际容忍窗口是 10s × 7 = **70s**（不是 60s）。
 - [remote-window.tsx](../src/plugin-client/remote-window.tsx)：首屏渲染看门狗——主文档 load 后
-  轮询 guest 的 `#root` 是否有内容，渲染出来才撤加载层；`did-fail-load` 或长时间空白给出
-  「重试」入口，不再把空白 `#root` 直接亮成白屏。
+  轮询 guest 的 `#root`（兼容 `#app`）是否有内容，渲染出来才撤加载层；`did-fail-load` 或长时间
+  空白给出「重试」入口，不再把空白页面直接亮成白屏。看门狗带代际号（迟到的探测不会盖掉错误层）、
+  探测不再申请用户手势，`loadURL` 的 `ERR_ABORTED` 与 `did-fail-load` 口径一致地忽略。
 
 验证：弱网真实链路 + headless Chrome，加载全程 `reconnectTriggers=0`，`#root` 有内容、
 `__ModuleLoader__.mode` 由 `queue` 变 `live`，首屏正常渲染。

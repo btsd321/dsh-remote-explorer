@@ -86,6 +86,8 @@
 
 **8f. 心跳是三层判据，一条命令拿全。** 进程存活（`kill -0`）+ 端口监听（`ss`/`netstat`）+ **HTTP 应用级**（带会话令牌 curl 根路径，任何非 000 状态码即健康）——第三层能发现"进程在、端口在、但 webserver 僵死"的故障，前两层探测不到。改 [src/session/heartbeat.ts](../src/session/heartbeat.ts) 时保持单命令形态：每 5 秒一次心跳，拆成三次 exec 会在高延迟链路上占配额。
 
+**8g. 心跳超时只能「暂不计入」，不能当「健康」；活跃证据必须来自远端方向（PR #8 审查修正）。** 弱网大流量期间心跳 exec 会排在大块 CHANNEL_DATA 之后而超时，但隧道仍在传数据——为此引入的容忍规则有两个反向坑，都会把「该重连」变成「永不重连」：① 容忍时发 `heartbeat-ok` 会把 `missedHeartbeats` 清零（[lifecycle-state.ts](../src/session/lifecycle-state.ts) 的 `heartbeat-ok` 分支），真实故障与可容忍超时交替出现就永远到不了 `maxMissedHeartbeats`；容忍只应「不发事件」，既不累加也不清零。② 活跃证据若把**本机 socket 的 `data`** 也算上，就只证明浏览器发了请求（静默断链时照样发生），容忍窗口永不到期；只认 `channel.stream`（远端 → 本机）的数据。配套：`swapTransport()` 必须清零时间戳（旧连接的证据不能冒充新链路健康）；判定窗口由 `HEARTBEAT_TIMEOUT_MS + HEARTBEAT_INTERVAL_MS` 推导，写死会在调大超时后静默失效。超时用独立错误码 `EXEC_TIMEOUT` 表达，不能靠消息文案匹配——`EXEC_FAILED` 同时承担「退出码非零 / 启动失败 / 通道池等待超时」，而 WSL 传输把超时包装成「命令失败」形态，按文案判断会整条漏掉。
+
 ## 环境变量注入
 
 **16. 远端 dsh 的代理与用户 env 是四层合并，env 键名是命令注入面。** SSH(22) 通 ≠ HTTPS(443) 通：dsh 装 `github:` 插件前用 `git ls-remote https://github.com/...` 探测连通性（探测默认 5 秒超时），无公网主机裸连必超时；dsh 的 `scrubbedParentEnv` 会保留代理变量并注入 `NODE_USE_ENV_PROXY=1`，链路本身完好，缺的只是「dsh 进程自己的环境里有代理变量」——由 `startRemoteDsh` 的 extraEnv 口注入，合并优先级**凭据占位 > 用户 env（环境变量弹窗）> 面板代理（代理弹窗，`collectProxyEnv(explicit)`）> `DSH_REMOTE_PROXY` 兜底**（[src/session/proxy-env.ts](../src/session/proxy-env.ts)）。凭据键（`DEEPSEEK_API_KEY` 等）必须最后合并，被用户 env 挤掉会导致远端报 `MISSING_CREDENTIAL`、代理根本收不到请求。三条硬约束：
