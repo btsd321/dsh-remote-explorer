@@ -191,25 +191,46 @@ function defineWrappedWriteText(
 }
 
 /**
+ * 已安装兜底的清理函数表：同一 clipboard 目标只包装一次。
+ *
+ * 用 WeakMap 而不是在对象上打标记：剪贴板对象生命周期跟随页面，WeakMap 不会
+ * 在页面卸载后留下引用；也不需要往共享对象上塞私有属性。
+ */
+const installedDisposers = new WeakMap<object, () => void>();
+
+/**
  * 为 `navigator.clipboard.writeText` 安装 `execCommand('copy')` 失败兜底。
  *
- * 优先把包装方法装在 `clipboard` 实例自身（不动全局原型）；仅当实例不可扩展时
- * 退而安装在其原型上。返回的清理函数幂等，供 Cordis `ctx.effect` 在卸载时调用。
+ * 包装方法只装在 `clipboard` 实例自身，**不动任何原型**：远端页面与远端 dsh
+ * 前端、各插件共享同一个 `window`/`navigator`，改 `Clipboard.prototype` 会把
+ * 兜底扩散到整页所有 `Clipboard` 使用者。实例无法覆写时直接放弃（返回空操作），
+ * 调用方的原生 `writeText` 继续按原语义抛错。
  *
- * @param env - 可选注入环境（默认取全局 `navigator.clipboard` 与 `document`）
+ * 安装幂等：同一 clipboard 目标只包一次。返回的清理函数幂等，供 Cordis
+ * `ctx.effect` 在卸载时调用。
+ *
+ * @param env - 可选注入环境（字段缺省时回落到全局 `navigator.clipboard` / `document`）
  * @returns 清理函数（还原原方法；环境不支持时返回空操作）
  */
 export function installClipboardFallback(env?: ClipboardFallbackEnv): () => void {
-  const clipboard = env !== undefined
+  // 逐字段回落：只传 document 的注入场景（单测/延迟构造）不应让 clipboard 变成
+  // undefined 而整块兜底失效；显式传 null 仍然表示「禁用该字段」
+  const clipboard = env !== undefined && 'clipboard' in env
     ? env.clipboard
     : (typeof navigator !== 'undefined' ? navigator.clipboard : undefined);
-  const doc: DocumentLike | null | undefined = env !== undefined
+  const doc: DocumentLike | null | undefined = env !== undefined && 'document' in env
     ? env.document
     : (typeof document !== 'undefined' ? (document as unknown as DocumentLike) : undefined);
 
   if (clipboard === null || clipboard === undefined || typeof clipboard.writeText !== 'function') {
     return () => {};
   }
+
+  // 幂等：重复安装返回同一个清理函数。否则第二次安装会把第一次的包装当成
+  // original 再包一层，卸载时只有最外层能还原（内层包装被一起丢掉），
+  // 且一次失败会跑两遍兜底
+  const existingDisposer = installedDisposers.get(clipboard);
+  if (existingDisposer !== undefined) return existingDisposer;
 
   const original = clipboard.writeText;
   const wrapped: ClipboardLike['writeText'] = async function (
@@ -225,14 +246,20 @@ export function installClipboardFallback(env?: ClipboardFallbackEnv): () => void
     }
   };
 
-  const restoreOwn = defineWrappedWriteText(clipboard, wrapped);
-  if (restoreOwn !== undefined) return restoreOwn;
-
-  const proto = Object.getPrototypeOf(clipboard) as object | null;
-  if (proto !== null && proto !== Object.prototype) {
-    const restoreProto = defineWrappedWriteText(proto, wrapped);
-    if (restoreProto !== undefined) return restoreProto;
+  const restore = defineWrappedWriteText(clipboard, wrapped);
+  if (restore === undefined) {
+    // 实例不可覆写（冻结对象/受限宿主）：放弃兜底。不退化成改原型——见上面的说明，
+    // 且当失败原因是「实例已有不可配置的 writeText」时改原型本来就静默无效
+    return () => {};
   }
 
-  return () => {};
+  let disposed = false;
+  const dispose = (): void => {
+    if (disposed) return;
+    disposed = true;
+    installedDisposers.delete(clipboard);
+    restore();
+  };
+  installedDisposers.set(clipboard, dispose);
+  return dispose;
 }

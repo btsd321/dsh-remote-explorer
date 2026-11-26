@@ -226,7 +226,7 @@ describe('installClipboardFallback', () => {
     dispose();
   });
 
-  it('实例不可扩展时自动退而包装原型并在卸载时还原原型', async () => {
+  it('实例不可覆写时放弃兜底，且不改动原生原型', async () => {
     class FrozenClipboard implements ClipboardLike {
       async writeText() { throw new Error('denied'); }
     }
@@ -235,11 +235,40 @@ describe('installClipboardFallback', () => {
     const fake = createFakeDocument({ execResult: true });
 
     const dispose = installClipboardFallback({ clipboard, document: fake.doc });
-    await clipboard.writeText('from-frozen');
-    assert.deepEqual(fake.commands, ['copy']);
-
-    dispose();
+    // 不改原型：远端页面与 dsh 前端共享同一 window，改 Clipboard.prototype 会把
+    // 兜底扩散到整页所有使用者；且若失败原因是实例已有不可配置的 writeText，
+    // 改原型本来就静默无效。放弃兜底后原生语义原样保留。
+    await assert.rejects(() => clipboard.writeText('from-frozen'), /denied/);
+    assert.deepEqual(fake.commands, []);
     assert.equal(FrozenClipboard.prototype.writeText, origProtoMethod);
+    dispose();
+  });
+
+  it('重复安装返回同一清理函数，卸载后恢复原方法（幂等）', async () => {
+    const rootError = new Error('denied');
+    const clipboard: ClipboardLike = { async writeText() { throw rootError; } };
+    const original = clipboard.writeText;
+    const fake = createFakeDocument({ execResult: true });
+
+    const disposeA = installClipboardFallback({ clipboard, document: fake.doc });
+    const disposeB = installClipboardFallback({ clipboard, document: fake.doc });
+
+    assert.equal(disposeA, disposeB, '同一 clipboard 目标重复安装应复用首个清理函数');
+    await clipboard.writeText('x');
+    assert.deepEqual(fake.commands, ['copy'], '一次失败只应跑一次兜底');
+    disposeA();
+    disposeB();
+    assert.equal(clipboard.writeText, original, '卸载后应还原为原始方法');
+  });
+
+  it('只注入 clipboard 时 document 回落到全局（不整块失效）', async () => {
+    const rootError = new Error('denied');
+    const clipboard: ClipboardLike = { async writeText() { throw rootError; } };
+    const dispose = installClipboardFallback({ clipboard });
+
+    // Node 环境没有全局 document：兜底不可用，应重新抛出原始异常而不是静默成功
+    await assert.rejects(() => clipboard.writeText('x'), (error) => error === rootError);
+    dispose();
   });
 
   it('若后续被其他代码再次覆写，卸载时不强行覆盖他人包装', () => {
