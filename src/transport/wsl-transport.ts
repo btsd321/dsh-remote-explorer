@@ -597,6 +597,18 @@ async function runWslCommand(
       args,
       { encoding: 'utf8', timeout: timeoutMs },
       (error, stdoutText, stderrText) => {
+        // execFile 超时杀进程时 error 带 killed=true 且 code 为 null（属性存在、值为 null），
+        // 不能落进下面的「退出码」分支——那样调用方会拿到 exitCode=null + 空 stdout，
+        // 心跳探活就会把一次超时当成「三项检查都没报错」判成健康（WSL 会话白屏修复失效）
+        if (error !== null && (error as { killed?: boolean }).killed === true) {
+          finish({
+            error: new RemoteError(
+              'EXEC_TIMEOUT',
+              `WSL 命令超时（${timeoutMs}ms）：${args.join(' ').slice(0, COMMAND_PREVIEW_LEN)}`,
+            ),
+          });
+          return;
+        }
         if (error && !('code' in error)) {
           // 非退出码错误（如超时、spawn 失败）
           finish({ error });

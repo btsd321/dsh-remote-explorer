@@ -16,6 +16,14 @@ export type RemoteErrorCode =
   | 'CONNECT_FAILED'
   /** 远端命令执行返回非零退出码 */
   | 'EXEC_FAILED'
+  /**
+   * 远端命令执行超时。
+   *
+   * 与 `EXEC_FAILED` 分开而不是共用：超时只说明「结果未知」——可能是链路忙排队，
+   * 也可能是真断链，需要调用方结合其他证据判断；而非零退出码是远端明确给出的
+   * 结论。心跳探活依赖这个区分决定是否累加断线计数（见 session/heartbeat.ts）。
+   */
+  | 'EXEC_TIMEOUT'
   /** 远端平台不受支持（非 POSIX） */
   | 'PLATFORM_UNSUPPORTED'
   /** 远端 Node 运行时不稳定（崩溃率自检不合格） */
