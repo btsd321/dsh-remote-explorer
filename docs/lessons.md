@@ -15,7 +15,7 @@
 转义会阻止 shell 展开变量，这一点有两个必须记住的后果：
 
 - `quote('$HOME/x')` 里的 `$HOME` 不会展开。需要展开时写 `"$HOME"/${quote(名字)}`。
-- **要在 PATH 前面加目录，用 `exec()` 的 `pathPrefix` 选项，不要走 `env`。** 写 `env: { PATH: '<新>:$PATH' }` 会让 `$PATH` 变成字面量，远端 PATH 只剩这一个目录，连 `rm`、`mkdir` 都找不到——表现为所有远端命令莫名失败。
+- **要在 PATH 前面加目录，用 `exec()` 的 `pathPrefix` 选项，不要走 `env`。** 写 `env: { PATH: '<新>:$PATH' }` 会让 `$PATH` 变成字面量，远端 PATH 只剩这一个目录，连 `rm`、`mkdir` 都找不到——表现为所有远端命令莫名失败。`pathPrefix` 与 `env` 最终由 `buildCommandWithEnv` 以 `export …; <命令>` 注入：**别改回 `env K=V <命令>`**，那只覆盖紧随的第一条命令，`&&`/`;`/换行之后的部分拿不到前缀（见第 29 条）。
 
 **8. 停远端进程不能用 `pkill -f <模式>`。** 承载命令的 shell 其命令行也含该模式，会把自己的 SSH 会话一起杀掉（实测踩过）。用会话目录下的 pid 文件，或按监听端口定位。
 
@@ -95,6 +95,8 @@
 - **env 键名不经 `quote()` 直接插值进启动命令**（remote-process.ts 的 `envAssignments` 是 `${key}=${quote(value)}`，只有值有转义）——用户 env 键名必须过 `/^[A-Za-z_][A-Za-z0-9_]*$/`，写入（路由+store 双拦截）、读取（防手工编辑文件）、launch（session 层最后防线）三处校验（`assertSafeEnvKeys`）；保留键 `DSH_HOME`/`DSH_AGENTS_HOME`/`PATH` 禁止用户配置——前两个在 envAssignments 里**先于** extraEnv 赋值，用户值会覆盖远端落盘隔离契约（见第 11 条），PATH 由启动器管理。校验集合单一来源在 session 层（plugin 层向下 import，不许反向）
 - **注入只发生在启动远端进程时**：`probeExistingSession` 命中复用不补注入（与凭据占位同语义），要生效用 forceRestart；重连重启路径（reconnectOnce → launch）同样透传 extraEnv
 - 全局高级选项（三弹窗的「上一次输入」）落盘 `~/.dsh/remote-advanced.json`（原子写、0o600——值可能含代理认证信息，Windows 上 mode 位无效靠目录 ACL）；日志与错误消息**只打键名/字段名不打值**；路由 `GET/POST /api/dsh-remote-explorer/advanced` 走 connection 已鉴权通道，POST 是部分更新语义（缺省字段保持原值——三个弹窗各管一个字段互不清除对方，教训见第 24 条）
+
+**29. `env K=V <命令>` 只覆盖紧随其后的那一条命令，复合命令行必须改用 `export …;`。** 0.8.14 实测（用户 WSL Ubuntu22）：引导装 dsh 三个候选各 ~1 秒全失败，报「安装 dsh 失败（flock 等锁超时）」，而真实原因是 `env PATH=<node bin> mkdir -p tmp && flock … -c 'npm install'` 里 **PATH 前缀只作用于 `mkdir`**——`&&` 之后由外层 shell 执行，flock 及其子进程 PATH 里没有 node，`npm` 直接 `command not found`（退出 127）。同类受害面不止安装：`offline-transfer` 的导出/导入命令是多行脚本，`dsh --version`、`tar` 都排在第二行之后。修复：`buildCommandWithEnv` 改为 `export PATH=… K=V; <命令>`——export 改的是同一 shell 的环境，后续每条语句、每个子进程都继承。**这条也是「诊断信息别猜」的教训**：原实现用 `/flock/` 猜等锁超时，而传输层的错误消息里本来就嵌着命令预览（含 `flock -w …`），于是任何安装失败都被误报成「另一引导正在进行」，把「npm 找不到」这个真因完全掩盖。现在判据只认 `flock:` 前缀的诊断行；`flock` 等锁超时本身**不打任何 stderr**（util-linux 2.37 实测，退出码默认 1、与被锁命令自己退 1 无法区分），故用 `-E 75` 单列超时退出码，超时再由包装脚本补一行 `flock: 等锁超时`。新增用例：`tests/unit/platform.test.ts`（复合命令前缀覆盖）、`tests/unit/intranet-runtime.test.ts`（超时退出码 + 命令预览不误报）。
 
 ## 凭据与安全
 

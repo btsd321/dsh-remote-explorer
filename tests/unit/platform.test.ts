@@ -123,68 +123,68 @@ describe('buildCommandWithEnv（表驱动）', () => {
       title: 'PATH 前缀拼到 "$PATH" 之前',
       command: 'echo hi',
       pathPrefix: '/opt/node/bin',
-      expected: 'env PATH=/opt/node/bin:"$PATH" echo hi',
+      expected: 'export PATH=/opt/node/bin:"$PATH"; echo hi',
     },
     {
       title: '含空格的前缀目录被单引号转义',
       command: 'echo hi',
       pathPrefix: '/opt/my bin',
-      expected: `env PATH='/opt/my bin':"$PATH" echo hi`,
+      expected: `export PATH='/opt/my bin':"$PATH"; echo hi`,
     },
     {
       title: '"$PATH" 保留在引号外由远端 shell 展开',
       command: 'echo hi',
       pathPrefix: '/p',
-      expected: 'env PATH=/p:"$PATH" echo hi',
+      expected: 'export PATH=/p:"$PATH"; echo hi',
     },
     {
       title: '单个 env 变量注入',
       command: 'echo hi',
       env: { FOO: 'bar' },
-      expected: 'env FOO=bar echo hi',
+      expected: 'export FOO=bar; echo hi',
     },
     {
       title: 'env 值含空格被完整转义',
       command: 'echo hi',
       env: { GREETING: 'hello world' },
-      expected: `env GREETING='hello world' echo hi`,
+      expected: `export GREETING='hello world'; echo hi`,
     },
     {
       title: 'env 值中的 $ 不展开（单引号内为字面量）',
       command: 'echo hi',
       env: { VAR: '$HOME' },
-      expected: `env VAR='$HOME' echo hi`,
+      expected: `export VAR='$HOME'; echo hi`,
     },
     {
       title: '多个 env 变量按对象键序拼接',
       command: 'echo hi',
       env: { A: '1', B: '2' },
-      expected: 'env A=1 B=2 echo hi',
+      expected: 'export A=1 B=2; echo hi',
     },
     {
       title: 'PATH 前缀排在 env 赋值之前',
       command: 'echo hi',
       env: { FOO: 'bar' },
       pathPrefix: '/p',
-      expected: 'env PATH=/p:"$PATH" FOO=bar echo hi',
+      expected: 'export PATH=/p:"$PATH" FOO=bar; echo hi',
     },
     {
       title: 'env 值含 shell 元字符被安全包裹（注入防护）',
       command: 'echo hi',
       env: { EVIL: '; rm -rf /' },
-      expected: `env EVIL='; rm -rf /' echo hi`,
+      expected: `export EVIL='; rm -rf /'; echo hi`,
     },
     {
       title: 'env 值含命令替换被安全包裹',
       command: 'echo hi',
       env: { EVIL: '$(id)' },
-      expected: `env EVIL='$(id)' echo hi`,
+      expected: `export EVIL='$(id)'; echo hi`,
     },
     {
       title: 'env 值含单引号被逐一转义',
       command: 'echo hi',
       env: { NAME: "it's" },
-      expected: `env NAME='it'\\''s' echo hi`,
+      expected: `export NAME='it'\\''s'; echo hi`,
     },
   ];
 
@@ -193,4 +193,20 @@ describe('buildCommandWithEnv（表驱动）', () => {
       assert.equal(buildCommandWithEnv(command, env, pathPrefix), expected);
     });
   }
+
+  // 回归：注入必须覆盖**整条命令行**，不能只作用于第一个命令。旧实现用
+  // `env K=V <命令>`，`&&`/`;`/换行之后的部分落回外层 shell、PATH 前缀丢失，
+  // 导致 `flock … -c 'npm install'` 里 npm 直接 command not found（退出 127）。
+  it('复合命令的前缀覆盖整条命令行（不只第一个命令）', () => {
+    const command = [
+      `mkdir -p '/home/u/tmp' && flock -w 900 '/home/u/tmp/install.lock' -c 'npm install'`,
+      `cd '/home/u/base'`,
+      `npm install --no-audit @deepseek-ai/dsh@0.2.2-rc.5`,
+    ].join('\n');
+    const out = buildCommandWithEnv(command, { npm_config_cache: '/home/u/npm-cache' }, '/home/u/node/bin');
+    assert.ok(out.startsWith(`export PATH=/home/u/node/bin:"$PATH" npm_config_cache=/home/u/npm-cache; `), out);
+    // 整条命令行里没有任何位置重新回到「没有前缀」的 shell
+    assert.equal(out.split('export ').length, 2, out);
+    assert.ok(out.endsWith(command), '命令本体必须原样保留在注入之后');
+  });
 });
