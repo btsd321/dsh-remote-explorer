@@ -26,7 +26,13 @@ import {
   validateNpmRegistry,
   ensureProfileNpmRegistry,
 } from '../../src/provision/intranet-runtime.ts';
-import { installLockHint, lockInstallCommand } from '../../src/provision/install-lock.ts';
+import {
+  INSTALL_LOCK_WAIT_SECONDS,
+  LOCK_TIMEOUT_EXIT_CODE,
+  LOCK_TIMEOUT_MARKER,
+  installLockHint,
+  lockInstallCommand,
+} from '../../src/provision/install-lock.ts';
 import { provision } from '../../src/provision/provisioner.ts';
 import { createRemotePaths } from '../../src/provision/remote-paths.ts';
 import type { ExecOptions, RemoteTransport } from '../../src/transport/types.ts';
@@ -186,13 +192,40 @@ test('部署方式优先级：环境变量硬开关优先、显式值覆盖旧 o
   }
 });
 
-test('安装锁先创建 tmp 父目录，且不会把 flock 缺命令误报成等锁', () => {
+test('安装锁先创建 tmp 父目录，超时用专用退出码并显式打到 stderr', () => {
   const paths = createRemotePaths('/home/tester');
   const command = lockInstallCommand(paths, 'echo ok');
-  assert.ok(command.startsWith(`mkdir -p ${paths.tmpRoot} && flock -w `), command);
+  assert.ok(
+    command.startsWith(
+      `mkdir -p ${paths.tmpRoot} && flock -w ${INSTALL_LOCK_WAIT_SECONDS} -E ${LOCK_TIMEOUT_EXIT_CODE} `,
+    ),
+    command,
+  );
+  // 用子 shell 传递退出码，不结束外层 shell
+  assert.match(command, /\(exit "\$rc"\); \}$/, command);
+  // 标记文案只有一份常量，生产端与识别端共用
+  assert.ok(command.includes(LOCK_TIMEOUT_MARKER), command);
   assert.match(installLockHint('/bin/sh: flock: command not found') ?? '', /缺少 flock/);
+  // 缺命令的措辞随 shell 而异：dash/busybox 少 command，zsh 词序反着来
+  assert.match(installLockHint('sh: 1: flock: not found') ?? '', /缺少 flock/);
+  assert.match(installLockHint('zsh:1: command not found: flock') ?? '', /缺少 flock/);
+  // 旧 util-linux（< 2.30）不认 -E，别让用户对着 usage 猜
+  assert.match(installLockHint("flock: invalid option -- 'E'") ?? '', /flock 过旧/);
   assert.match(installLockHint('flock: cannot open lock file /x: No such file or directory') ?? '', /锁文件不可写/);
-  assert.match(installLockHint('flock: failed to get lock') ?? '', /等锁超时/);
+  assert.match(installLockHint(`  ${LOCK_TIMEOUT_MARKER}  `) ?? '', /等锁超时/);
+  // 只认整行相等：命令预览里出现标记文本不算（防误报）
+  assert.equal(installLockHint(`echo '${LOCK_TIMEOUT_MARKER}' >&2`), undefined);
+});
+
+test('错误消息里带 flock 命令预览不被误报成等锁超时', () => {
+  // 传输层的错误消息 = 命令预览 + stderr 预览，预览本身就含 `flock -w …`。
+  // 旧实现用 /flock/ 猜超时，把「npm: command not found」这类真实原因
+  // 掩盖成「同一远端账号下另一引导正在进行」，排查被带偏。
+  const message = [
+    `WSL Ubuntu22 上的命令返回 127：mkdir -p '/home/u/tmp' && flock -w 900 -E 75 '/home/u/tmp/install.lock' -c 'npm install'`,
+    'zsh:6: command not found: npm',
+  ].join('\n');
+  assert.equal(installLockHint(message), undefined);
 });
 
 test('existing 模式创建私有 shim，不写系统 Node 目录', { skip: posixOnly }, async () => {
